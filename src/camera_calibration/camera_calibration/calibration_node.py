@@ -16,6 +16,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from .apriltag_detector import AprilTagDetector
 from .calibration_math import (
     CalibrationError,
     calibrate_eye_to_hand,
@@ -27,12 +28,7 @@ from .calibration_math import (
 )
 
 
-APRILTAG_DICTIONARIES = {
-    "tag16h5": "DICT_APRILTAG_16h5",
-    "tag25h9": "DICT_APRILTAG_25h9",
-    "tag36h10": "DICT_APRILTAG_36h10",
-    "tag36h11": "DICT_APRILTAG_36h11",
-}
+APRILTAG_FAMILIES = ("tag16h5", "tag25h9", "tag36h10", "tag36h11")
 
 
 def _clean_frame(frame: str) -> str:
@@ -96,29 +92,11 @@ class CameraCalibrationNode(Node):
         if not self._world_frame or not self._hand_frame or not self._camera_mount_frame:
             raise ValueError("world_frame, hand_frame, and camera_mount_frame cannot be empty")
 
-        if not hasattr(cv2, "aruco"):
-            raise RuntimeError(
-                "OpenCV was built without the aruco module; install python3-opencv "
-                "from the workspace image"
-            )
         family = self._string_parameter("tag_family").lower()
-        if family not in APRILTAG_DICTIONARIES:
-            choices = ", ".join(sorted(APRILTAG_DICTIONARIES))
+        if family not in APRILTAG_FAMILIES:
+            choices = ", ".join(APRILTAG_FAMILIES)
             raise ValueError(f"unsupported tag_family '{family}'; choose one of {choices}")
-        dictionary_id = getattr(cv2.aruco, APRILTAG_DICTIONARIES[family])
-        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
-        parameters = (
-            cv2.aruco.DetectorParameters()
-            if hasattr(cv2.aruco, "DetectorParameters")
-            else cv2.aruco.DetectorParameters_create()
-        )
-        self._detector = (
-            cv2.aruco.ArucoDetector(dictionary, parameters)
-            if hasattr(cv2.aruco, "ArucoDetector")
-            else None
-        )
-        self._dictionary = dictionary
-        self._detector_parameters = parameters
+        self._detector = AprilTagDetector(family)
 
         self._bridge = CvBridge()
         self._tf_buffer = Buffer()
@@ -176,18 +154,14 @@ class CameraCalibrationNode(Node):
             self._camera_optical_frame = _clean_frame(message.header.frame_id)
 
     def _detect_tag(self, gray_image: np.ndarray):
-        if self._detector is not None:
-            corners, identifiers, rejected = self._detector.detectMarkers(gray_image)
-        else:
-            corners, identifiers, rejected = cv2.aruco.detectMarkers(
-                gray_image, self._dictionary, parameters=self._detector_parameters
-            )
-        if identifiers is None:
-            return None, corners, identifiers
-        matches = np.flatnonzero(identifiers.reshape(-1) == self._tag_id)
+        matches = [
+            detection
+            for detection in self._detector.detect(gray_image)
+            if detection.identifier == self._tag_id
+        ]
         if len(matches) != 1:
-            return None, corners, identifiers
-        return np.asarray(corners[int(matches[0])], dtype=np.float64).reshape(4, 2), corners, identifiers
+            return None
+        return matches[0].corners
 
     def _estimate_tag_pose(self, image_corners: np.ndarray):
         half = self._tag_size * 0.5
@@ -240,7 +214,7 @@ class CameraCalibrationNode(Node):
             self._notice("cv_bridge", f"Cannot decode image: {error}")
             return
         gray_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
-        image_corners, _, _ = self._detect_tag(gray_image)
+        image_corners = self._detect_tag(gray_image)
         if image_corners is not None:
             camera_to_tag, reprojection_error = self._estimate_tag_pose(image_corners)
             if camera_to_tag is not None and reprojection_error <= self._max_reprojection_error:

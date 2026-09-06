@@ -23,6 +23,8 @@ src/
   inspire_franka_description/    FR3 + hand composed into one description
   inspire_franka_sim/            MJCF models, controller config, MuJoCo launch
   inspire_franka_bringup/        real hardware: arm, hand, or both
+  franka_trajectory_replay/      guarded FR3 replay controller and preparation
+  inspire_franka_trajectory_replay/ coordinated FR3 + Inspire replay runner
   camera_calibration/            ROS node and launch files for D415 eye-to-hand calibration
   franka_ros2/                   submodule - Franka's stack
   franka_description/            submodule - Franka's descriptions
@@ -72,6 +74,20 @@ ros2 launch inspire_franka_bringup inspire_franka.launch.py \
 ros2 launch inspire_franka_bringup arm.launch.py robot_ip:=10.7.7.7   # arm alone
 ros2 launch inspire_franka_bringup hand.launch.py port:=/dev/ttyUSB0  # hand alone
 
+# Coordinated replay: this launch replaces ordinary bringup for the session.
+ros2 launch inspire_franka_trajectory_replay replay.launch.py \
+    robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0
+
+# In another sourced shell: home from YAML, then replay one recorded rollout.
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    apps/traj_replay/demo_trajs/traj_1 --cycle 1 \
+    --home apps/traj_replay/demo_trajs/homing/threading.yaml
+
+# Inspect the source trajectory in Chi's MuJoCo replay viewer. Do not run a
+# second ROS/MuJoCo launcher alongside it.
+python3 apps/traj_replay/tests/test_mujoco_traj_replay.py \
+    --trajectory apps/traj_replay/demo_trajs/traj_1
+
 # RealSense D415 (publishes under /camera/camera by default):
 ros2 launch realsense2_camera rs_launch.py device_type:=d415
 
@@ -88,6 +104,83 @@ ros2 launch inspire_franka_bringup inspire_franka.launch.py \
 ```
 
 GUIs need `xhost +local:root` on the host.
+
+## RealSense D415: connection, live view, and recording
+
+The D415 connects directly to a USB 3 host port and is passed into the
+container as raw USB (`/dev/bus/usb`) and V4L2 (`/dev/video*`) devices. The
+workspace is bind-mounted at `/root/develop_ws`; the ROS wrapper source lives
+in `src/realsense_d415` and its built package in
+`install/realsense2_camera`.
+
+Before launching, confirm the host sees the actual D415 (not another webcam)
+and that it has a USB 3 link:
+
+```bash
+lsusb -d 8086:0ad3       # Intel RealSense D415
+lsusb -t                 # expect 5000M or higher; 480M is USB 2
+```
+
+Only one `realsense2_camera` node may own the physical device. Start the
+recommended 640x480 at 30 FPS color/depth stream from a sourced container
+shell:
+
+```bash
+ros2 launch realsense2_camera rs_launch.py \
+  device_type:=d415 \
+  camera_namespace:=camera camera_name:=camera \
+  enable_color:=true enable_depth:=true \
+  rgb_camera.color_profile:=640x480x30 \
+  depth_module.depth_profile:=640x480x30 \
+  enable_sync:=true align_depth.enable:=true
+```
+
+It runs as `/camera/camera` and publishes, among others:
+
+```text
+/camera/camera/color/image_raw
+/camera/camera/color/camera_info
+/camera/camera/depth/image_rect_raw
+/camera/camera/aligned_depth_to_color/image_raw  # when alignment is enabled
+```
+
+From a second sourced shell, inspect the stream and its actual rate:
+
+```bash
+ros2 topic hz /camera/camera/color/image_raw
+ros2 topic hz /camera/camera/depth/image_rect_raw
+ros2 run rqt_image_view rqt_image_view
+```
+
+In `rqt_image_view`, select either image topic above. The calibration viewers
+are also available; because the driver is already running, they must attach
+with `--no-launch`:
+
+```bash
+./apps/camera_calibration/tests/test_camera.py --no-launch
+./apps/camera_calibration/tests/test_april_tag.py --no-launch \
+  --tag-family tag36h11 --tag-id 0 --tag-size 0.040
+```
+
+The camera node publishes live data only; to retain footage, record the ROS
+topics as a bag:
+
+```bash
+ros2 bag record -o d415_check \
+  /camera/camera/color/image_raw \
+  /camera/camera/color/camera_info \
+  /camera/camera/depth/image_rect_raw
+```
+
+If a D415 falls back to USB 2, use a USB 3 cable/port rather than expecting
+reliable synchronized 30 FPS color and depth. The extended calibration and
+camera troubleshooting guide is in
+[apps/camera_calibration/README.md](apps/camera_calibration/README.md).
+
+After a camera crash or `Depth stream start failure`, stop the existing camera
+node before starting another one. A one-time device reset is available from
+either viewer with `--initial-reset`; do not use it while another process owns
+the D415.
 
 ## The one structural thing to understand
 

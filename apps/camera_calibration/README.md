@@ -6,9 +6,9 @@ does not need to be measured: the solver estimates both `world -> camera` and
 the unknown carrier-to-tag transform from the motion.
 
 The entry point is a passive recorder. It starts the camera and calibration
-node, but never starts a controller or sends a robot/hand command. Put the FR3
-into its built-in hand-guiding mode and move the hand slowly while keeping the
-complete tag visible.
+node, but never starts a controller or sends a robot/hand command. Start the
+combined bringup with `gravity_compensation:=true`, then move the hand slowly
+while keeping the complete tag visible.
 
 ## Before running
 
@@ -20,8 +20,84 @@ complete tag visible.
    The camera and robot timestamps must use the same clock.
 4. Build and source the workspace (`rg2` in this workspace).
 
+## Camera connection, ROS graph, and live views
+
+The D415 is a USB 3 camera. Connect it directly to a USB 3 (or faster) host
+port with a USB 3 cable; avoid hubs while bringing it up. On the host,
+`lsusb -t` should show its link at `5000M` or higher. `480M` means USB 2,
+which cannot reliably carry synchronized D415 color and depth at 30 FPS.
+Confirm that the device itself is present with `lsusb -d 8086:0ad3`; do not
+mistake another UVC webcam for the D415.
+
+`docker-compose.yml` passes both `/dev/bus/usb` (used by librealsense control
+transfers) and `/dev/video*` (the V4L2 stream nodes) into the container. The
+workspace itself is bind-mounted: the host checkout is
+`<checkout>/`, and the same files appear in the container at
+`/root/develop_ws/`. The relevant software is:
+
+- `/root/develop_ws/src/realsense_d415/`: the `realsense-ros` source checkout
+  imported by `vcs import src < workspace.repos`.
+- `/root/develop_ws/install/realsense2_camera/`: the built ROS 2 overlay.
+- `/root/develop_ws/apps/camera_calibration/tests/test_camera.py`: RGB/depth
+  viewer.
+- `/root/develop_ws/apps/camera_calibration/tests/test_april_tag.py`: annotated
+  RGB and aligned-depth AprilTag viewer.
+
+One `realsense2_camera` node must be the sole owner of the physical D415. It
+normally runs as `/camera/camera`, publishes raw color and depth under
+`/camera/camera`, and publishes the D415 sensor transforms. The AprilTag
+viewer additionally requires `align_depth.enable:=true`, which provides
+`/camera/camera/aligned_depth_to_color/image_raw` in color-camera pixels.
+The camera never writes footage by itself; ROS topics are live in memory.
+
+Start one camera producer (the recommended 640x480 at 30 FPS D415 profile):
+
+```bash
+ros2 launch realsense2_camera rs_launch.py \
+  device_type:=d415 \
+  camera_namespace:=camera camera_name:=camera \
+  enable_color:=true enable_depth:=true \
+  rgb_camera.color_profile:=640x480x30 \
+  depth_module.depth_profile:=640x480x30
+```
+
+Then inspect its actual output from a second sourced shell:
+
+```bash
+ros2 node list
+ros2 topic list
+ros2 topic hz /camera/camera/color/image_raw
+ros2 topic hz /camera/camera/depth/image_rect_raw
+ros2 run rqt_image_view rqt_image_view
+```
+
+In `rqt_image_view`, select `/camera/camera/color/image_raw` or
+`/camera/camera/depth/image_rect_raw`. This is the best basic live-image check;
+the Python viewers are diagnostic tools and may render more slowly than the
+incoming ROS stream. To save actual footage for later replay, record a rosbag:
+
+```bash
+ros2 bag record -o d415_check \
+  /camera/camera/color/image_raw \
+  /camera/camera/color/camera_info \
+  /camera/camera/depth/image_rect_raw
+```
+
+Run either viewer as the camera producer, or use `--no-launch` if the command
+above is already running. Do not run `test_camera.py` and `test_april_tag.py`
+without `--no-launch` at the same time: that starts two drivers against one USB
+device and causes `Device or resource busy` / depth-stream failures. The
+viewers now detect the usual `/camera/camera` collision and ask you to use
+`--no-launch`.
+
+If the D415 reports `Depth stream start failure` after a crash, stop the active
+camera node and retry one viewer with `--initial-reset`. This resets the
+physical camera, so it must not be used while another process owns the device.
+
 The hardware viewers are useful preflight checks. Close each before starting
-calibration because each launches its own camera by default:
+calibration because each launches its own camera by default. Both request
+640x480x30 by default and redraw at up to 30 Hz; use `--no-launch` when a
+camera node is already running:
 
 ```bash
 ./apps/camera_calibration/tests/test_camera.py
@@ -31,12 +107,13 @@ calibration because each launches its own camera by default:
 
 ## Record the calibration
 
-Start the normal FR3/hand bringup separately, enable the FR3's hand-guiding
-feature, then run the recording entry point:
+Start the FR3/hand bringup with Franka's zero-effort gravity-compensation
+controller, then run the recording entry point:
 
 ```bash
 ros2 launch inspire_franka_bringup inspire_franka.launch.py \
-  robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0
+  robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0 \
+  gravity_compensation:=true
 
 ./apps/camera_calibration/calibrate.py \
   --tag-family tag36h11 --tag-id 0 --tag-size-m 0.040

@@ -152,9 +152,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-diagnostic-updater \
         ros-${ROS_DISTRO}-image-transport \
         ros-${ROS_DISTRO}-rqt-image-view \
+        ros-${ROS_DISTRO}-apriltag \
         python3-matplotlib \
         python3-opencv \
+        python3-scipy \
+        psmisc \
         python3-yaml \
+        usbutils \
+        v4l-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Python simulation and asset-regeneration tooling. The MuJoCo bindings are

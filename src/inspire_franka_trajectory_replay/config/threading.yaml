@@ -1,0 +1,32 @@
+schema_version: 1
+name: threading_homing
+description: Calibrated forgeUltra franka-chi M24 threading reset pose.
+units: radians
+joint_names:
+  - fr3_joint1
+  - fr3_joint2
+  - fr3_joint3
+  - fr3_joint4
+  - fr3_joint5
+  - fr3_joint6
+  - fr3_joint7
+  - pinky_proximal_joint
+  - ring_proximal_joint
+  - middle_proximal_joint
+  - index_proximal_joint
+  - thumb_proximal_pitch_joint
+  - thumb_proximal_yaw_joint
+positions:
+  - -0.348916
+  - -0.033274
+  - -0.026434
+  - -1.799153
+  - 1.368818
+  - 2.028677
+  - -1.846102
+  - 1.0999
+  - 1.0999
+  - 1.0999
+  - 0.44
+  - 0.2
+  - 1.14

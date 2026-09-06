@@ -1,6 +1,8 @@
 """The Franka FR3 on real hardware, on its own.
 
     ros2 launch inspire_franka_bringup arm.launch.py robot_ip:=10.7.7.7
+    ros2 launch inspire_franka_bringup arm.launch.py \
+        robot_ip:=10.7.7.7 gravity_compensation:=true
     ros2 launch inspire_franka_bringup arm.launch.py use_fake_hardware:=true
 
 A thin wrapper over upstream franka_bringup's franka.launch.py. It is here so
@@ -23,8 +25,10 @@ controllers, no motion:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 ARGS = (
@@ -38,6 +42,11 @@ ARGS = (
     ("fake_sensor_commands", "false", "Fake sensor commands (only with use_fake_hardware)."),
     ("joint_state_rate", "30", "Joint state publishing rate, Hz."),
     ("use_rviz", "false", "Start RViz."),
+    (
+        "gravity_compensation",
+        "false",
+        "Start Franka's zero-effort gravity compensation controller for hand guiding.",
+    ),
 )
 
 
@@ -62,10 +71,27 @@ def launch_setup(context, *args, **kwargs):
             launch_arguments={
                 n: LaunchConfiguration(n)
                 for n, _, _ in ARGS
-                # franka.launch.py names this one differently.
-                if n != "use_rviz"
+                # These are options provided by this wrapper, not franka.launch.py.
+                if n not in ("use_rviz", "gravity_compensation")
             }.items(),
-        )
+        ),
+        Node(
+            package="controller_manager",
+            executable="spawner",
+            namespace=LaunchConfiguration("namespace"),
+            arguments=[
+                "gravity_compensation_example_controller",
+                "--controller-manager-timeout",
+                "30",
+            ],
+            parameters=[
+                PathJoinSubstitution(
+                    [FindPackageShare("franka_bringup"), "config", "controllers.yaml"]
+                )
+            ],
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("gravity_compensation")),
+        ),
     ]
 
 

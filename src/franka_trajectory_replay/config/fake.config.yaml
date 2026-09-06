@@ -1,0 +1,13 @@
+# Robot configuration for replay.launch.py with mock (fake) hardware: a command-to-state
+# loopback with no physics. Exercises the ROS side (controller switching, topics, recording)
+# without MuJoCo. Same namespace as tekken.config.yaml so the scripts need no flags.
+ROBOT1:
+  robot_type: "fr3"
+  arm_prefix: ""
+  fake_sensor_commands: "false"
+  joint_state_rate: 30
+  load_gripper: "false"
+  namespace: "NS_1"
+  robot_ip: "dont-care"
+  use_fake_hardware: "true"
+  use_rviz: "false"

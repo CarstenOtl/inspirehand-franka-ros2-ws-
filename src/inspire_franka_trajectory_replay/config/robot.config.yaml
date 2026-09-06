@@ -1,0 +1,10 @@
+ROBOT1:
+  robot_type: "fr3"
+  arm_prefix: ""
+  fake_sensor_commands: "false"
+  joint_state_rate: 30
+  load_gripper: "false"
+  namespace: ""
+  robot_ip: "10.7.7.7"
+  use_fake_hardware: "false"
+  use_rviz: "false"

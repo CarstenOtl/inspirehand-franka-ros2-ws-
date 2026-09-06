@@ -5,11 +5,13 @@ Run this from a shell in which the workspace has been built and sourced::
 
     ./apps/traj_replay/tests/system_check.py --robot-ip 10.7.7.7
 
-The check does not send motion commands.  It launches the FR3 and Inspire hand
-through ``inspire_franka_bringup``, launches the RealSense wrapper constrained
-to a D415, and requires fresh telemetry from all three devices.  On success it
-keeps the launch processes alive until Ctrl-C; use ``--exit-after-check`` for a
-one-shot test which tears them down after printing the report.
+By default the check does not send motion commands.  It launches the FR3 and
+Inspire hand through ``inspire_franka_bringup``, launches the RealSense wrapper
+constrained to a D415, and requires fresh telemetry from all three devices.  Use
+``--gravity-compensation`` to opt into Franka's zero-effort controller for hand
+guiding.  On success it keeps the launch processes alive until Ctrl-C; use
+``--exit-after-check`` for a one-shot test which tears them down after printing
+the report.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import argparse
 from dataclasses import dataclass
 import math
 import os
+from pathlib import Path
 import shlex
 import shutil
 import signal
@@ -37,6 +40,27 @@ class DeviceStatus:
     elapsed: Optional[float] = None
 
 
+def _process_group_is_running(process_group: int) -> bool:
+    """Return whether a non-zombie process still belongs to the launch group."""
+    proc = Path("/proc")
+    if proc.is_dir():
+        for stat_path in proc.glob("[0-9]*/stat"):
+            try:
+                fields = stat_path.read_text().rsplit(")", 1)[1].split()
+                state, group = fields[0], int(fields[2])
+            except (IndexError, OSError, ValueError):
+                continue
+            if group == process_group and state != "Z":
+                return True
+        return False
+
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 class ManagedLaunch:
     """A ROS launch process which can be stopped together with its children."""
 
@@ -47,27 +71,40 @@ class ManagedLaunch:
 
     def start(self) -> None:
         print(f"Starting {self.label}: {shlex.join(self.command)}", flush=True)
-        self.process = subprocess.Popen(self.command, start_new_session=True)
+        guard = Path(__file__).resolve().parents[2] / "process_guard.py"
+        command = [sys.executable, str(guard), *self.command]
+        self.process = subprocess.Popen(command, start_new_session=True)
 
     def returncode(self) -> Optional[int]:
         return None if self.process is None else self.process.poll()
 
     def stop(self) -> None:
-        if self.process is None or self.process.poll() is not None:
+        if self.process is None:
             return
+
+        process_group = self.process.pid
         for sig, timeout in ((signal.SIGINT, 8.0), (signal.SIGTERM, 3.0)):
+            if not _process_group_is_running(process_group):
+                break
             try:
-                os.killpg(self.process.pid, sig)
-                self.process.wait(timeout=timeout)
-                return
+                os.killpg(process_group, sig)
             except ProcessLookupError:
-                return
-            except subprocess.TimeoutExpired:
+                break
+            deadline = time.monotonic() + timeout
+            while (
+                _process_group_is_running(process_group)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+
+        if _process_group_is_running(process_group):
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
                 pass
         try:
-            os.killpg(self.process.pid, signal.SIGKILL)
             self.process.wait(timeout=2.0)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
             pass
 
 
@@ -91,10 +128,22 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-serial", default="", help="Optional D415 serial number.")
     parser.add_argument("--camera-namespace", default="camera")
     parser.add_argument("--camera-name", default="camera")
+    parser.add_argument("--color-profile", default="640x480x30")
+    parser.add_argument("--depth-profile", default="640x480x30")
+    parser.add_argument(
+        "--camera-initial-reset",
+        action="store_true",
+        help="Reset the D415 before opening it; use after a depth-stream failure.",
+    )
     parser.add_argument("--arm-prefix", default="")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument(
         "--fake-arm", action="store_true", help="Use ros2_control fake hardware."
+    )
+    parser.add_argument(
+        "--gravity-compensation",
+        action="store_true",
+        help="Start Franka's zero-effort gravity compensation controller.",
     )
     parser.add_argument(
         "--mock-hand", action="store_true", help="Use the hand's mock transport."
@@ -118,15 +167,18 @@ def _launch_commands(args: argparse.Namespace) -> list[ManagedLaunch]:
         "launch",
         "inspire_franka_bringup",
         "inspire_franka.launch.py",
-        f"robot_ip:={args.robot_ip}",
         f"use_fake_hardware:={'true' if args.fake_arm else 'false'}",
-        f"arm_prefix:={args.arm_prefix}",
+        f"gravity_compensation:={'true' if args.gravity_compensation else 'false'}",
         f"hand_port:={args.hand_port}",
         f"hand_id:={args.hand_id}",
         f"hand_protocol:={args.hand_protocol}",
         f"hand_mock:={'true' if args.mock_hand else 'false'}",
         "start_rviz:=false",
     ]
+    if args.robot_ip:
+        bringup.append(f"robot_ip:={args.robot_ip}")
+    if args.arm_prefix:
+        bringup.append(f"arm_prefix:={args.arm_prefix}")
     camera = [
         "ros2",
         "launch",
@@ -137,8 +189,12 @@ def _launch_commands(args: argparse.Namespace) -> list[ManagedLaunch]:
         f"camera_name:={args.camera_name}",
         "enable_depth:=true",
         "enable_color:=true",
+        f"rgb_camera.color_profile:={args.color_profile}",
+        f"depth_module.depth_profile:={args.depth_profile}",
         f"wait_for_device_timeout:={args.timeout}",
     ]
+    if args.camera_initial_reset:
+        camera.append("initial_reset:=true")
     if args.camera_serial:
         # The upstream launch file requires an underscore to stop ROS from
         # interpreting an all-numeric serial as an integer parameter.
@@ -208,7 +264,9 @@ def _observe(args: argparse.Namespace, launches: Sequence[ManagedLaunch]) -> boo
     camera_base = (args.camera_namespace, args.camera_name)
     node = None
     subscriptions = []
-    rclpy.init(args=None)
+    # argparse already consumed this script's options. Do not let rclpy parse
+    # --robot-ip, --exit-after-check, and the other non-ROS arguments again.
+    rclpy.init(args=[])
     try:
         node = rclpy.create_node("traj_replay_system_check")
         subscriptions = [

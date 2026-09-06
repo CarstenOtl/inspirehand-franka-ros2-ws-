@@ -18,16 +18,13 @@ from pathlib import Path
 import signal
 import shutil
 import subprocess
+import sys
 import threading
+import time
 from typing import Optional, Sequence
 
 
-APRILTAG_DICTIONARIES = {
-    "tag16h5": "DICT_APRILTAG_16h5",
-    "tag25h9": "DICT_APRILTAG_25h9",
-    "tag36h10": "DICT_APRILTAG_36h10",
-    "tag36h11": "DICT_APRILTAG_36h11",
-}
+APRILTAG_FAMILIES = ("tag16h5", "tag25h9", "tag36h10", "tag36h11")
 
 
 def _topic(namespace: str, camera_name: str, suffix: str) -> str:
@@ -56,8 +53,13 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--initial-reset",
+        action="store_true",
+        help="Reset the D415 before opening it; use after a stream-start failure.",
+    )
+    parser.add_argument(
         "--tag-family",
-        choices=tuple(APRILTAG_DICTIONARIES),
+        choices=APRILTAG_FAMILIES,
         default="tag36h11",
     )
     parser.add_argument("--tag-id", type=int, default=0)
@@ -82,6 +84,23 @@ def _parser() -> argparse.ArgumentParser:
         metavar="METRES",
         help="Maximum distance represented by the depth colors (default: 2.0 m).",
     )
+    parser.add_argument(
+        "--color-profile",
+        default="640x480x30",
+        help="RealSense color profile WIDTHxHEIGHTxFPS (default: 640x480x30).",
+    )
+    parser.add_argument(
+        "--depth-profile",
+        default="640x480x30",
+        help="RealSense depth profile WIDTHxHEIGHTxFPS (default: 640x480x30).",
+    )
+    parser.add_argument(
+        "--viewer-hz",
+        type=float,
+        default=30.0,
+        metavar="HZ",
+        help="Maximum GUI refresh rate; this does not change camera FPS (default: 30).",
+    )
     return parser
 
 
@@ -92,7 +111,7 @@ def _start_camera(args: argparse.Namespace) -> Optional[subprocess.Popen[bytes]]
     ros2 = shutil.which("ros2")
     if ros2 is None:
         raise RuntimeError(
-            "ros2 was not found. Source /opt/ros/humble/setup.bash and this "
+            "ros2 was not found. Source /opt/ros/$ROS_DISTRO/setup.bash and this "
             "workspace's install/setup.bash before running the test."
         )
     package_check = subprocess.run(
@@ -109,6 +128,24 @@ def _start_camera(args: argparse.Namespace) -> Optional[subprocess.Popen[bytes]]
             "Then start this test again."
         )
 
+    camera_node = _topic(args.camera_namespace, args.camera_name, "")
+    try:
+        node_list = subprocess.run(
+            [ros2, "node", "list"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        node_list = None
+    if node_list is not None and camera_node in node_list.stdout.splitlines():
+        raise RuntimeError(
+            f"A camera node is already running at {camera_node}. "
+            "Use --no-launch to detect tags from its streams instead of starting "
+            "a second RealSense driver."
+        )
+
     command = [
         ros2,
         "launch",
@@ -119,34 +156,75 @@ def _start_camera(args: argparse.Namespace) -> Optional[subprocess.Popen[bytes]]
         f"camera_name:={args.camera_name}",
         "enable_color:=true",
         "enable_depth:=true",
+        f"rgb_camera.color_profile:={args.color_profile}",
+        f"depth_module.depth_profile:={args.depth_profile}",
         "enable_sync:=true",
         "align_depth.enable:=true",
     ]
+    if args.initial_reset:
+        command.append("initial_reset:=true")
     if args.serial:
         # Preserve an all-numeric serial as a ROS string parameter.
         serial = args.serial
         command.append(f"serial_no:={serial if serial.startswith('_') else '_' + serial}")
 
+    # Keep cleanup outside the GUI process as native libraries can terminate it
+    # without running Python's finally block.
+    guard = Path(__file__).resolve().parents[2] / "process_guard.py"
+    command = [sys.executable, str(guard), *command]
+
     print("Starting RealSense D415 with aligned depth...", flush=True)
     return subprocess.Popen(command, start_new_session=True)
 
 
+def _process_group_is_running(process_group: int) -> bool:
+    """Return whether a non-zombie process still belongs to the launch group."""
+    proc = Path("/proc")
+    if proc.is_dir():
+        for stat_path in proc.glob("[0-9]*/stat"):
+            try:
+                fields = stat_path.read_text().rsplit(")", 1)[1].split()
+                state, group = fields[0], int(fields[2])
+            except (IndexError, OSError, ValueError):
+                continue
+            if group == process_group and state != "Z":
+                return True
+        return False
+
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def _stop_camera(process: Optional[subprocess.Popen[bytes]]) -> None:
-    if process is None or process.poll() is not None:
+    if process is None:
         return
+
+    process_group = process.pid
     for sig, timeout in ((signal.SIGINT, 8.0), (signal.SIGTERM, 3.0)):
+        if not _process_group_is_running(process_group):
+            break
         try:
-            os.killpg(process.pid, sig)
-            process.wait(timeout=timeout)
-            return
+            os.killpg(process_group, sig)
         except ProcessLookupError:
-            return
-        except subprocess.TimeoutExpired:
+            break
+        deadline = time.monotonic() + timeout
+        while (
+            _process_group_is_running(process_group)
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+
+    if _process_group_is_running(process_group):
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
             pass
     try:
-        os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=2.0)
-    except (ProcessLookupError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
         pass
 
 
@@ -159,37 +237,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("--axis-length must be greater than zero")
     if args.depth_max <= 0.0:
         parser.error("--depth-max must be greater than zero")
+    if args.viewer_hz <= 0.0:
+        parser.error("--viewer-hz must be greater than zero")
 
     # Delay optional imports so --help works even outside the ROS environment.
     import cv2
     import matplotlib.pyplot as plt
     import numpy as np
     import rclpy
+    from camera_calibration.apriltag_detector import AprilTagDetector
     from cv_bridge import CvBridge
     from matplotlib.cm import ScalarMappable
     from matplotlib.colors import Normalize
+    from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
     from rclpy.qos import qos_profile_sensor_data
+    from rclpy.signals import SignalHandlerOptions
     from sensor_msgs.msg import CameraInfo, Image
 
-    if not hasattr(cv2, "aruco"):
-        raise RuntimeError(
-            "OpenCV has no aruco module; install the workspace's python3-opencv dependency"
-        )
-
-    dictionary_id = getattr(
-        cv2.aruco, APRILTAG_DICTIONARIES[args.tag_family]
-    )
-    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
-    detector_parameters = (
-        cv2.aruco.DetectorParameters()
-        if hasattr(cv2.aruco, "DetectorParameters")
-        else cv2.aruco.DetectorParameters_create()
-    )
-    detector = (
-        cv2.aruco.ArucoDetector(dictionary, detector_parameters)
-        if hasattr(cv2.aruco, "ArucoDetector")
-        else None
-    )
+    detector = AprilTagDetector(args.tag_family)
 
     half = args.tag_size * 0.5
     object_corners = np.asarray(
@@ -202,13 +267,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dtype=np.float64,
     )
 
-    camera_process = _start_camera(args)
+    camera_process = None
     node = None
+    executor = None
     spin_thread = None
     stop_spinning = threading.Event()
+    shutdown_requested = threading.Event()
+    previous_sigint_handler = None
     state_lock = threading.Lock()
     bridge = CvBridge()
 
+    pending_color: Optional[np.ndarray] = None
+    pending_depth: Optional[np.ndarray] = None
     color_frame: Optional[np.ndarray] = None
     depth_frame: Optional[np.ndarray] = None
     camera_matrix: Optional[np.ndarray] = None
@@ -253,28 +323,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             distortion = coefficients
             camera_size = (int(message.width), int(message.height))
 
-    def detect_markers(gray_image: np.ndarray):
-        if detector is not None:
-            return detector.detectMarkers(gray_image)
-        return cv2.aruco.detectMarkers(
-            gray_image, dictionary, parameters=detector_parameters
-        )
-
-    def color_callback(message: Image) -> None:
+    def process_color(image: np.ndarray) -> None:
         nonlocal color_frame, tag_pose, tag_corners, detection_status
-        try:
-            image = np.asarray(
-                bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
-            ).copy()
-        except Exception as exc:
-            if node is not None:
-                node.get_logger().error(f"Could not decode color image: {exc}")
-            return
-
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        corners, identifiers, _ = detect_markers(gray)
-        if identifiers is not None:
-            cv2.aruco.drawDetectedMarkers(image, corners, identifiers)
+        detections = detector.detect(gray)
+        for detection in detections:
+            outline = np.rint(detection.corners).astype(np.int32)
+            cv2.polylines(image, [outline], True, (0, 255, 0), 2, cv2.LINE_AA)
+            center = np.rint(np.mean(detection.corners, axis=0)).astype(int)
+            cv2.putText(
+                image,
+                str(detection.identifier),
+                tuple(center),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
 
         with state_lock:
             matrix = None if camera_matrix is None else camera_matrix.copy()
@@ -285,64 +351,65 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         status = f"tag {args.tag_id} not detected"
         text_color = (0, 0, 255)
 
-        if identifiers is not None:
-            matches = np.flatnonzero(identifiers.reshape(-1) == args.tag_id)
-            if len(matches):
-                selected_corners = np.asarray(
-                    corners[int(matches[0])], dtype=np.float64
-                ).reshape(4, 2)
-                if matrix is None:
-                    status = f"tag {args.tag_id} detected; waiting for CameraInfo"
-                    text_color = (0, 200, 255)
-                else:
-                    success, rotation, translation = cv2.solvePnP(
+        matches = [
+            detection
+            for detection in detections
+            if detection.identifier == args.tag_id
+        ]
+        if matches:
+            selected_corners = matches[0].corners
+            if matrix is None:
+                status = f"tag {args.tag_id} detected; waiting for CameraInfo"
+                text_color = (0, 200, 255)
+            else:
+                success, rotation, translation = cv2.solvePnP(
+                    object_corners,
+                    selected_corners,
+                    matrix,
+                    coefficients,
+                    flags=cv2.SOLVEPNP_IPPE_SQUARE,
+                )
+                if success and float(translation.reshape(3)[2]) > 0.0:
+                    projected, _ = cv2.projectPoints(
                         object_corners,
-                        selected_corners,
+                        rotation,
+                        translation,
                         matrix,
                         coefficients,
-                        flags=cv2.SOLVEPNP_IPPE_SQUARE,
                     )
-                    if success and float(translation.reshape(3)[2]) > 0.0:
-                        projected, _ = cv2.projectPoints(
-                            object_corners,
-                            rotation,
-                            translation,
-                            matrix,
-                            coefficients,
-                        )
-                        error = float(
-                            np.sqrt(
-                                np.mean(
-                                    np.sum(
-                                        (
-                                            projected.reshape(4, 2)
-                                            - selected_corners
-                                        )
-                                        ** 2,
-                                        axis=1,
+                    error = float(
+                        np.sqrt(
+                            np.mean(
+                                np.sum(
+                                    (
+                                        projected.reshape(4, 2)
+                                        - selected_corners
                                     )
+                                    ** 2,
+                                    axis=1,
                                 )
                             )
                         )
-                        cv2.drawFrameAxes(
-                            image,
-                            matrix,
-                            coefficients,
-                            rotation,
-                            translation,
-                            args.axis_length,
-                            3,
-                        )
-                        xyz = translation.reshape(3)
-                        status = (
-                            f"tag {args.tag_id}: x={xyz[0]:+.3f}, "
-                            f"y={xyz[1]:+.3f}, z={xyz[2]:.3f} m; "
-                            f"error={error:.2f}px"
-                        )
-                        text_color = (0, 220, 0)
-                        pose = (rotation.copy(), translation.copy())
-                    else:
-                        status = f"tag {args.tag_id} detected; pose failed"
+                    )
+                    cv2.drawFrameAxes(
+                        image,
+                        matrix,
+                        coefficients,
+                        rotation,
+                        translation,
+                        args.axis_length,
+                        3,
+                    )
+                    xyz = translation.reshape(3)
+                    status = (
+                        f"tag {args.tag_id}: x={xyz[0]:+.3f}, "
+                        f"y={xyz[1]:+.3f}, z={xyz[2]:.3f} m; "
+                        f"error={error:.2f}px"
+                    )
+                    text_color = (0, 220, 0)
+                    pose = (rotation.copy(), translation.copy())
+                else:
+                    status = f"tag {args.tag_id} detected; pose failed"
 
         draw_text(image, status, text_color)
         with state_lock:
@@ -353,23 +420,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             detection_status = status
 
-    def depth_callback(message: Image) -> None:
-        nonlocal depth_frame
+    def color_callback(message: Image) -> None:
+        nonlocal pending_color
         try:
-            raw_depth = np.asarray(
-                bridge.imgmsg_to_cv2(message, desired_encoding="passthrough")
-            )
-            depth_metres = (
-                raw_depth.astype(np.float32) * 0.001
-                if message.encoding.lower() in {"16uc1", "mono16"}
-                else raw_depth.astype(np.float32)
-            )
-            depth_metres[~np.isfinite(depth_metres)] = 0.0
+            image = np.asarray(
+                bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
+            ).copy()
         except Exception as exc:
             if node is not None:
-                node.get_logger().error(f"Could not decode depth image: {exc}")
+                node.get_logger().error(f"Could not decode color image: {exc}")
             return
+        with state_lock:
+            pending_color = image
 
+    def process_depth(depth_metres: np.ndarray) -> None:
+        nonlocal depth_frame
         normalized = np.clip(
             depth_metres * (255.0 / args.depth_max), 0.0, 255.0
         ).astype(np.uint8)
@@ -425,9 +490,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         with state_lock:
             depth_frame = cv2.cvtColor(annotation, cv2.COLOR_BGR2RGB)
 
+    def depth_callback(message: Image) -> None:
+        nonlocal pending_depth
+        try:
+            raw_depth = np.asarray(
+                bridge.imgmsg_to_cv2(message, desired_encoding="passthrough")
+            )
+            depth_metres = (
+                raw_depth.astype(np.float32) * 0.001
+                if message.encoding.lower() in {"16uc1", "mono16"}
+                else raw_depth.astype(np.float32)
+            )
+            depth_metres[~np.isfinite(depth_metres)] = 0.0
+        except Exception as exc:
+            if node is not None:
+                node.get_logger().error(f"Could not decode depth image: {exc}")
+            return
+        with state_lock:
+            pending_depth = depth_metres
+
+    def request_shutdown(_signum: int, _frame: object) -> None:
+        shutdown_requested.set()
+
     try:
-        rclpy.init(args=[])
+        previous_sigint_handler = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, request_shutdown)
+        # Start inside the protected region so Ctrl-C during ROS/node setup still
+        # tears down the complete launch process group.
+        camera_process = _start_camera(args)
+        rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
         node = rclpy.create_node("apriltag_camera_viewer")
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
         color_topic = _topic(
             args.camera_namespace, args.camera_name, "color/image_raw"
         )
@@ -462,8 +556,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         node.get_logger().info(f"Intrinsics: {camera_info_topic}")
 
         def spin() -> None:
-            while not stop_spinning.is_set() and rclpy.ok():
-                rclpy.spin_once(node, timeout_sec=0.1)
+            try:
+                while not stop_spinning.is_set() and rclpy.ok():
+                    executor.spin_once(timeout_sec=0.1)
+            except ExternalShutdownException:
+                pass
 
         spin_thread = threading.Thread(target=spin, name="ros-spin", daemon=True)
         spin_thread.start()
@@ -495,6 +592,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         figure.tight_layout(rect=(0.0, 0.04, 1.0, 1.0))
 
         def update_view() -> None:
+            nonlocal pending_color, pending_depth
+            if shutdown_requested.is_set():
+                plt.close(figure)
+                return
+
+            with state_lock:
+                next_color = pending_color
+                next_depth = pending_depth
+                pending_color = None
+                pending_depth = None
+
+            # Keep OpenCV's ArUco and drawing calls on the GUI thread. OpenCV
+            # 4.6 can segfault when detection runs concurrently with TkAgg.
+            if next_color is not None:
+                process_color(next_color)
+            if next_depth is not None:
+                process_depth(next_depth)
+
             with state_lock:
                 color = None if color_frame is None else color_frame.copy()
                 depth = None if depth_frame is None else depth_frame.copy()
@@ -516,7 +631,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
             figure.canvas.draw_idle()
 
-        timer = figure.canvas.new_timer(interval=50)
+        timer = figure.canvas.new_timer(interval=max(1, round(1000.0 / args.viewer_hz)))
         timer.add_callback(update_view)
         timer.start()
         plt.show()
@@ -530,11 +645,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         stop_spinning.set()
         if spin_thread is not None:
             spin_thread.join(timeout=2.0)
+        if executor is not None:
+            executor.shutdown()
         if node is not None:
             node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
         _stop_camera(camera_process)
+        if previous_sigint_handler is not None:
+            signal.signal(signal.SIGINT, previous_sigint_handler)
 
 
 if __name__ == "__main__":

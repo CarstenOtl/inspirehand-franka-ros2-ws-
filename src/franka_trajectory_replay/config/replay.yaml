@@ -1,0 +1,56 @@
+# Run configuration for replay_trajectory.py / simulate_trajectory.py.
+#
+# Every key here has a default in franka_trajectory_replay/runconfig.py; this file only needs
+# the ones you change.
+
+namespace: NS_1                         # as in franka_bringup/config/tekken.config.yaml
+robot_type: fr3
+arm_prefix: ""
+controller_name: trajectory_replay_controller
+controller_manager: controller_manager  # relative to the namespace
+joint_state_topic: joint_states
+
+tcp:
+  # Frame the TCP metrics are computed for: the flange (fr3_link8) plus an optional fixed
+  # offset. With the Franka hand mounted the hand TCP is 0.1034 m along z and rotated -45 deg
+  # about z: offset_xyz [0, 0, 0.1034], offset_rpy [0, 0, -0.7853982].
+  frame: fr3_link8
+  offset_xyz: [0.0, 0.0, 0.0]
+  offset_rpy: [0.0, 0.0, 0.0]
+
+prepare:
+  rate: 1000            # control rate the stream is resampled to (the FCI cycle is 1 kHz)
+  interpolation: cubic  # cubic: natural spline through the waypoints; linear: straight lines
+                        # between the waypoints with parabolic corner blends of blend_time
+  blend_time: 0.04      # seconds, linear mode only; keep it below the waypoint spacing (1/15 s)
+  cutoff_hz: 0.0        # zero-phase Butterworth low-pass on the positions; 0 = off
+  hold_start: 0.5       # seconds of standstill prepended / appended to the stream
+  hold_end: 0.5
+  lead_in: 0.5          # minimum duration of the ramp from rest into the capture's first velocity
+  lead_out: 0.5         # ... and from its last velocity back to rest
+  lead_max_acceleration: 2.5   # rad/s^2; the ramps are stretched to respect this
+  time_scale: 1.0       # >= 1 slows the capture down uniformly
+  auto_scale: true      # slow down further until the limit check passes
+  velocity_margin: 0.8      # fraction of the FR3 limit the prepared stream may use
+  acceleration_margin: 0.5
+  jerk_margin: 0.5
+  send_rate: 1000       # points per second handed to the controller (cubic Hermite in between)
+
+recording:
+  storage_id: sqlite3
+  # Relative to the namespace. Topics that are not being published are skipped with a note
+  # (robot_state does not exist on fake or simulated hardware), except the required ones.
+  topics:
+    - trajectory_replay_controller/controller_state
+    - trajectory_replay_controller/status
+    - franka_robot_state_broadcaster/robot_state
+    - joint_states
+  required:
+    - trajectory_replay_controller/controller_state
+
+timing:
+  settle_seconds: 1.0   # dwell after every move before the next step
+  cycles: 1             # how many times the trajectory is played (returning to its start between)
+  goto_timeout: 60.0
+
+output_dir: ~/franka_replay_runs

@@ -1,0 +1,102 @@
+# Controller manager configuration for trajectory replay on the real FR3.
+#
+# Passed to franka.launch.py via `controllers_yaml`, so franka_bringup's own controllers.yaml
+# stays untouched. It therefore has to declare every controller the bringup spawns
+# (joint_state_broadcaster, franka_robot_state_broadcaster) as well.
+#
+# One `/**` block on purpose: rcl_yaml_param_parser merges repeated keys, a standards-compliant
+# YAML parser keeps only the last one.
+
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+      thread_priority: 98
+
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+        state_interfaces:
+          robot_state
+
+      trajectory_replay_controller:
+        type: franka_trajectory_replay/TrajectoryReplayController
+
+      # Kept available for jogging the arm to a sane start configuration by hand; the replay
+      # script deactivates it when it activates the replay controller.
+      move_to_start_example_controller:
+        type: franka_example_controllers/MoveToStartExampleController
+
+  franka_robot_state_broadcaster:
+    ros__parameters:
+      # ~/robot_state (the full FrankaRobotState) always publishes at 1 kHz; that is the
+      # measurement topic. The convenience topics are not recorded, so they are throttled.
+      convenience_publish_rate: 100
+
+  move_to_start_example_controller:
+    ros__parameters:
+      k_gains: [600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0]
+      d_gains: [30.0, 30.0, 30.0, 30.0, 10.0, 10.0, 5.0]
+
+  trajectory_replay_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+
+      # "position": the joint position command interface. franka_hardware then runs libfranka's
+      # joint position motion generator with the robot's internal joint impedance controller
+      # (ControllerMode::kJointImpedance) - the arm's default control mode. The stiffness of
+      # that controller is whatever Desk / setJointImpedance last set (libfranka default
+      # 3000 3000 3000 2500 2500 2000 2000 Nm/rad).
+      # "effort": see controllers_effort.yaml.
+      command_interface: position
+
+      # franka_hardware applies neither filtering nor rate limiting to position commands, so
+      # this controller re-implements libfranka's limitRate for joint positions (velocity,
+      # acceleration, jerk, with the FR3's position-dependent velocity limits) as a last line
+      # of defence. It should never engage on a properly prepared trajectory; the status topic
+      # counts how often it did, and the report shows it.
+      rate_limit: true
+      max_acceleration: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+      max_jerk: [5000.0, 5000.0, 5000.0, 5000.0, 5000.0, 5000.0, 5000.0]
+
+      # A trajectory is rejected outright (nothing moves) if any segment of it exceeds this
+      # fraction of the joint velocity / acceleration limit. prepare.py uses 0.8 / 0.5 by
+      # default, so a stream that passed preparation has headroom here.
+      trajectory_velocity_scale: 1.0
+      trajectory_acceleration_scale: 1.0
+
+      # Point-to-point moves (to the first trajectory point, back home): one synchronous quintic
+      # ramp on all seven joints (zero velocity and acceleration at both ends, never a jump).
+      # Its duration is at least goto_min_duration and is stretched further so that the peak
+      # velocity and acceleration stay below the two limits: a 1.5 rad step takes 5.6 s.
+      goto_max_velocity: 0.5
+      goto_max_acceleration: 1.0
+      goto_min_duration: 5.0
+
+      # Refuse a goto further than this from the current command, per joint. A sanity guard
+      # against a trajectory captured in a completely different part of the workspace, not a
+      # speed limit - the ramp above is what keeps a long move slow (3 rad takes 11 s).
+      max_joint_step: 3.0
+      # The trajectory has to start this close to where the command currently is.
+      max_trajectory_start_error: 0.05
+
+      # Abort: decelerate to a stop over this many seconds and hold.
+      abort_stop_duration: 0.5
+      status_rate: 50.0
+
+      # Collision thresholds, applied over service_server/set_full_collision_behavior when the
+      # controller configures - the same values franka_example_controllers install before the
+      # upstream examples run. Raising the force thresholds raises the force at which the
+      # robot stops protecting itself.
+      set_collision_behavior: true
+      lower_torque_thresholds_nominal:      [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]
+      upper_torque_thresholds_nominal:      [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
+      lower_torque_thresholds_acceleration: [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]
+      upper_torque_thresholds_acceleration: [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
+      lower_force_thresholds_nominal:       [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
+      upper_force_thresholds_nominal:       [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
+      lower_force_thresholds_acceleration:  [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
+      upper_force_thresholds_acceleration:  [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]

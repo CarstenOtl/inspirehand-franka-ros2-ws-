@@ -1,7 +1,8 @@
 """Both assets on real hardware: the FR3 over the FCI, the Inspire hand over RS485.
 
     ros2 launch inspire_franka_bringup inspire_franka.launch.py \
-        robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0
+        robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0 \
+        gravity_compensation:=true
 
     # neither piece of hardware present, everything else identical
     ros2 launch inspire_franka_bringup inspire_franka.launch.py \
@@ -61,6 +62,11 @@ ARM_ARGS = (
     ("load_gripper", "false", "Use Franka's two-finger gripper as the end effector."),
     ("use_fake_hardware", "false", "Use ros2_control mock hardware instead of the FCI."),
     ("joint_state_rate", "30", "Arm joint state publishing rate, Hz."),
+    (
+        "gravity_compensation",
+        "false",
+        "Start Franka's zero-effort gravity compensation controller for hand guiding.",
+    ),
 )
 
 # Prefixed with hand_ so that `mock` and `use_fake_hardware` cannot be confused

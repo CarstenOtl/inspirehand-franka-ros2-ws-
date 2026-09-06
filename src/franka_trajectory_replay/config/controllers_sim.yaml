@@ -1,0 +1,40 @@
+# Controller manager configuration for the MuJoCo-backed stack (sim.launch.py).
+#
+# Same replay controller and parameters as controllers.yaml, minus everything that needs
+# franka_hardware: no franka_robot_state_broadcaster (there is no robot_state interface), and
+# no collision-behavior service call.
+
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+
+      trajectory_replay_controller:
+        type: franka_trajectory_replay/TrajectoryReplayController
+
+  trajectory_replay_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+      command_interface: position
+      rate_limit: true
+      max_acceleration: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+      max_jerk: [5000.0, 5000.0, 5000.0, 5000.0, 5000.0, 5000.0, 5000.0]
+      trajectory_velocity_scale: 1.0
+      trajectory_acceleration_scale: 1.0
+      goto_max_velocity: 0.5
+      goto_max_acceleration: 1.0
+      goto_min_duration: 5.0
+      max_joint_step: 3.0
+      max_trajectory_start_error: 0.05
+      abort_stop_duration: 0.5
+      status_rate: 50.0
+      # effort-mode parameters, used when command_interface is switched to effort here
+      k_gains: [600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0]
+      d_gains: [30.0, 30.0, 30.0, 30.0, 10.0, 10.0, 5.0]
+      coriolis_compensation: false   # no franka robot_model interface in simulation
+      torque_rate_limit: 1.0
+      set_collision_behavior: false

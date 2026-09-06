@@ -3,6 +3,9 @@
 /install
 /log
 
+# Local camera-calibration captures/results.
+/calibration_run*.log
+
 # Corporate root CAs for TLS inspection - machine-specific, never committed.
 docker/certs/*.crt
 

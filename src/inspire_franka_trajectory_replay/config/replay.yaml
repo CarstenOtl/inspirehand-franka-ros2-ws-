@@ -1,0 +1,29 @@
+# The combined hardware bringup uses the global namespace.
+namespace: ""
+robot_type: fr3
+arm_prefix: ""
+controller_name: trajectory_replay_controller
+controller_manager: controller_manager
+joint_state_topic: joint_states
+
+prepare:
+  rate: 1000
+  interpolation: cubic
+  blend_time: 0.04
+  cutoff_hz: 0.0
+  hold_start: 0.5
+  hold_end: 0.5
+  lead_in: 0.5
+  lead_out: 0.5
+  lead_max_acceleration: 2.5
+  time_scale: 1.0
+  auto_scale: true
+  velocity_margin: 0.8
+  acceleration_margin: 0.5
+  jerk_margin: 0.5
+  send_rate: 1000
+
+timing:
+  settle_seconds: 1.0
+  cycles: 1
+  goto_timeout: 60.0
