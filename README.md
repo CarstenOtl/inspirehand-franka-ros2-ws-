@@ -235,10 +235,11 @@ no error at all — just a robot that quietly does the wrong thing.
   is a major version newer than the v2.6.0 line used previously on this machine,
   so treat the first FCI connection as unproven. `fci_check` is the cheapest
   first step.
-- **Flange mounting — kinematics present, offset a placeholder.** The default is
-  a bench hand, which is how the hardware actually sits. `hand_mount:=flange`
-  works and is oriented correctly, but the 10 mm adapter offset is a guess and
-  appears in two files that must agree.
+- **Flange mounting.** The default is a bench hand, which is how the hardware
+  actually sits. `hand_mount:=flange` uses forgeUltra's franka-chi mounting
+  convention: zero flange-to-palm translation and quaternion
+  `(w, x, y, z) = (0.5, -0.5, -0.5, 0.5)`. The equivalent transforms in the
+  Xacro and MJCF wrapper must remain synchronized.
 
 ### A note on linters
 

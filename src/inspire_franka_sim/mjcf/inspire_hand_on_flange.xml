@@ -7,13 +7,15 @@
 
        - materialise the fr3_link8 body, which Menagerie's FR3 does not have
          (it ends at fr3_link7 plus `attachment_site`);
-       - give the hand its own mount offset from that flange, which fr3.xml's
-         attach frame cannot express on its own.
+       - apply the same flange-to-palm transform as forgeUltra's franka-chi
+         asset, accounting for this model's intermediate hand_mount frame.
 
-       The 10 mm offset is a PLACEHOLDER for the adapter plate, and must be kept
-       equal to hand_flange_xyz in
-       inspire_franka_description/urdf/inspire_franka.urdf.xacro. If the two
-       disagree, MuJoCo and TF put the fingertips in different places. -->
+       franka-chi welds fr3_link8 directly to palm at zero translation with
+       q_wxyz=(0.5, -0.5, -0.5, 0.5). This hand model already rotates
+       hand_mount to hand_base_link by rpy=(-pi/2, 0, pi), so a -pi/2 yaw here
+       composes to exactly that flange-to-palm quaternion. Keep this transform
+       equal to hand_flange_xyz/rpy in
+       inspire_franka_description/urdf/inspire_franka.urdf.xacro. -->
 
   <asset>
     <model name="inspire_hand" file="inspire_hand_right.xml"/>
@@ -21,7 +23,7 @@
 
   <worldbody>
     <body name="fr3_link8">
-      <frame pos="0 0 0.010">
+      <frame quat="0.7071067811865476 0 0 -0.7071067811865476">
         <attach model="inspire_hand" prefix=""/>
       </frame>
     </body>

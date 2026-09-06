@@ -59,6 +59,28 @@ HAND_FOLLOWERS = (
     "thumb_distal_joint",
 )
 CONTROLLED_JOINTS = ARM_JOINTS + HAND_JOINTS
+FRANKA_CHI_FLANGE_TO_PALM_QUAT = np.array((0.5, -0.5, -0.5, 0.5))
+PICKUP_INIT = dict(
+    zip(
+        CONTROLLED_JOINTS,
+        (
+            -0.392613,
+            0.004288,
+            -0.072713,
+            -1.811251,
+            0.592754,
+            2.280553,
+            -2.620279,
+            1.0999,
+            1.0999,
+            1.0999,
+            0.44,
+            0.2,
+            1.14,
+        ),
+        strict=True,
+    )
+)
 
 
 def _require_mujoco() -> Any:
@@ -232,7 +254,35 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
     model, data, _ = load_dummy_scene()
     assert model.nu == len(CONTROLLED_JOINTS)
     assert _named_id(model, mujoco.mjtObj.mjOBJ_BODY, "fr3_link7") >= 0
-    assert _named_id(model, mujoco.mjtObj.mjOBJ_BODY, "hand_base_link") >= 0
+    flange_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, "fr3_link8")
+    palm_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, "hand_base_link")
+
+    assert np.allclose(data.xpos[palm_id], data.xpos[flange_id], atol=1e-9)
+    flange_inverse = data.xquat[flange_id].copy()
+    flange_inverse[1:] *= -1.0
+    flange_to_palm = np.empty(4)
+    mujoco.mju_mulQuat(flange_to_palm, flange_inverse, data.xquat[palm_id])
+    assert np.isclose(
+        abs(np.dot(flange_to_palm, FRANKA_CHI_FLANGE_TO_PALM_QUAT)),
+        1.0,
+        atol=1e-6,
+    )
+
+    hand_body_ids = set()
+    for body_id in range(model.nbody):
+        ancestor = body_id
+        while ancestor > 0:
+            if ancestor == palm_id:
+                hand_body_ids.add(body_id)
+                break
+            ancestor = int(model.body_parentid[ancestor])
+    hand_geom_ids = [
+        geom_id for geom_id in range(model.ngeom)
+        if int(model.geom_bodyid[geom_id]) in hand_body_ids
+    ]
+    assert hand_geom_ids
+    for geom_id in hand_geom_ids:
+        assert np.allclose(model.geom_rgba[geom_id], (1.0, 1.0, 1.0, 1.0))
 
     for joint_name in CONTROLLED_JOINTS:
         actuator_id = _named_id(
@@ -241,6 +291,7 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
         joint_id = _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         qpos_address = int(model.jnt_qposadr[joint_id])
         low, high = model.jnt_range[joint_id]
+        assert np.isclose(data.qpos[qpos_address], PICKUP_INIT[joint_name])
         assert model.actuator_biastype[actuator_id] == mujoco.mjtBias.mjBIAS_AFFINE
         assert np.allclose(model.actuator_ctrlrange[actuator_id], (low, high))
         assert np.isclose(data.ctrl[actuator_id], data.qpos[qpos_address])

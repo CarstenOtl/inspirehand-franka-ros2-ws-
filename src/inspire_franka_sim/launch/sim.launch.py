@@ -244,7 +244,7 @@ def generate_launch_description():
                 default_value="bench",
                 description="'bench' - the hand stands on the table beside the arm, "
                 "unattached (the default, matching the real setup). 'flange' - bolted "
-                "to the arm's flange; note the adapter offset is a placeholder.",
+                "to the arm using forgeUltra's franka-chi flange-to-palm transform.",
             ),
             DeclareLaunchArgument(
                 "hardware_type",

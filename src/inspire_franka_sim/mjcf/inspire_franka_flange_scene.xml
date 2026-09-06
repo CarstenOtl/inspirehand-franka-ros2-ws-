@@ -2,8 +2,9 @@
   <!-- The Inspire hand bolted to the FR3's flange. `hand_mount:=flange`.
 
        Differs from the bench scene only in binding fr3.xml's `end_effector`
-       slot to the hand wrapper instead of the empty stub. The mount offset
-       lives in inspire_hand_on_flange.xml and is a PLACEHOLDER - see there.
+       slot to the hand wrapper instead of the empty stub. The mount transform
+       lives in inspire_hand_on_flange.xml and matches forgeUltra's franka-chi
+       fr3_link8-to-palm transform.
 
        <attach> merges the hand's bodies, meshes, actuators, equality
        constraints and contact excludes into this model, and the hand keeps its

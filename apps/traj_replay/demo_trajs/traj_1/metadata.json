@@ -1,0 +1,208 @@
+{
+  "replay": "sequential-threading",
+  "threading_replay": "sequential-threading",
+  "threading_task": "Isaac-Forge-Franka-Threading-M24-v0",
+  "threading_checkpoint": "/home/chi-zhang/projects/forgeUltra/reference/franka-chi/forge_ultra/tasks/forge_franka_threading/logs/rl_games/ForgeTg2/franka_threading-Forge-franka-threading-m24-fr3-m24-threading-512-2026-09-04_17-27-00/nn/ForgeTg2.pth",
+  "threading_rollout_mode": "deterministic_mean",
+  "threading_policy_dt": 0.06666666666666667,
+  "threading_physics_dt": 0.008333333333333333,
+  "threading_release_motion": "manual",
+  "threading_direction": "clockwise",
+  "threading_target_turn_deg": 59.99999999999999,
+  "threading_seed": 0,
+  "threading_randomize_initial_pose": false,
+  "threading_initial_tcp_xyz_noise_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "threading_initial_nut_yaw_noise_deg": 0.0,
+  "threading_randomize_retreat_waypoints": false,
+  "threading_retreat_waypoint_arm_noise_rad": 0.0,
+  "threading_num_envs": 1,
+  "threading_num_runs": 22,
+  "threading_runs_per_env": 22,
+  "threading_disturbance_mode": "none",
+  "threading_impulse_time_range_s": [
+    0.25,
+    1.0
+  ],
+  "threading_impulse_magnitude_range_ns": [
+    0.05,
+    0.25
+  ],
+  "threading_impulse_seed": 0,
+  "domain_randomization_enabled": false,
+  "threading_scene_robot_base_pos": [
+    1.2,
+    0.0,
+    -0.333
+  ],
+  "threading_scene_bolt_base_pos": [
+    0.61,
+    0.0,
+    0.05
+  ],
+  "threading_scene_table_surface_z": 0.55,
+  "threading_scene_viewer_eye": [
+    -0.5,
+    -0.7,
+    0.5
+  ],
+  "threading_release_controller": "scripted-forge-osc",
+  "threading_thread_joint_hold": true,
+  "robot_motion_field": "joint_pos",
+  "joint_targets_recorded": false,
+  "joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+    "index_joint_0",
+    "little_joint_0",
+    "middle_joint_0",
+    "ring_joint_0",
+    "thumb_joint_0",
+    "index_joint_1",
+    "little_joint_1",
+    "middle_joint_1",
+    "ring_joint_1",
+    "thumb_joint_1",
+    "thumb_joint_2",
+    "thumb_joint_3"
+  ],
+  "real_world_replay_skipped": "robot does not use the TG2 impedance-joint-PD joint contract",
+  "threading_transition_control_mode": "osc",
+  "trajectory_name": "traj_1",
+  "schema_version": 3,
+  "created_at": "2026-09-05T15:11:53.088278",
+  "sample_count": 1907,
+  "data_file": "replay_data.npz",
+  "fields": {
+    "sample_time_s": [
+      1907
+    ],
+    "sample_dt_s": [
+      1907
+    ],
+    "wall_time_s": [
+      1907
+    ],
+    "step": [
+      1907
+    ],
+    "task_phase": [
+      1907
+    ],
+    "cycle": [
+      1907
+    ],
+    "replay_phase": [
+      1907
+    ],
+    "joint_pos": [
+      1907,
+      1,
+      19
+    ],
+    "joint_vel": [
+      1907,
+      1,
+      19
+    ],
+    "tcp_pos": [
+      1907,
+      1,
+      3
+    ],
+    "tcp_quat": [
+      1907,
+      1,
+      4
+    ],
+    "nut_pos": [
+      1907,
+      1,
+      3
+    ],
+    "nut_quat": [
+      1907,
+      1,
+      4
+    ],
+    "nut_lin_vel": [
+      1907,
+      1,
+      3
+    ],
+    "nut_ang_vel": [
+      1907,
+      1,
+      3
+    ],
+    "threading_turn_start_quat": [
+      1907,
+      1,
+      4
+    ],
+    "threading_target_pos": [
+      1907,
+      1,
+      3
+    ],
+    "threading_target_quat": [
+      1907,
+      1,
+      4
+    ],
+    "threading_turn_progress_rad": [
+      1907,
+      1
+    ],
+    "threading_proper_grip": [
+      1907,
+      1
+    ],
+    "threading_grasped_once": [
+      1907,
+      1
+    ],
+    "threading_grasp_face_index": [
+      1907,
+      1
+    ],
+    "threading_target_grasp_face_index": [
+      1907,
+      1
+    ],
+    "debug_nut_frame_pos": [
+      1907,
+      1,
+      3
+    ],
+    "debug_nut_frame_quat": [
+      1907,
+      1,
+      4
+    ]
+  },
+  "trajectory_layout": "time, environment, component",
+  "temporal_alignment": {},
+  "coordinate_convention": {
+    "tcp_position": "environment-relative metres",
+    "nut_position": "environment-relative metres",
+    "quaternion": "WXYZ",
+    "joint_position": "radians",
+    "joint_velocity": "radians/second"
+  },
+  "timing": {
+    "clock": "logical simulation time",
+    "sample_period_s": 0.06666666666666667,
+    "sample_frequency_hz": 15.0,
+    "wall_time_field": "wall_time_s (monotonic elapsed diagnostic only)"
+  },
+  "recording_frequency_hz": 15.0
+}

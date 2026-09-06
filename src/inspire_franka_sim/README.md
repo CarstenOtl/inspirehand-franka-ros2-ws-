@@ -105,10 +105,11 @@ physics, not a tuning failure.
 
 ## Known rough edges
 
-- **The flange mount offset is a placeholder.** 10 mm, in two places that must
-  agree: `hand_flange_xyz` in the description and the frame in
-  `mjcf/inspire_hand_on_flange.xml`. The rotation is right; the offset is a
-  guess at an adapter plate nobody has measured.
+- **The flange mount follows forgeUltra's franka-chi convention.** Its composed
+  `fr3_link8`-to-palm transform is zero translation and quaternion
+  `(w, x, y, z) = (0.5, -0.5, -0.5, 0.5)`. The equivalent transforms in the
+  description Xacro and `mjcf/inspire_hand_on_flange.xml` must remain
+  synchronized.
 - **The shipped scenes are right-handed.** `mjcf/inspire_hand_left.xml` is
   generated but no scene binds it; `sim.launch.py` refuses `hand_side:=left`
   under MuJoCo rather than silently simulating the wrong hand.

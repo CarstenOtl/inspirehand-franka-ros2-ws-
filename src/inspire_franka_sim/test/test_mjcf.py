@@ -50,6 +50,9 @@ COUPLINGS = {
 # inspire_franka_description/urdf/inspire_franka.urdf.xacro.
 BENCH_XYZ = (0.45, -0.35, 0.0)
 
+# forgeUltra/franka-chi's authored fr3_link8 -> palm mount quaternion (wxyz).
+FRANKA_CHI_FLANGE_TO_PALM_QUAT = (0.5, -0.5, -0.5, 0.5)
+
 
 def load(scene: str):
     # MuJoCo resolves meshdir relative to the process working directory.
@@ -159,6 +162,36 @@ def test_the_bench_hand_sits_where_the_urdf_puts_it():
     body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "hand_mount")
     assert body != -1, "the bench scene has no hand_mount body"
     assert model.body_pos[body] == pytest.approx(BENCH_XYZ, abs=1e-9)
+
+
+def test_the_flange_mount_matches_franka_chi():
+    model = load("inspire_franka_flange_scene.xml")
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    flange = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "fr3_link8")
+    palm = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "hand_base_link")
+    assert flange != -1
+    assert palm != -1
+
+    # The target mount has no translation. Compare world positions because both
+    # frames are body origins and are rigidly welded in this scene.
+    assert data.xpos[palm] == pytest.approx(data.xpos[flange], abs=1e-9)
+
+    # q_relative = conjugate(q_flange) * q_palm. Quaternion signs are
+    # equivalent, so compare the absolute dot product with the desired pose.
+    fw, fx, fy, fz = data.xquat[flange]
+    pw, px, py, pz = data.xquat[palm]
+    relative = (
+        fw * pw + fx * px + fy * py + fz * pz,
+        fw * px - fx * pw - fy * pz + fz * py,
+        fw * py + fx * pz - fy * pw - fz * px,
+        fw * pz - fx * py + fy * px - fz * pw,
+    )
+    alignment = abs(sum(a * b for a, b in zip(
+        relative, FRANKA_CHI_FLANGE_TO_PALM_QUAT
+    )))
+    assert alignment == pytest.approx(1.0, abs=1e-6)
 
 
 def test_every_actuator_is_a_plain_torque_source():

@@ -6,6 +6,7 @@ ros2_control block naming joints the description does not contain, or a hand
 whose joint names have drifted away from the driver's.
 """
 
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -86,8 +87,21 @@ def test_the_bench_hand_hangs_off_the_world_not_the_arm():
 
 
 def test_the_flange_hand_hangs_off_the_arm():
-    _, parents = tree(expand(hand_mount="flange"))
+    root = expand(hand_mount="flange")
+    _, parents = tree(root)
     assert parents["hand_mount"] == "fr3_link8"
+
+    mount = next(
+        joint for joint in root.findall("joint")
+        if joint.get("name") == "hand_mount_joint"
+    )
+    origin = mount.find("origin")
+    assert [float(value) for value in origin.get("xyz").split()] == pytest.approx(
+        [0.0, 0.0, 0.0]
+    )
+    assert [float(value) for value in origin.get("rpy").split()] == pytest.approx(
+        [0.0, 0.0, -math.pi / 2]
+    )
 
 
 def test_ros2_control_names_only_joints_that_exist():

@@ -8,9 +8,8 @@
   workspace, which is exactly how the real setup is wired (one FCI connection,
   one USB-RS485 adapter, no mechanical coupling).
 
-  `hand_mount:=flange` bolts the hand to the arm's flange instead. The
-  kinematics for that are here and correct in orientation, but the OFFSET IS A
-  PLACEHOLDER - see hand_flange_xyz below.
+  `hand_mount:=flange` bolts the hand to the arm's flange instead, using the
+  same fr3_link8-to-palm transform as forgeUltra's franka-chi asset.
 
       xacro inspire_franka.urdf.xacro                          # arm + bench hand
       xacro inspire_franka.urdf.xacro hand:=false              # bare arm
@@ -130,17 +129,16 @@
     <xacro:property name="hand_bench_rpy" value="0 0 0"/>
 
     <!--
-      PLACEHOLDER. The rotation is right - the fingers point away from the flange
-      along the arm's approach axis, which is what an identity rotation gives -
-      but 10 mm is a guess at the adapter plate's thickness, and there is no
-      measured clocking angle about z.
+      Match forgeUltra's franka-chi asset, which welds fr3_link8 directly to
+      palm at zero translation with q_wxyz=(0.5, -0.5, -0.5, 0.5).
 
-      To fix: measure the adapter, set hand_flange_xyz to its true thickness and
-      hand_flange_rpy's yaw to how the hand is clocked on it. Until then, treat
-      any flange-mounted fingertip pose as approximate.
+      This description has an intermediate hand_mount frame. Its fixed
+      base_joint contributes rpy=(-pi/2, 0, pi), so applying a -pi/2 yaw here
+      gives the same composed fr3_link8-to-hand_base_link (palm) transform.
+      Keep these values synchronized with inspire_hand_on_flange.xml.
     -->
-    <xacro:property name="hand_flange_xyz" value="0 0 0.010"/>
-    <xacro:property name="hand_flange_rpy" value="0 0 0"/>
+    <xacro:property name="hand_flange_xyz" value="0 0 0"/>
+    <xacro:property name="hand_flange_rpy" value="0 0 -1.5707963267948966"/>
 
     <xacro:property name="hand_parent_resolved"
       value="${arm_link_prefix + 'link8' if mount == 'flange'
