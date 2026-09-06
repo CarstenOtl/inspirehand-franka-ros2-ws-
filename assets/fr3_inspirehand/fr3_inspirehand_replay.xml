@@ -1,14 +1,13 @@
 <mujoco model="fr3_inspirehand_replay">
   <!-- MuJoCo visualization scene for the recorded forgeUltra FR3 threading
-       trajectory. The workcell appearance and exact baked M24 meshes come
-       from tiangong_infra_ws's tuned forgeultra_full_task_scene.xml; only the
-       table dimensions and robot transform differ for the FR3 bench.
+       trajectory. The exact baked M24 meshes come from tiangong_infra_ws's
+       tuned forgeultra_full_task_scene.xml. Workcell dimensions, presentation,
+       robot transform, and hand kinematics match the recorded FR3 run.
 
        All mesh paths are relative to this file and stay inside this asset
-       bundle. fr3_link8 is the flange frame, 107 mm beyond fr3_link7. The
-       hand_mount body applies a -pi/2 yaw which, composed with the hand's
-       existing base-link rotation, matches forgeUltra franka-chi's zero-offset
-       flange-to-palm quaternion (0.5, -0.5, -0.5, 0.5), in wxyz order. -->
+       bundle. fr3_link8 is the flange frame, 107 mm beyond fr3_link7. The palm
+       body uses forgeUltra franka-chi's zero-offset flange-to-palm quaternion
+       (0.5, -0.5, -0.5, 0.5), in wxyz order. -->
 
   <compiler angle="radian" meshdir="./"/>
 
@@ -17,9 +16,9 @@
   <size nkey="1"/>
 
   <visual>
-    <global azimuth="120" elevation="-20"/>
-    <headlight ambient="0.3 0.3 0.3" diffuse="0.6 0.6 0.6" specular="0 0 0"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20" offwidth="1280" offheight="720"/>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.55 0.55 0.55" specular="0 0 0"/>
+    <rgba haze="0.7 0.7 0.7 1"/>
   </visual>
 
   <default>
@@ -43,8 +42,9 @@
   </default>
 
   <asset>
-    <texture type="skybox" colorspace="auto" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
-    <texture type="2d" colorspace="auto" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <!-- Neutral Isaac-style viewer background used by the source replay. -->
+    <texture type="skybox" colorspace="auto" builtin="flat" rgb1="0.92 0.92 0.92" width="512" height="3072"/>
+    <texture type="2d" colorspace="auto" name="groundplane" builtin="checker" mark="edge" rgb1="0.31 0.31 0.31" rgb2="0.31 0.31 0.31" markrgb="0.78 0.78 0.78" width="300" height="300"/>
     <material name="black" rgba="0.2 0.2 0.2 1"/>
     <material name="white"/>
     <material name="red" rgba="1 0.072272 0.039546 1"/>
@@ -52,9 +52,13 @@
     <material name="button_green" rgba="0.102241 0.571125 0.102242 1"/>
     <material name="button_red" rgba="0.520996 0.008023 0.013702 1"/>
     <material name="button_blue" rgba="0.024157 0.445201 0.737911 1"/>
-    <material name="groundplane" texture="groundplane" texrepeat="5 5" texuniform="true" reflectance="0.2"/>
+    <material name="groundplane" texture="groundplane" texrepeat="2 2" texuniform="true" reflectance="0.05"/>
     <texture name="forge_walnut" type="2d" file="textures/forge/walnut_albedo.png"/>
     <material name="forge_table" texture="forge_walnut" texrepeat="4 4" texuniform="true" reflectance="0.03" roughness="0.34"/>
+    <!-- The captured Isaac replay renders the bench top white even though the
+         saved environment flag names the walnut USD variant. -->
+    <material name="recorded_table_top" rgba="0.93 0.93 0.91 1" roughness="0.55"/>
+    <material name="recorded_table_leg" rgba="0.13 0.14 0.15 1" roughness="0.35" metallic="0.65"/>
     <material name="forge_bolt" rgba="0.055 0.055 0.065 1"/>
     <material name="forge_nut" rgba="0.84 0.84 0.88 1"/>
     <material name="recorded_tcp" rgba="0.1 1 0.2 0.85"/>
@@ -132,25 +136,24 @@
 
   <worldbody>
     <geom name="floor" pos="0 0 -0.75" size="0 0 0.05" type="plane" material="groundplane"/>
-    <light pos="0 0 1.5" type="directional"/>
+    <light pos="0 0 1.5" type="directional" castshadow="false"/>
     <!-- FR3 task viewer eye=(-0.5,-0.7,0.5), lookat=(0.6,0,0.15). -->
-    <camera name="policy_replay_front" pos="-0.5 -0.7 0.5"
+    <camera name="policy_replay_front" pos="-0.5 -0.7 0.5" fovy="35"
       xyaxes="0.536875492 -0.843661488 0 0.218705647 0.139176321 0.965813086"/>
 
-    <!-- FR3 workcell: 0.80 x 0.60 m top, surface at world z=0, and the near
-         edge 0.465 m from the robot axis. Construction and walnut appearance
-         follow tiangong_infra_ws's tuned ForgeUltra full-task scene. -->
+    <!-- Exact FR3 lab-bench construction: 0.80 x 0.60 m, 3 cm top, 3 cm
+         diameter round legs inset 5 cm, surface z=0 and floor z=-0.75. -->
     <body name="table" pos="0.335 0 0">
-      <geom name="table_top" type="box" pos="0 0 -0.04" size="0.4 0.3 0.04"
-        material="forge_table" friction="0.8 0.01 0.00625"/>
-      <geom name="table_leg_0" type="box" pos="0.36 0.26 -0.415"
-        size="0.04 0.04 0.335" material="forge_table" friction="0.8 0.01 0.00625"/>
-      <geom name="table_leg_1" type="box" pos="0.36 -0.26 -0.415"
-        size="0.04 0.04 0.335" material="forge_table" friction="0.8 0.01 0.00625"/>
-      <geom name="table_leg_2" type="box" pos="-0.36 0.26 -0.415"
-        size="0.04 0.04 0.335" material="forge_table" friction="0.8 0.01 0.00625"/>
-      <geom name="table_leg_3" type="box" pos="-0.36 -0.26 -0.415"
-        size="0.04 0.04 0.335" material="forge_table" friction="0.8 0.01 0.00625"/>
+      <geom name="table_top" type="box" pos="0 0 -0.015" size="0.4 0.3 0.015"
+        material="recorded_table_top" friction="0.8 0.01 0.00625"/>
+      <geom name="table_leg_0" type="cylinder" pos="0.35 0.25 -0.39"
+        size="0.015 0.36" material="recorded_table_leg" friction="0.8 0.01 0.00625"/>
+      <geom name="table_leg_1" type="cylinder" pos="0.35 -0.25 -0.39"
+        size="0.015 0.36" material="recorded_table_leg" friction="0.8 0.01 0.00625"/>
+      <geom name="table_leg_2" type="cylinder" pos="-0.35 0.25 -0.39"
+        size="0.015 0.36" material="recorded_table_leg" friction="0.8 0.01 0.00625"/>
+      <geom name="table_leg_3" type="cylinder" pos="-0.35 -0.25 -0.39"
+        size="0.015 0.36" material="recorded_table_leg" friction="0.8 0.01 0.00625"/>
     </body>
 
     <!-- Exact native-metre geometry exported from ForgeUltra's M24 SDF USDs. -->
@@ -343,6 +346,7 @@
   </actuator>
 
   <keyframe>
-    <key name="start" qpos="0 -0.785398 0 -2.35619 0 1.5708 0.785398 0 0 0 0 0 -0.04545 0 -0.04545 0 -0.04545 0 -0.04545"/>
+    <!-- Exact first sample from the retained sequential-threading replay. -->
+    <key name="start" qpos="-0.348915994167 -0.0332739986479 -0.0264340005815 -1.79915297031 1.36881804466 2.02867698669 -1.84610199928 1.13999998569 0.20000000298 0.20000000298 0.160000011325 0.439999997616 0.679997980595 1.09990000725 1.69984042645 1.09990000725 1.69984042645 1.09990000725 1.69984042645"/>
   </keyframe>
 </mujoco>

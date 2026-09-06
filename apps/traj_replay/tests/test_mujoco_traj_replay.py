@@ -105,8 +105,8 @@ class FitReport:
     tcp_rmse_m: float
     tcp_mean_error_m: float
     tcp_max_error_m: float
-    clipped_values: int
-    max_clip_rad: float
+    limit_exceedances: int
+    max_limit_excursion_rad: float
 
 
 def _require_mujoco() -> Any:
@@ -274,23 +274,23 @@ def apply_sample(
     bindings: Sequence[JointBinding],
     sample_index: int,
 ) -> tuple[float, int, float]:
-    """Apply one sample and return (TCP error m, clip count, max clip rad)."""
+    """Apply one sample and report TCP error and nominal-limit excursions."""
     if not 0 <= sample_index < trajectory.sample_count:
         raise IndexError(f"sample {sample_index} is outside the trajectory")
 
     data.qvel[:] = 0.0
-    clipped_values = 0
-    max_clip_rad = 0.0
+    limit_exceedances = 0
+    max_limit_excursion_rad = 0.0
     for binding in bindings:
-        raw_position = float(trajectory.joint_pos[sample_index, binding.source_column])
-        position = raw_position
+        position = float(trajectory.joint_pos[sample_index, binding.source_column])
         if bool(model.jnt_limited[binding.joint_id]):
             low, high = model.jnt_range[binding.joint_id]
-            position = float(np.clip(raw_position, low, high))
-            clip = abs(position - raw_position)
-            if clip > 0.0:
-                clipped_values += 1
-                max_clip_rad = max(max_clip_rad, clip)
+            excursion = max(float(low) - position, position - float(high), 0.0)
+            if excursion > 0.0:
+                limit_exceedances += 1
+                max_limit_excursion_rad = max(
+                    max_limit_excursion_rad, excursion
+                )
         data.qpos[binding.qpos_address] = position
         data.qvel[binding.qvel_address] = trajectory.joint_vel[
             sample_index, binding.source_column
@@ -313,7 +313,7 @@ def apply_sample(
     mujoco.mj_forward(model, data)
 
     tcp_error_m = float(np.linalg.norm(replayed_tcp - trajectory.tcp_pos[sample_index]))
-    return tcp_error_m, clipped_values, max_clip_rad
+    return tcp_error_m, limit_exceedances, max_limit_excursion_rad
 
 
 def evaluate_fit(
@@ -324,15 +324,15 @@ def evaluate_fit(
     indices: Sequence[int] | range,
 ) -> FitReport:
     errors = []
-    clipped_values = 0
-    max_clip_rad = 0.0
+    limit_exceedances = 0
+    max_limit_excursion_rad = 0.0
     for index in indices:
-        error, clipped, clip_size = apply_sample(
+        error, exceedances, excursion = apply_sample(
             model, data, trajectory, bindings, int(index)
         )
         errors.append(error)
-        clipped_values += clipped
-        max_clip_rad = max(max_clip_rad, clip_size)
+        limit_exceedances += exceedances
+        max_limit_excursion_rad = max(max_limit_excursion_rad, excursion)
     if not errors:
         raise ValueError("the selected replay range contains no samples")
     errors_array = np.asarray(errors)
@@ -341,8 +341,8 @@ def evaluate_fit(
         tcp_rmse_m=float(np.sqrt(np.mean(np.square(errors_array)))),
         tcp_mean_error_m=float(np.mean(errors_array)),
         tcp_max_error_m=float(np.max(errors_array)),
-        clipped_values=clipped_values,
-        max_clip_rad=max_clip_rad,
+        limit_exceedances=limit_exceedances,
+        max_limit_excursion_rad=max_limit_excursion_rad,
     )
 
 
@@ -355,13 +355,14 @@ def print_fit_report(trajectory: ReplayTrajectory, report: FitReport) -> None:
     )
     print(
         "Training-hand tip midpoint vs recorded TCP: "
-        f"RMSE={report.tcp_rmse_m * 1000.0:.2f} mm, "
-        f"mean={report.tcp_mean_error_m * 1000.0:.2f} mm, "
-        f"max={report.tcp_max_error_m * 1000.0:.2f} mm"
+        f"RMSE={report.tcp_rmse_m * 1000.0:.4f} mm, "
+        f"mean={report.tcp_mean_error_m * 1000.0:.4f} mm, "
+        f"max={report.tcp_max_error_m * 1000.0:.4f} mm"
     )
     print(
-        f"Joint-limit clipping: {report.clipped_values} values, "
-        f"largest={report.max_clip_rad:.3g} rad"
+        f"Recorded joint-limit excursions (not clipped): "
+        f"{report.limit_exceedances} values, "
+        f"largest={report.max_limit_excursion_rad:.3g} rad"
     )
 
 
@@ -482,10 +483,7 @@ def test_replay_contract_and_training_geometry() -> None:
     )
 
     for binding in bindings:
-        low, high = model.jnt_range[binding.joint_id]
-        expected = np.clip(
-            trajectory.joint_pos[0, binding.source_column], low, high
-        )
+        expected = trajectory.joint_pos[0, binding.source_column]
         assert np.isclose(data.qpos[binding.qpos_address], expected)
 
     report = evaluate_fit(
