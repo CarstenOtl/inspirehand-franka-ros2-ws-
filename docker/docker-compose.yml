@@ -14,7 +14,7 @@ services:
       # nothing here relies on that, but keep it in mind if you add something.
       - ../:/root/develop_ws
       - ./.bashrc:/root/.bashrc
-      # The USB-RS485 adapter the hand is on, usually /dev/ttyUSB0.
+      # USB devices: the hand's RS485 adapter and the RealSense D415.
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ${HOME}/.Xauthority:/root/.Xauthority:rw
@@ -49,7 +49,15 @@ services:
     group_add:
       - dialout
     devices:
+      # Raw USB control endpoints used by librealsense.
       - /dev/bus/usb:/dev/bus/usb
+    # /dev is bind-mounted above so hot-plugged nodes appear without recreating
+    # the container; these rules allow the relevant device classes through the
+    # device cgroup without making the container fully privileged.
+    device_cgroup_rules:
+      - "c 81:* rmw"   # V4L2 cameras (/dev/video*)
+      - "c 188:* rmw"  # USB serial adapters (/dev/ttyUSB*)
+      - "c 189:* rmw"  # raw USB devices (/dev/bus/usb/*)
     # Real-time limits for the FCI's 1 kHz loop, matching what upstream
     # franka_ros2's own compose file sets.
     #

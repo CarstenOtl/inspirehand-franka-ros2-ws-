@@ -38,3 +38,9 @@ repositories:
     # The version franka_ros2 v3.5.3's own dependency.repos pins. Bump the two
     # together, along with LIBFRANKA_REF in docker/Dockerfile.
     version: 2.9.0
+  realsense_d415:
+    type: git
+    url: https://github.com/realsenseai/realsense-ros.git
+    # ROS 2 Jazzy-compatible wrapper. This release requires librealsense 2.58.0
+    # or newer; the image installs Jazzy's matching librealsense package.
+    version: 4.58.3

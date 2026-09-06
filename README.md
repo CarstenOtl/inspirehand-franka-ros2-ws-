@@ -1,12 +1,12 @@
 # inspire_franka
 
-ROS 2 **Jazzy** workspace combining a **Franka FR3** arm with an **Inspire
-Robotics RH56** dexterous hand, in one Docker image, so the two can be driven
-individually or together — plus a MuJoCo simulation of the pair.
+ROS 2 **Jazzy** workspace combining a **Franka FR3** arm, an **Inspire
+Robotics RH56** dexterous hand, and an **Intel RealSense D415**, in one Docker
+image — plus a MuJoCo simulation of the arm and hand.
 
 This repo *is* the workspace: it owns the dev image, the glue packages, the hand
-driver and the vendored hand description. The Franka stack is pulled in with
-`vcs`.
+driver and the vendored hand description. The Franka and RealSense stacks are
+pulled in with `vcs`.
 
 ## Layout
 
@@ -24,6 +24,7 @@ src/
   inspire_franka_bringup/        real hardware: arm, hand, or both
   franka_ros2/                   vcs import  - Franka's stack (gitignored here)
   franka_description/            vcs import  - Franka's descriptions (gitignored here)
+  realsense_d415/                vcs import  - RealSense ROS wrapper (gitignored here)
 ```
 
 ## Getting started
@@ -32,7 +33,7 @@ src/
 git clone <this repo> inspire_franka
 cd inspire_franka
 
-vcs import src < workspace.repos      # pulls franka_ros2 and franka_description
+vcs import src < workspace.repos      # pulls Franka and RealSense sources
 
 cd docker
 docker compose build                  # only after editing the Dockerfile or a *_REF
@@ -64,6 +65,12 @@ ros2 launch inspire_franka_bringup inspire_franka.launch.py \
 
 ros2 launch inspire_franka_bringup arm.launch.py robot_ip:=10.7.7.7   # arm alone
 ros2 launch inspire_franka_bringup hand.launch.py port:=/dev/ttyUSB0  # hand alone
+
+# RealSense D415 (publishes under /camera/camera by default):
+ros2 launch realsense2_camera rs_launch.py device_type:=d415
+
+# Start all three, require live telemetry, and print a per-device report:
+./apps/traj_replay/tests/system_check.py --robot-ip 10.7.7.7
 
 # Neither device present, everything else identical:
 ros2 launch inspire_franka_bringup inspire_franka.launch.py \
@@ -154,6 +161,8 @@ Details and the derivation are in
 | `libfranka` | `0.20.5` | `/opt/libfranka`, built by the image | plain CMake, and its `libfranka-common` submodule is not something `vcs import` initialises |
 | `mujoco_ros2_control` | `0.1.1` | apt | released for Jazzy; no source build needed |
 | `mujoco_vendor` | `0.1.0` (MuJoCo 3.12.0) | apt | the committed MJCFs were generated with exactly this MuJoCo |
+| `realsense-ros` | `4.58.3` | `src/realsense_d415`, via `workspace.repos` | ROS 2 wrapper, pinned to the Jazzy-compatible release |
+| `librealsense2` | `2.58.x` (at least 2.58.0) | apt | native SDK required by `realsense-ros` 4.58.3 |
 | Inspire RH56 model | vendored + generated | `src/inspire_hand_description` | see its `MODEL_PROVENANCE.md` |
 
 Two things worth knowing before bumping anything:
@@ -196,10 +205,10 @@ no error at all — just a robot that quietly does the wrong thing.
 
 ## Status
 
-- **The image builds and the workspace compiles.** `docker-inspire_franka:latest`
-  (4.16 GB) on ROS 2 Jazzy; `colcon build` finishes all 19 packages (13 Franka +
-  6 here) with no failures. The only stderr is upstream Franka's `tl_expected`
-  deprecation warnings.
+- **The image builds with librealsense, and all three active RealSense source
+  packages compile on ROS 2 Jazzy.** The full Franka/Inspire workspace was last
+  verified before the camera wrapper was added; camera streaming still requires
+  a connected D415.
 - **94 tests pass in the container**, 0 failures: 29 driver, 20 description, 16
   MJCF, 4 mimic cross-check, plus xmllint and lint_cmake.
 - **Simulation — verified end to end.** MuJoCo runs headless with

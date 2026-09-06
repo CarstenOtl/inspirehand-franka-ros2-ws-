@@ -142,6 +142,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pytest \
     && rm -rf /var/lib/apt/lists/*
 
+# --- RealSense D415 ----------------------------------------------------------
+#
+# The ROS wrapper itself is imported into src/realsense_d415 by workspace.repos.
+# Jazzy publishes librealsense through the ROS repository, so the SDK and the
+# wrapper's non-core ROS dependencies can stay ordinary apt dependencies here.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-librealsense2 \
+        ros-${ROS_DISTRO}-cv-bridge \
+        ros-${ROS_DISTRO}-diagnostic-updater \
+        ros-${ROS_DISTRO}-image-transport \
+    && rm -rf /var/lib/apt/lists/*
+
 # Asset-regeneration tooling for inspire_franka_sim/scripts/make_hand_mjcf.py
 # and inspire_hand_description/scripts/vendor_from_dex_urdf.py: the MuJoCo
 # python bindings to build and check the MJCF, and trimesh to convert the
