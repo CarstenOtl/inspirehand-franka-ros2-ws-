@@ -79,12 +79,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # --- libfranka ---------------------------------------------------------------
 #
 # The one thing with no ROS release, so it is built here into its own prefix
-# rather than into the workspace. It also carries a git submodule
-# (libfranka-common) that `vcs import` would leave empty, which is why it is not
-# in workspace.repos.
+# rather than into the workspace. Its nested libfranka-common submodule is
+# initialized by the recursive clone below.
 #
 # 0.20.5 is what franka_ros2 v3.5.3's own dependency.repos pins. Bump this and
-# the franka_ros2 pin in workspace.repos together: franka_hardware does a
+# the src/franka_ros2 submodule commit together: franka_hardware does a
 # versioned find_package, so a too-old library fails at build time - but a
 # too-new one does not, and the real constraint on hardware is the arm's own
 # system version. Check Franka's compatibility matrix before deviating.
@@ -144,7 +143,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # --- RealSense D415 ----------------------------------------------------------
 #
-# The ROS wrapper itself is imported into src/realsense_d415 by workspace.repos.
+# The ROS wrapper is the src/realsense_d415 submodule.
 # Jazzy publishes librealsense through the ROS repository, so the SDK and the
 # wrapper's non-core ROS dependencies can stay ordinary apt dependencies here.
 RUN apt-get update && apt-get install -y --no-install-recommends \

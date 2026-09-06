@@ -2,13 +2,13 @@
 # Container entrypoint for inspire_franka.
 #
 # Its one job is to trim src/franka_ros2 down to the packages this image can
-# actually build. `vcs import` has no way to take a subset of a repo, so the
-# whole of franka_ros2 lands in src/ and the rest is marked COLCON_IGNORE here.
+# actually build. The whole franka_ros2 repository is a submodule, so the
+# packages not used by this image are marked COLCON_IGNORE here.
 #
 # COLCON_IGNORE rather than `colcon build --packages-ignore` in the `rg2` helper,
 # so that a plain `colcon build` typed by hand behaves the same way. The files
-# land inside a vcs checkout and show up as untracked there; that is expected,
-# not a stray edit.
+# land inside the submodule and show up as untracked there; that is expected,
+# not a stray edit. The parent repository ignores untracked submodule content.
 #
 # Set FRANKA_ROS2_BUILD_ALL=1 in docker-compose.yml to opt back in. You will
 # then have to install those dependencies yourself.
@@ -55,12 +55,12 @@ if [ -d "$FRANKA_SRC" ]; then
   done
 else
   echo "entrypoint: note - src/franka_ros2 is missing, so there is no real-arm support." >&2
-  echo "            Run: vcs import src < workspace.repos" >&2
+  echo "            Run: git submodule update --init --recursive" >&2
 fi
 
 if [ ! -d "$WS_SRC/franka_description" ]; then
   echo "entrypoint: note - src/franka_description is missing; the descriptions will not build." >&2
-  echo "            Run: vcs import src < workspace.repos" >&2
+  echo "            Run: git submodule update --init --recursive" >&2
 fi
 
 exec "$@"

@@ -1,0 +1,10 @@
+[submodule "src/realsense_d415"]
+	path = src/realsense_d415
+	url = https://github.com/realsenseai/realsense-ros.git
+[submodule "src/franka_ros2"]
+	path = src/franka_ros2
+	url = https://github.com/frankarobotics/franka_ros2.git
+	ignore = untracked
+[submodule "src/franka_description"]
+	path = src/franka_description
+	url = https://github.com/frankarobotics/franka_description.git

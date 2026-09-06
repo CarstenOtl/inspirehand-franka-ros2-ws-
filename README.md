@@ -6,7 +6,7 @@ image — plus a MuJoCo simulation of the arm and hand.
 
 This repo *is* the workspace: it owns the dev image, the glue packages, the hand
 driver and the vendored hand description. The Franka and RealSense stacks are
-pulled in with `vcs`.
+tracked as pinned Git submodules.
 
 ## Layout
 
@@ -15,7 +15,7 @@ docker/                          dev image, compose, entrypoint
 docs/hand.md                     RS485 wiring, bring-up, and the driver's interface
 docs/network.md                  network layout and FCI access
 apps/camera_calibration/         calibration entry script, utilities, and hardware tests
-workspace.repos                  pins the repos that vcs imports
+.gitmodules                     external ROS repositories
 src/
   inspire_hand_msgs/             service definitions for the hand
   inspire_hand_driver/           the RS485 driver (rclpy) and its read-only probe
@@ -24,23 +24,27 @@ src/
   inspire_franka_sim/            MJCF models, controller config, MuJoCo launch
   inspire_franka_bringup/        real hardware: arm, hand, or both
   camera_calibration/            ROS node and launch files for D415 eye-to-hand calibration
-  franka_ros2/                   vcs import  - Franka's stack (gitignored here)
-  franka_description/            vcs import  - Franka's descriptions (gitignored here)
-  realsense_d415/                vcs import  - RealSense ROS wrapper (gitignored here)
+  franka_ros2/                   submodule - Franka's stack
+  franka_description/            submodule - Franka's descriptions
+  realsense_d415/                submodule - RealSense ROS wrapper
 ```
 
 ## Getting started
 
 ```bash
-git clone <this repo> inspire_franka
+git clone --recurse-submodules <this repo> inspire_franka
 cd inspire_franka
-
-vcs import src < workspace.repos      # pulls Franka and RealSense sources
 
 cd docker
 docker compose build                  # only after editing the Dockerfile or a *_REF
 docker compose up -d
 docker exec -it inspire_franka bash
+```
+
+For an existing clone, initialize the newly added submodules once:
+
+```bash
+git submodule update --init --recursive
 ```
 
 Inside the container:
@@ -162,18 +166,18 @@ Details and the derivation are in
 | | version | where | why |
 |---|---|---|---|
 | ROS 2 | Jazzy | base image | |
-| `franka_ros2` | `v3.5.3` | `src/`, via `workspace.repos` | ordinary ROS packages you may want to patch |
-| `franka_description` | `2.9.0` | `src/`, via `workspace.repos` | what v3.5.3's own `dependency.repos` pins |
-| `libfranka` | `0.20.5` | `/opt/libfranka`, built by the image | plain CMake, and its `libfranka-common` submodule is not something `vcs import` initialises |
+| `franka_ros2` | `v3.5.3` | `src/franka_ros2` submodule | ordinary ROS packages you may want to patch |
+| `franka_description` | `2.9.0` | `src/franka_description` submodule | what v3.5.3's own `dependency.repos` pins |
+| `libfranka` | `0.20.5` | `/opt/libfranka`, built by the image | plain CMake, built separately with its own nested submodule |
 | `mujoco_ros2_control` | `0.1.1` | apt | released for Jazzy; no source build needed |
 | `mujoco_vendor` | `0.1.0` (MuJoCo 3.12.0) | apt | the committed MJCFs were generated with exactly this MuJoCo |
-| `realsense-ros` | `4.58.3` | `src/realsense_d415`, via `workspace.repos` | ROS 2 wrapper, pinned to the Jazzy-compatible release |
+| `realsense-ros` | `4.58.3` | `src/realsense_d415` submodule | ROS 2 wrapper, pinned to the Jazzy-compatible release |
 | `librealsense2` | `2.58.x` (at least 2.58.0) | apt | native SDK required by `realsense-ros` 4.58.3 |
 | Inspire RH56 model | vendored + generated | `src/inspire_hand_description` | see its `MODEL_PROVENANCE.md` |
 
 Two things worth knowing before bumping anything:
 
-- **Do not run `vcs import src < src/franka_ros2/dependency.repos`**, as
+- **Do not import `src/franka_ros2/dependency.repos`**, as
   upstream's README says to. It would clone a second `franka_description` at the
   same tag, a `libfranka` that will not build here, and source checkouts of
   `ros2_control`, `gz_ros2_control`, MoveIt and RealSense/ZED/Robotiq
@@ -186,8 +190,8 @@ Two things worth knowing before bumping anything:
   would shadow it workspace-wide). Set `FRANKA_ROS2_BUILD_ALL=1` in
   `docker-compose.yml` to opt back in, and install those dependencies yourself.
 
-Bump `LIBFRANKA_REF` in `docker/Dockerfile` and the `franka_ros2` pin in
-`workspace.repos` together. `franka_hardware` does a versioned `find_package`, so
+Bump `LIBFRANKA_REF` in `docker/Dockerfile` and the `src/franka_ros2` submodule
+commit together. `franka_hardware` does a versioned `find_package`, so
 a too-old libfranka fails at build time — but a too-new one does not, and the
 real constraint on hardware is the arm's own system version. Check Franka's
 compatibility matrix.

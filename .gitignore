@@ -3,12 +3,6 @@
 /install
 /log
 
-# Repos pulled in by `vcs import src < workspace.repos` - they have their own
-# history, and the entrypoint writes COLCON_IGNORE files inside them.
-/src/franka_ros2
-/src/franka_description
-/src/realsense_d415
-
 # Corporate root CAs for TLS inspection - machine-specific, never committed.
 docker/certs/*.crt
 
