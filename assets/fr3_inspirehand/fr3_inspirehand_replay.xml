@@ -45,6 +45,8 @@
     <!-- Neutral Isaac-style viewer background used by the source replay. -->
     <texture type="skybox" colorspace="auto" builtin="flat" rgb1="0.92 0.92 0.92" width="512" height="3072"/>
     <texture type="2d" colorspace="auto" name="groundplane" builtin="checker" mark="edge" rgb1="0.31 0.31 0.31" rgb2="0.31 0.31 0.31" markrgb="0.78 0.78 0.78" width="300" height="300"/>
+    <texture type="2d" colorspace="auto" name="apriltag_36h11_id0_texture"
+      file="textures/apriltag_36h11_id0.png"/>
     <material name="black" rgba="0.2 0.2 0.2 1"/>
     <material name="white"/>
     <material name="red" rgba="1 0.072272 0.039546 1"/>
@@ -63,6 +65,8 @@
     <material name="forge_nut" rgba="0.84 0.84 0.88 1"/>
     <material name="recorded_tcp" rgba="0.1 1 0.2 0.85"/>
     <material name="replayed_tcp" rgba="1 0.1 0.8 0.85"/>
+    <material name="apriltag_36h11_id0" texture="apriltag_36h11_id0_texture"
+      texuniform="false" reflectance="0" specular="0" shininess="0"/>
     <mesh name="forge_m24_nut" file="forge_nut_bolt/m24/m24_nut.stl"/>
     <mesh name="forge_m24_bolt" file="forge_nut_bolt/m24/m24_bolt.stl"/>
     <!-- Exact Inspire meshes used by the source franka-chi training USD. -->
@@ -241,6 +245,19 @@
                             <body name="training_hand_links">
                               <inertial pos="-0.0025264 -0.066047 0.0019598" mass="0.3" diaginertia="0.00012281 8.3831e-05 7.6663e-05"/>
                               <geom mesh="training_palm"/>
+                              <!-- Same dorsal hand-mounted target as the real
+                                   calibration setup. This training palm mesh is
+                                   thinner, so it has its own flush-fit offset. -->
+                              <body name="apriltag_0" pos="0.01750 -0.075 0"
+                                quat="0.70696536 -0.01414119 0.70696536 0.01414119">
+                                <geom name="apriltag_36h11_id0" type="box"
+                                  size="0.025 0.025 0.0001"
+                                  material="apriltag_36h11_id0"
+                                  contype="0" conaffinity="0" group="2"/>
+                                <site name="apriltag_0_frame" type="box"
+                                  size="0.020 0.020 0.0006"
+                                  rgba="0 0 0 0" group="4"/>
+                              </body>
                               <body name="thumb_link_0" pos="-0.02296 -0.05885 -0.02045"
                                 quat="0.499998163397 0.499999999997 -0.499999999997 0.500001836603">
                                 <joint name="thumb_joint_0" axis="0 0 -1" range="0.3 1.2"/>

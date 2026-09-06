@@ -14,6 +14,7 @@ pulled in with `vcs`.
 docker/                          dev image, compose, entrypoint
 docs/hand.md                     RS485 wiring, bring-up, and the driver's interface
 docs/network.md                  network layout and FCI access
+apps/camera_calibration/         calibration entry script, utilities, and hardware tests
 workspace.repos                  pins the repos that vcs imports
 src/
   inspire_hand_msgs/             service definitions for the hand
@@ -22,6 +23,7 @@ src/
   inspire_franka_description/    FR3 + hand composed into one description
   inspire_franka_sim/            MJCF models, controller config, MuJoCo launch
   inspire_franka_bringup/        real hardware: arm, hand, or both
+  camera_calibration/            ROS node and launch files for D415 eye-to-hand calibration
   franka_ros2/                   vcs import  - Franka's stack (gitignored here)
   franka_description/            vcs import  - Franka's descriptions (gitignored here)
   realsense_d415/                vcs import  - RealSense ROS wrapper (gitignored here)
@@ -68,6 +70,10 @@ ros2 launch inspire_franka_bringup hand.launch.py port:=/dev/ttyUSB0  # hand alo
 
 # RealSense D415 (publishes under /camera/camera by default):
 ros2 launch realsense2_camera rs_launch.py device_type:=d415
+
+# Calibrate the fixed D415 in the Franka world frame with a hand-mounted AprilTag:
+./apps/camera_calibration/calibrate.py \
+    --tag-id 0 --tag-size-m 0.040
 
 # Start all three, require live telemetry, and print a per-device report:
 ./apps/traj_replay/tests/system_check.py --robot-ip 10.7.7.7
@@ -197,6 +203,7 @@ Everything that can be checked without hardware or a simulator is a test, and
 | `inspire_hand_description` | the shipped URDF's `<mimic>` values still match the driver's table |
 | `inspire_franka_description` | every launch variant expands to one root link with no dangling joints; `ros2_control` names only joints that exist; followers expose no command interface; unsupported combinations fail loudly |
 | `inspire_franka_sim` | every MJCF scene compiles; joint sets per scene; actuators only on driven joints; couplings equal the URDF's; zero contacts at rest; the bench hand sits where the URDF puts it |
+| `camera_calibration` | synthetic eye-to-hand recovery, SE(3) conventions, outlier rejection and degenerate-motion detection |
 
 The two that matter most are the cross-checks. `ros2_control` matches the
 description to the simulator **by joint name and nothing else**, so a joint that

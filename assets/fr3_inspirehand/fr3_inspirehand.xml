@@ -37,6 +37,8 @@
   <asset>
     <texture type="skybox" colorspace="auto" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
     <texture type="2d" colorspace="auto" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <texture type="2d" colorspace="auto" name="apriltag_36h11_id0_texture"
+      file="textures/apriltag_36h11_id0.png"/>
     <material name="black" rgba="0.2 0.2 0.2 1"/>
     <material name="white"/>
     <material name="red" rgba="1 0.072272 0.039546 1"/>
@@ -45,6 +47,8 @@
     <material name="button_red" rgba="0.520996 0.008023 0.013702 1"/>
     <material name="button_blue" rgba="0.024157 0.445201 0.737911 1"/>
     <material name="groundplane" texture="groundplane" texrepeat="5 5" texuniform="true" reflectance="0.2"/>
+    <material name="apriltag_36h11_id0" texture="apriltag_36h11_id0_texture"
+      texuniform="false" reflectance="0" specular="0" shininess="0"/>
     <mesh name="link0_0" content_type="model/obj" file="fr3/mujoco_visual/link0_0.obj"/>
     <mesh name="link0_1" content_type="model/obj" file="fr3/mujoco_visual/link0_1.obj"/>
     <mesh name="link0_2" content_type="model/obj" file="fr3/mujoco_visual/link0_2.obj"/>
@@ -177,6 +181,19 @@
                               <geom size="0.00625 0.00555 0.00445" pos="-0.0016 -0.134 0.0118" type="box" group="3" rgba="1 1 1 1"/>
                               <geom size="0.00625 0.00555 0.00445" pos="-0.0016 -0.134 -0.007" type="box" group="3" rgba="1 1 1 1"/>
                               <geom size="0.00625 0.00555 0.00445" pos="-0.0016 -0.134 -0.0262" type="box" group="3" rgba="1 1 1 1"/>
+                              <!-- 40 mm tag black square plus a 5 mm white quiet
+                                   border. The pose follows the measured tangent
+                                   of the dorsal (+X) palm mesh so it sits flush. -->
+                              <body name="apriltag_0" pos="0.02345 -0.075 0"
+                                quat="0.70696536 -0.01414119 0.70696536 0.01414119">
+                                <geom name="apriltag_36h11_id0" type="box"
+                                  size="0.025 0.025 0.0001"
+                                  material="apriltag_36h11_id0"
+                                  contype="0" conaffinity="0" group="2"/>
+                                <site name="apriltag_0_frame" type="box"
+                                  size="0.020 0.020 0.0006"
+                                  rgba="0 0 0 0" group="4"/>
+                              </body>
                               <body name="thumb_proximal_base" pos="-0.01696 -0.0691 -0.02045" quat="0.499998 0.5 -0.5 0.500002">
                                 <inertial pos="-0.0048064 0.0009382 -0.00757" quat="0.515015 0.680854 0.408023 0.323596" mass="0.0018869" diaginertia="8.66026e-08 6.8732e-08 4.94194e-08"/>
                                 <joint name="thumb_proximal_yaw_joint" range="0 1.308" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1"/>
