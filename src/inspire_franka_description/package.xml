@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>inspire_franka_description</name>
+  <version>0.1.0</version>
+  <description>
+    The Franka FR3 and the Inspire RH56 hand composed into one description:
+    either as two separate objects sharing a world (a bench hand beside the
+    arm, the default) or with the hand bolted to the arm's flange.
+
+    Also carries the simulation-only ros2_control block that puts both assets
+    into a single hardware component, which is what lets one MuJoCo world hold
+    both.
+  </description>
+  <maintainer email="boizbigd@gmail.com">Carsten Oertel</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>franka_description</exec_depend>
+  <exec_depend>inspire_hand_description</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>xacro</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,19 @@
+# Command a subset of the hand's six actuated DOF, in open-ratio units.
+#
+# `name` may hold either channel ids ("1".."6", the hand's own register order:
+# little, ring, middle, index, thumb bend, thumb rotation) or the six *driven*
+# URDF joint names (e.g. "index_proximal_joint"). The two sets are disjoint, so
+# there is no ambiguity, but they must not be mixed within one request.
+#
+# This service is "flexible": a DOF that is not named holds its previous target
+# rather than snapping to a default. Sending an empty `name` is a no-op, not a
+# command to close.
+string[] name
+
+# 1.0 = fully open, 0.0 = fully closed. Values outside [0, 1] are clamped.
+float64[] open_ratio
+---
+# False when nothing was written: no recognised channel named, or the hand did
+# not acknowledge the write.
+bool accepted
+string message

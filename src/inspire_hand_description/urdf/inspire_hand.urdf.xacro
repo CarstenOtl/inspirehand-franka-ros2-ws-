@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<!--
+  The hand on its own, as a complete robot description.
+
+  This is what `inspire_hand_driver`'s launch file publishes when asked for a
+  description, and what RViz shows for a bench hand. For the hand alongside an
+  arm, see inspire_franka_description instead - it instantiates the same macro.
+
+      xacro inspire_hand.urdf.xacro side:=right
+      xacro inspire_hand.urdf.xacro ros2_control:=true hardware_type:=mock
+
+  `world` exists so RViz has a fixed frame that is not itself a moving part of
+  the robot; the hand hangs off it by a fixed joint.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="inspire_hand">
+
+  <xacro:arg name="side" default="right"/>
+  <xacro:arg name="prefix" default=""/>
+
+  <!-- Off puts the hand at its own origin with hand_mount as the root link and
+       no `world` at all. That is what a reusable asset wants: the MJCF
+       generator consumes this description, and a baked-in world offset would
+       follow the hand into every scene that placed it. -->
+  <xacro:arg name="mount_to_world" default="true"/>
+
+  <!-- ros2_control is opt-in: the RS485 driver does not use it (it is a plain
+       node, not a hardware component), so a description published purely for TF
+       and RViz must not carry a <ros2_control> block - controller_manager would
+       try to load a plugin for it. Simulation turns it on. -->
+  <xacro:arg name="ros2_control" default="false"/>
+  <xacro:arg name="hardware_type" default="mock"/>
+  <xacro:arg name="mujoco_model" default=""/>
+  <xacro:arg name="pids_config_file" default=""/>
+  <xacro:arg name="headless" default="true"/>
+
+  <xacro:include filename="$(find inspire_hand_description)/urdf/inspire_hand.macro.xacro"/>
+  <xacro:include
+    filename="$(find inspire_hand_description)/ros2_control/inspire_hand.ros2_control.xacro"/>
+
+  <xacro:if value="$(arg mount_to_world)">
+    <link name="world"/>
+  </xacro:if>
+
+  <xacro:inspire_hand
+    side="$(arg side)"
+    prefix="$(arg prefix)"
+    parent="${'world' if '$(arg mount_to_world)' == 'true' else ''}"
+    xyz="0 0 0.2"
+    rpy="0 0 0"/>
+
+  <xacro:if value="$(arg ros2_control)">
+    <xacro:inspire_hand_ros2_control
+      name="InspireHandSystem"
+      prefix="$(arg prefix)"
+      hardware_type="$(arg hardware_type)"
+      mujoco_model="$(arg mujoco_model)"
+      pids_config_file="$(arg pids_config_file)"
+      headless="$(arg headless)"/>
+  </xacro:if>
+
+</robot>

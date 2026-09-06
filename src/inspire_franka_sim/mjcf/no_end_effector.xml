@@ -1,0 +1,15 @@
+<mujoco model="no_end_effector">
+  <!-- The "nothing bolted to the flange" end effector, for fr3_scene.xml.
+
+       fr3.xml attaches whichever model asset the scene names `end_effector`, so a bare arm
+       still has to supply one. This is that stub: a single body carrying no geometry and no
+       mass, welded to the flange frame.
+
+       It is not dead weight - naming it fr3_link8 materialises franka_description's flange
+       link in MuJoCo, which the arm model otherwise stops short of (Menagerie's FR3 ends at
+       fr3_link7 plus `attachment_site`). A massless, DOF-less body is legal; MuJoCo's
+       mjMINVAL floor only applies to bodies that can move relative to their parent. -->
+  <worldbody>
+    <body name="fr3_link8"/>
+  </worldbody>
+</mujoco>

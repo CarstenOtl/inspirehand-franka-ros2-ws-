@@ -1,0 +1,18 @@
+<mujoco model="fr3_scene">
+  <!-- The bare FR3, nothing on the flange. `hand:=false` in the sim launch.
+
+       Derived from MuJoCo Menagerie's franka_fr3/scene.xml - see
+       MJCF_PROVENANCE.md. -->
+
+  <!-- Must precede the include: fr3.xml's <attach> resolves this name at parse
+       time, not at compile time. -->
+  <asset>
+    <model name="end_effector" file="no_end_effector.xml"/>
+  </asset>
+
+  <include file="fr3.xml"/>
+  <include file="scene_common.xml"/>
+
+  <!-- No <keyframe> here: fr3.xml already defines "home" and MuJoCo rejects a
+       duplicate key name outright. That is the one the launch selects. -->
+</mujoco>

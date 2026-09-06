@@ -1,0 +1,29 @@
+<mujoco model="inspire_hand_on_flange">
+  <!-- The Inspire hand as an FR3 end effector, for fr3.xml's `end_effector`
+       attachment slot.
+
+       This wrapper exists to do two things no_end_effector.xml also does, plus
+       one it does not:
+
+       - materialise the fr3_link8 body, which Menagerie's FR3 does not have
+         (it ends at fr3_link7 plus `attachment_site`);
+       - give the hand its own mount offset from that flange, which fr3.xml's
+         attach frame cannot express on its own.
+
+       The 10 mm offset is a PLACEHOLDER for the adapter plate, and must be kept
+       equal to hand_flange_xyz in
+       inspire_franka_description/urdf/inspire_franka.urdf.xacro. If the two
+       disagree, MuJoCo and TF put the fingertips in different places. -->
+
+  <asset>
+    <model name="inspire_hand" file="inspire_hand_right.xml"/>
+  </asset>
+
+  <worldbody>
+    <body name="fr3_link8">
+      <frame pos="0 0 0.010">
+        <attach model="inspire_hand" prefix=""/>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>

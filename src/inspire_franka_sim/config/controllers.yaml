@@ -1,0 +1,152 @@
+# Controllers for the FR3 and the Inspire hand in MuJoCo.
+#
+# The two assets are disjoint sets of joints on one hardware component, so they
+# get separate controllers and a separate launch argument each. That is what
+# "together and individually" means here: spawn one and drive one asset, spawn
+# both and drive both, with no interaction between them beyond sharing a clock.
+#
+# Within each asset the controllers are mutually exclusive - they would fight
+# over the same command interfaces - and exactly one is spawned:
+#
+#   arm_command_interface
+#     position         -> fr3_joint_trajectory_controller         (smooth, action-driven)
+#     position_direct  -> fr3_position_forward_command_controller (one topic pub, jumps)
+#     effort           -> fr3_effort_forward_command_controller
+#     none             -> nothing claims the arm; it hangs under gravity
+#
+#   hand_command_interface
+#     position         -> hand_joint_trajectory_controller
+#     position_direct  -> hand_position_forward_command_controller
+#     effort           -> hand_effort_forward_command_controller
+#     none             -> nothing claims the hand
+#
+# Only the hand's six DRIVEN joints appear in any controller. The six followers
+# have no command interface - they are held by MuJoCo equality constraints, the
+# same way the real hand's linkage holds them mechanically - and naming one in a
+# controller is a startup error.
+
+controller_manager:
+  ros__parameters:
+    # 1 kHz, matching the rate the FR3's own hardware runs its control loop
+    # at, so controller tuning stays transferable to the real arm. The hand's
+    # RS485 driver runs at 50 Hz on hardware, but that is a property of the
+    # serial link rather than of the controller, and there is no reason to
+    # slow the simulation down to it.
+    update_rate: 1000
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    fr3_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    fr3_position_forward_command_controller:
+      type: forward_command_controller/ForwardCommandController
+    fr3_effort_forward_command_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    hand_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    hand_position_forward_command_controller:
+      type: forward_command_controller/ForwardCommandController
+    hand_effort_forward_command_controller:
+      type: forward_command_controller/ForwardCommandController
+
+# --- FR3 ---------------------------------------------------------------------
+
+fr3_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+fr3_position_forward_command_controller:
+  ros__parameters:
+    joints:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+    interface_name: position
+
+fr3_effort_forward_command_controller:
+  ros__parameters:
+    joints:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+    interface_name: effort
+
+# --- Inspire hand ------------------------------------------------------------
+# Joint order matches inspire_hand_driver.kinematics.DRIVEN_JOINTS, which is the
+# hand's own register order (little, ring, middle, index, thumb bend, thumb
+# rotation). Keeping it means a script that indexes by position reads the same
+# against the simulator and against the real driver.
+
+hand_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - pinky_proximal_joint
+      - ring_proximal_joint
+      - middle_proximal_joint
+      - index_proximal_joint
+      - thumb_proximal_pitch_joint
+      - thumb_proximal_yaw_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    # On, unlike the arm's: addressing a subset of the fingers is the normal
+    # way to command a hand, and it mirrors the driver's own service, which
+    # lets any subset of the six channels be named.
+    allow_partial_joints_goal: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+hand_position_forward_command_controller:
+  ros__parameters:
+    joints:
+      - pinky_proximal_joint
+      - ring_proximal_joint
+      - middle_proximal_joint
+      - index_proximal_joint
+      - thumb_proximal_pitch_joint
+      - thumb_proximal_yaw_joint
+    interface_name: position
+
+hand_effort_forward_command_controller:
+  ros__parameters:
+    joints:
+      - pinky_proximal_joint
+      - ring_proximal_joint
+      - middle_proximal_joint
+      - index_proximal_joint
+      - thumb_proximal_pitch_joint
+      - thumb_proximal_yaw_joint
+    interface_name: effort

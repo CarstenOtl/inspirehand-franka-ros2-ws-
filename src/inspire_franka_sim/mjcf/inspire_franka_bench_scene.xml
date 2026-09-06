@@ -1,0 +1,48 @@
+<mujoco model="inspire_franka_bench_scene">
+  <!-- The default scene: an FR3 with a bare flange, and the Inspire hand
+       standing on the bench beside it. Two independent assets sharing a world
+       and a controller_manager - which is how the real setup is wired.
+
+       The hand's placement here must match hand_bench_xyz/rpy in
+       inspire_franka_description/urdf/inspire_franka.urdf.xacro, or MuJoCo and
+       TF disagree about where the hand is. test/test_mjcf.py checks that. -->
+
+  <!-- Both must precede the include: fr3.xml's <attach> resolves `end_effector`
+       at parse time. -->
+  <asset>
+    <model name="end_effector" file="no_end_effector.xml"/>
+    <model name="inspire_hand" file="inspire_hand_right.xml"/>
+  </asset>
+
+  <include file="fr3.xml"/>
+  <include file="scene_common.xml"/>
+
+  <worldbody>
+    <frame pos="0.45 -0.35 0" quat="1 0 0 0">
+      <attach model="inspire_hand" prefix=""/>
+    </frame>
+  </worldbody>
+
+  <!--
+    A combined rest pose, under a third name.
+
+    fr3.xml defines "home" (the arm's seven joints) and the hand asset defines
+    "open" (its twelve). Either one alone would be wrong here, because MuJoCo
+    zero-pads a keyframe to the full model: "home" would put the hand's
+    followers at 0 instead of -0.04545 and start the sim violating its own
+    equality constraints, while "open" would put the arm at all-zeros, fully
+    extended. Neither can be redefined - a duplicate key name is a hard error -
+    so the combined pose gets its own name and the launch selects it.
+
+    Order is model order: the arm's seven joints, then the hand's twelve as
+    inspire_hand_right.xml declares them (thumb yaw, thumb pitch, thumb
+    intermediate, thumb distal, then index/middle/ring/pinky proximal and
+    intermediate in pairs).
+  -->
+  <keyframe>
+    <key name="start"
+      qpos="0 -0.785398163 0 -2.35619449 0 1.57079633 0.785398163
+            0 0 0 0
+            0 -0.04545 0 -0.04545 0 -0.04545 0 -0.04545"/>
+  </keyframe>
+</mujoco>

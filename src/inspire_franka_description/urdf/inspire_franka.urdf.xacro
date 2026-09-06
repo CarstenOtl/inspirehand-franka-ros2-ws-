@@ -1,0 +1,204 @@
+<?xml version="1.0"?>
+<!--
+  The Franka FR3 and the Inspire RH56 hand in one description.
+
+  By default they are two separate objects sharing a world: the arm at the
+  origin, the hand standing on the bench beside it. That is the "bench hand"
+  arrangement - the two are independent assets that happen to be in the same
+  workspace, which is exactly how the real setup is wired (one FCI connection,
+  one USB-RS485 adapter, no mechanical coupling).
+
+  `hand_mount:=flange` bolts the hand to the arm's flange instead. The
+  kinematics for that are here and correct in orientation, but the OFFSET IS A
+  PLACEHOLDER - see hand_flange_xyz below.
+
+      xacro inspire_franka.urdf.xacro                          # arm + bench hand
+      xacro inspire_franka.urdf.xacro hand:=false              # bare arm
+      xacro inspire_franka.urdf.xacro arm:=false               # hand only
+      xacro inspire_franka.urdf.xacro hand_mount:=flange       # hand on the flange
+
+  ros2_control here is SIMULATION ONLY (`mujoco` or `mock`). The real arm goes
+  through upstream franka_bringup and the real hand through inspire_hand_driver;
+  neither reads this file. See the repo README.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="inspire_franka">
+
+  <!-- Which assets exist. Both default on; either can be dropped, and dropping
+       both is caught below rather than producing an empty description. -->
+  <xacro:arg name="arm" default="true"/>
+  <xacro:arg name="hand" default="true"/>
+
+  <xacro:arg name="arm_prefix" default=""/>
+  <xacro:arg name="robot_type" default="fr3"/>
+  <!-- Franka's own two-finger gripper. Off by default: the point of this
+       workspace is the Inspire hand, and on real hardware the two would be
+       competing for the same flange. -->
+  <xacro:arg name="franka_gripper" default="false"/>
+
+  <xacro:arg name="hand_side" default="right"/>
+  <xacro:arg name="hand_prefix" default=""/>
+
+  <!-- 'bench'  - the hand stands on the table beside the arm, unattached.
+       'flange' - the hand is bolted to the arm's flange (fr3_link8).
+       'custom' - use hand_xyz/hand_rpy verbatim, against hand_parent. -->
+  <xacro:arg name="hand_mount" default="bench"/>
+  <xacro:arg name="hand_parent" default="world"/>
+  <xacro:arg name="hand_xyz" default="0 0 0"/>
+  <xacro:arg name="hand_rpy" default="0 0 0"/>
+
+  <!-- ros2_control, for simulation. -->
+  <xacro:arg name="ros2_control" default="false"/>
+  <xacro:arg name="hardware_type" default="mujoco"/>
+  <xacro:arg name="mujoco_model" default=""/>
+  <xacro:arg name="pids_config_file" default=""/>
+  <xacro:arg name="headless" default="true"/>
+  <!-- Which MJCF keyframe the simulation starts from. Not a fixed "home": the
+       combined scenes have to define their own key (fr3.xml's "home" covers
+       only the arm, the hand asset's "open" only the hand, and MuJoCo zero-pads
+       a keyframe to the whole model), so the launch tells us which one. -->
+  <xacro:arg name="initial_keyframe" default="home"/>
+
+  <xacro:include filename="$(find franka_description)/robots/common/franka_robot.xacro"/>
+  <xacro:include filename="$(find inspire_hand_description)/urdf/inspire_hand.macro.xacro"/>
+  <xacro:include
+    filename="$(find inspire_hand_description)/ros2_control/inspire_hand.ros2_control.xacro"/>
+  <xacro:include filename="$(find inspire_franka_description)/urdf/fr3.ros2_control.xacro"/>
+
+  <xacro:property name="with_arm" value="$(arg arm)"/>
+  <xacro:property name="with_hand" value="$(arg hand)"/>
+  <xacro:property name="mount" value="$(arg hand_mount)"/>
+
+  <!--
+    Guards. A silent empty or half-built URDF is a miserable thing to debug, so
+    these refuse to expand instead.
+
+    `dict()[message]` rather than the more obvious xacro.error(): error() only
+    prints, so process_file() would carry on and hand back a broken description
+    to anything driving xacro from Python. A KeyError propagates out of both the
+    command line and the API, and carries the message with it. It has to be
+    called from an attribute of an emitted element - a <xacro:property> is lazy
+    and would never evaluate at all. Braces are avoided because xacro ends a
+    ${...} expression at the first closing brace it sees.
+  -->
+  <xacro:unless value="${with_arm or with_hand}">
+    <link name="${dict()['inspire_franka: arm and hand are both false, so there is nothing to describe. Set arm:=true or hand:=true.']}"/>
+  </xacro:unless>
+  <xacro:if value="${mount == 'flange' and not with_arm}">
+    <link name="${dict()['inspire_franka: hand_mount:=flange needs an arm to bolt the hand to, but arm:=false.']}"/>
+  </xacro:if>
+  <xacro:unless value="${mount in ('bench', 'flange', 'custom')}">
+    <link name="${dict()['inspire_franka: hand_mount must be bench, flange or custom.']}"/>
+  </xacro:unless>
+
+  <!-- franka_arm creates its own `connected_to` link, so `world` comes from the
+       arm when there is one. Without an arm nothing would declare it, and a
+       second declaration alongside the arm's would be a duplicate-link error -
+       hence the condition rather than an unconditional <link name="world"/>. -->
+  <xacro:unless value="${with_arm}">
+    <link name="world"/>
+  </xacro:unless>
+
+  <xacro:if value="${with_arm}">
+    <xacro:property name="arm_prefix_raw" value="$(arg arm_prefix)"/>
+    <xacro:franka_robot
+      robot_type="$(arg robot_type)"
+      arm_prefix="${arm_prefix_raw + '_' if arm_prefix_raw else ''}"
+      hand="$(arg franka_gripper)"
+      ee_id="${'franka_hand' if '$(arg franka_gripper)' == 'true' else 'none'}"
+      connected_to="world"
+      xyz="0 0 0"
+      rpy="0 0 0"
+      with_sc="false"/>
+  </xacro:if>
+
+  <xacro:if value="${with_hand}">
+    <!-- Where the arm's flange frame is, for the flange mount. franka_arm names
+         it <arm_prefix><robot_type>_link8. -->
+    <xacro:property name="arm_link_prefix"
+      value="${('$(arg arm_prefix)' + '_' if '$(arg arm_prefix)' else '') + '$(arg robot_type)' + '_'}"/>
+
+    <!--
+      Bench pose: 0.45 m forward and 0.35 m to the arm's right, standing on the
+      table. 0.57 m from the base, comfortably inside the FR3's reach, so the
+      arm can be driven to touch the hand.
+
+      Orientation: hand_mount's +z is the direction the fingers point (the
+      vendored model's base_joint rotates hand_base_link's -y onto +z), so an
+      identity rotation stands the hand upright on the bench.
+    -->
+    <xacro:property name="hand_bench_xyz" value="0.45 -0.35 0.0"/>
+    <xacro:property name="hand_bench_rpy" value="0 0 0"/>
+
+    <!--
+      PLACEHOLDER. The rotation is right - the fingers point away from the flange
+      along the arm's approach axis, which is what an identity rotation gives -
+      but 10 mm is a guess at the adapter plate's thickness, and there is no
+      measured clocking angle about z.
+
+      To fix: measure the adapter, set hand_flange_xyz to its true thickness and
+      hand_flange_rpy's yaw to how the hand is clocked on it. Until then, treat
+      any flange-mounted fingertip pose as approximate.
+    -->
+    <xacro:property name="hand_flange_xyz" value="0 0 0.010"/>
+    <xacro:property name="hand_flange_rpy" value="0 0 0"/>
+
+    <xacro:property name="hand_parent_resolved"
+      value="${arm_link_prefix + 'link8' if mount == 'flange'
+              else '$(arg hand_parent)'}"/>
+    <xacro:property name="hand_xyz_resolved"
+      value="${hand_flange_xyz if mount == 'flange'
+              else hand_bench_xyz if mount == 'bench'
+              else '$(arg hand_xyz)'}"/>
+    <xacro:property name="hand_rpy_resolved"
+      value="${hand_flange_rpy if mount == 'flange'
+              else hand_bench_rpy if mount == 'bench'
+              else '$(arg hand_rpy)'}"/>
+
+    <xacro:inspire_hand
+      side="$(arg hand_side)"
+      prefix="$(arg hand_prefix)"
+      parent="${hand_parent_resolved}"
+      xyz="${hand_xyz_resolved}"
+      rpy="${hand_rpy_resolved}"/>
+  </xacro:if>
+
+  <!--
+    ONE hardware component for both assets. mujoco_ros2_control instantiates a
+    MuJoCo simulation per component, so a second block would give the hand its
+    own world, where it could never touch anything the arm holds - and where the
+    two would run on separate clocks.
+
+    They are still driven by separate controllers over disjoint joint sets, so
+    "together" and "individually" both work; see inspire_franka_sim's controller
+    config.
+  -->
+  <xacro:if value="$(arg ros2_control)">
+    <ros2_control name="InspireFrankaSystem" type="system">
+      <hardware>
+        <xacro:if value="${'$(arg hardware_type)' == 'mujoco'}">
+          <plugin>mujoco_ros2_control/MujocoSystemInterface</plugin>
+          <param name="mujoco_model">$(arg mujoco_model)</param>
+          <xacro:unless value="${'$(arg pids_config_file)' == ''}">
+            <param name="pids_config_file">$(arg pids_config_file)</param>
+          </xacro:unless>
+          <!-- Start from the MJCF keyframe rather than all-zeros, so the arm
+               does not begin fully extended and fall under gravity. -->
+          <param name="initial_keyframe">$(arg initial_keyframe)</param>
+          <param name="headless">$(arg headless)</param>
+        </xacro:if>
+        <xacro:if value="${'$(arg hardware_type)' == 'mock'}">
+          <plugin>mock_components/GenericSystem</plugin>
+        </xacro:if>
+      </hardware>
+
+      <xacro:if value="${with_arm}">
+        <xacro:fr3_ros2_control_joints
+          prefix="${('$(arg arm_prefix)' + '_' if '$(arg arm_prefix)' else '') + '$(arg robot_type)' + '_'}"/>
+      </xacro:if>
+      <xacro:if value="${with_hand}">
+        <xacro:inspire_hand_ros2_control_joints prefix="$(arg hand_prefix)"/>
+      </xacro:if>
+    </ros2_control>
+  </xacro:if>
+
+</robot>

@@ -1,0 +1,65 @@
+# PID gains for mujoco_ros2_control, on top of the MJCF's <motor> (pure torque)
+# actuators - the FR3's seven joints and the Inspire hand's six driven ones.
+#
+# Why this file has to exist: both models use <motor> actuators, so that an
+# `effort` command interface is legal (a <position> actuator makes effort
+# unsupported, and an incompatible pairing is a hard error at controller_manager
+# startup). A <motor> has no built-in servo, so the `position` and `velocity`
+# command interfaces are realised by these PIDs, which output a torque.
+#
+# Written out per joint rather than with YAML anchors on purpose: ROS 2's
+# parameter YAML parser is its own implementation and handles neither anchors
+# nor merge keys.
+
+/**:
+  ros__parameters:
+    pid_gains:
+      position:
+        # --- FR3 -------------------------------------------------------------
+        # p/d start from Menagerie's original <position> actuator kp/kv, which
+        # were tuned for this exact model; the clamps mirror each joint's torque
+        # limit (+-87 Nm for joints 1-4, +-12 Nm for 5-7). The integral terms
+        # are NOT from upstream - a pure PD law has no gravity compensation and
+        # sits with a steady-state droop under load. They are deliberately small
+        # with tight i_clamp values. If the arm creeps or oscillates at rest,
+        # this is the block to look at.
+        fr3_joint1: {p: 4500.0, i: 50.0, d: 450.0, u_clamp_max: 87.0, u_clamp_min: -87.0, i_clamp_max: 20.0, i_clamp_min: -20.0}
+        fr3_joint2: {p: 4500.0, i: 50.0, d: 450.0, u_clamp_max: 87.0, u_clamp_min: -87.0, i_clamp_max: 20.0, i_clamp_min: -20.0}
+        fr3_joint3: {p: 3500.0, i: 50.0, d: 350.0, u_clamp_max: 87.0, u_clamp_min: -87.0, i_clamp_max: 20.0, i_clamp_min: -20.0}
+        fr3_joint4: {p: 3500.0, i: 50.0, d: 350.0, u_clamp_max: 87.0, u_clamp_min: -87.0, i_clamp_max: 20.0, i_clamp_min: -20.0}
+        fr3_joint5: {p: 2000.0, i: 10.0, d: 200.0, u_clamp_max: 12.0, u_clamp_min: -12.0, i_clamp_max: 5.0, i_clamp_min: -5.0}
+        fr3_joint6: {p: 2000.0, i: 10.0, d: 200.0, u_clamp_max: 12.0, u_clamp_min: -12.0, i_clamp_max: 5.0, i_clamp_min: -5.0}
+        fr3_joint7: {p: 2000.0, i: 10.0, d: 200.0, u_clamp_max: 12.0, u_clamp_min: -12.0, i_clamp_max: 5.0, i_clamp_min: -5.0}
+
+        # --- Inspire hand ----------------------------------------------------
+        # Only the six driven joints appear. The six followers are held by
+        # MuJoCo equality constraints and have no actuator to serve a gain.
+        #
+        # Chosen by simulating a step on this exact model (2 ms timestep, torque
+        # clamped at the actuators' +-1 Nm): p=20, d=0.4 reaches a 1.0 rad
+        # target in 0.21 s and settles within 0.2 mrad, with the coupled joint
+        # tracking to 0.04 mrad and the model coming fully to rest.
+        #
+        # There is deliberately NO integral term, which is where these differ
+        # from the arm's. The fingers are light enough that gravity droop is
+        # negligible, so the only thing an I term integrates against is the
+        # joints' frictionloss - and every value tried (i=2..20) turned a
+        # 0.2 mrad error into a 8-14 mrad overshoot. Add one only if you give
+        # the hand a payload heavy enough to droop.
+        pinky_proximal_joint:       {p: 20.0, i: 0.0, d: 0.4, u_clamp_max: 1.0, u_clamp_min: -1.0, i_clamp_max: 0.1, i_clamp_min: -0.1}
+        ring_proximal_joint:        {p: 20.0, i: 0.0, d: 0.4, u_clamp_max: 1.0, u_clamp_min: -1.0, i_clamp_max: 0.1, i_clamp_min: -0.1}
+        middle_proximal_joint:      {p: 20.0, i: 0.0, d: 0.4, u_clamp_max: 1.0, u_clamp_min: -1.0, i_clamp_max: 0.1, i_clamp_min: -0.1}
+        index_proximal_joint:       {p: 20.0, i: 0.0, d: 0.4, u_clamp_max: 1.0, u_clamp_min: -1.0, i_clamp_max: 0.1, i_clamp_min: -0.1}
+        thumb_proximal_pitch_joint: {p: 20.0, i: 0.0, d: 0.4, u_clamp_max: 1.0, u_clamp_min: -1.0, i_clamp_max: 0.1, i_clamp_min: -0.1}
+        thumb_proximal_yaw_joint:   {p: 20.0, i: 0.0, d: 0.4, u_clamp_max: 1.0, u_clamp_min: -1.0, i_clamp_max: 0.1, i_clamp_min: -0.1}
+
+      velocity:
+        fr3_joint1: {p: 200.0, i: 5.0, d: 0.0, u_clamp_max: 87.0, u_clamp_min: -87.0, i_clamp_max: 20.0, i_clamp_min: -20.0}
+        fr3_joint2: {p: 200.0, i: 5.0, d: 0.0, u_clamp_max: 87.0, u_clamp_min: -87.0, i_clamp_max: 20.0, i_clamp_min: -20.0}
+        fr3_joint3: {p: 150.0, i: 5.0, d: 0.0, u_clamp_max: 87.0, u_clamp_min: -87.0, i_clamp_max: 20.0, i_clamp_min: -20.0}
+        fr3_joint4: {p: 150.0, i: 5.0, d: 0.0, u_clamp_max: 87.0, u_clamp_min: -87.0, i_clamp_max: 20.0, i_clamp_min: -20.0}
+        fr3_joint5: {p: 50.0, i: 2.0, d: 0.0, u_clamp_max: 12.0, u_clamp_min: -12.0, i_clamp_max: 5.0, i_clamp_min: -5.0}
+        fr3_joint6: {p: 50.0, i: 2.0, d: 0.0, u_clamp_max: 12.0, u_clamp_min: -12.0, i_clamp_max: 5.0, i_clamp_min: -5.0}
+        fr3_joint7: {p: 50.0, i: 2.0, d: 0.0, u_clamp_max: 12.0, u_clamp_min: -12.0, i_clamp_max: 5.0, i_clamp_min: -5.0}
+        # The hand declares no velocity command interface, so it needs no
+        # velocity gains.

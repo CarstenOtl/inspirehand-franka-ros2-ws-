@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<!--
+  ros2_control interface declarations for the FR3's seven joints.
+
+  SIMULATION ONLY, and hand-written here rather than reused from franka_hardware
+  on purpose. franka_hardware ships franka_arm.ros2_control.xacro, but it emits a
+  whole <ros2_control> component hardcoded to FrankaHardwareInterface, plus
+  Franka's GPIO, elbow, cartesian-pose and TCP force/torque interfaces - none of
+  which exist under MuJoCo. What is needed here is the opposite shape: just the
+  <joint> elements, so the arm and the hand can share ONE component and one
+  MuJoCo world.
+
+  The real arm does not come through this file at all. It is driven by upstream
+  franka_bringup, over the FCI, with franka_hardware's own description. See the
+  repo README on why the two stacks are separate.
+
+  Worth diffing against franka_hardware/ros2_control/franka_arm.ros2_control.xacro
+  whenever franka_ros2 is bumped, in case the joint naming changes.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="fr3_ros2_control_joints"
+    params="prefix:='fr3_' include_effort_command:=true">
+
+    <!-- Franka's documented home pose, joint by joint. Kept in sync with the
+         `home` keyframe in inspire_franka_sim/mjcf/fr3.xml - change one, change
+         the other, or the arm jumps on the first control cycle. -->
+    <xacro:property name="home"
+      value="${dict(joint1=0.0, joint2=-pi/4, joint3=0.0, joint4=-3*pi/4,
+                    joint5=0.0, joint6=pi/2,  joint7=pi/4)}"/>
+
+    <xacro:macro name="fr3_joint" params="index">
+      <joint name="${prefix}joint${index}">
+        <command_interface name="position"/>
+        <command_interface name="velocity"/>
+        <xacro:if value="${include_effort_command}">
+          <command_interface name="effort"/>
+        </xacro:if>
+        <state_interface name="position">
+          <param name="initial_value">${home['joint' + str(index)]}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+    </xacro:macro>
+
+    <xacro:fr3_joint index="1"/>
+    <xacro:fr3_joint index="2"/>
+    <xacro:fr3_joint index="3"/>
+    <xacro:fr3_joint index="4"/>
+    <xacro:fr3_joint index="5"/>
+    <xacro:fr3_joint index="6"/>
+    <xacro:fr3_joint index="7"/>
+
+  </xacro:macro>
+</robot>

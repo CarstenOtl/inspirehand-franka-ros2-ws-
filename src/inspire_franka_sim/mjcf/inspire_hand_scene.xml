@@ -1,0 +1,24 @@
+<mujoco model="inspire_hand_scene">
+  <!-- The right Inspire hand on its own, standing on the floor. `arm:=false` in
+       the sim launch.
+
+       The hand is brought in as a model asset and <attach>ed rather than
+       <include>d, so the scene decides where it goes: an include would drop it
+       at the world origin with its palm through the floor. Same pattern as the
+       bench scene, so the two place the hand identically. -->
+
+  <asset>
+    <model name="inspire_hand" file="inspire_hand_right.xml"/>
+  </asset>
+
+  <include file="scene_common.xml"/>
+
+  <worldbody>
+    <frame pos="0 0 0.05">
+      <attach model="inspire_hand" prefix=""/>
+    </frame>
+  </worldbody>
+
+  <!-- The hand's own "open" keyframe comes in with the attach; it is what the
+       launch selects for this scene. -->
+</mujoco>

@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>inspire_franka_sim</name>
+  <version>0.1.0</version>
+  <description>
+    MuJoCo simulation of the Franka FR3 and the Inspire RH56 hand, driven
+    through ros2_control.
+
+    Holds the MJCF models (the FR3 vendored from MuJoCo Menagerie, the hand
+    generated from its URDF by scripts/make_hand_mjcf.py), the controller and
+    PID configuration, and the launch that ties them together.
+  </description>
+  <maintainer email="boizbigd@gmail.com">Carsten Oertel</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>inspire_franka_description</exec_depend>
+  <exec_depend>inspire_hand_description</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>forward_command_controller</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <!-- Built from source into /opt/mujoco_ws by the dev image rather than
+       installed from apt; see docker/Dockerfile for why the version is pinned. -->
+  <exec_depend>mujoco_ros2_control</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

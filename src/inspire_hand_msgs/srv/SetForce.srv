@@ -1,0 +1,9 @@
+# Set the per-DOF grip force threshold, above which the DOF stops closing.
+# Naming follows SetAngles. Volatile, like SetSpeed.
+string[] name
+
+# 0..1000, the hand's own register units. Clamped.
+int32[] force
+---
+bool accepted
+string message

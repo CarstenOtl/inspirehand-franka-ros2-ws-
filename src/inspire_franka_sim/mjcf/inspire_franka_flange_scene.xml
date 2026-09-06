@@ -1,0 +1,29 @@
+<mujoco model="inspire_franka_flange_scene">
+  <!-- The Inspire hand bolted to the FR3's flange. `hand_mount:=flange`.
+
+       Differs from the bench scene only in binding fr3.xml's `end_effector`
+       slot to the hand wrapper instead of the empty stub. The mount offset
+       lives in inspire_hand_on_flange.xml and is a PLACEHOLDER - see there.
+
+       <attach> merges the hand's bodies, meshes, actuators, equality
+       constraints and contact excludes into this model, and the hand keeps its
+       OWN <default> class rather than inheriting fr3.xml's `fr3` class. That
+       matters: the `fr3` class sets frictionloss="1.137", far more than a
+       finger joint's entire 1 Nm torque budget, so leakage would leave the
+       fingers unable to move at all. -->
+
+  <asset>
+    <model name="end_effector" file="inspire_hand_on_flange.xml"/>
+  </asset>
+
+  <include file="fr3.xml"/>
+  <include file="scene_common.xml"/>
+
+  <!-- Same reasoning as the bench scene. -->
+  <keyframe>
+    <key name="start"
+      qpos="0 -0.785398163 0 -2.35619449 0 1.57079633 0.785398163
+            0 0 0 0
+            0 -0.04545 0 -0.04545 0 -0.04545 0 -0.04545"/>
+  </keyframe>
+</mujoco>

@@ -1,0 +1,126 @@
+<?xml version="1.0"?>
+<!--
+  ros2_control interface declarations for the Inspire RH56 hand.
+
+  Scope: SIMULATION ONLY. The real hand is driven by `inspire_hand_driver`, a
+  plain rclpy node speaking Modbus RTU over RS485 - not a ros2_control hardware
+  component. Nothing here is loaded when talking to hardware. See the repo
+  README for why the two stacks are separate.
+
+  Two macros, because the hand's joints have to appear in two different shapes:
+
+    inspire_hand_ros2_control_joints
+        Just the <joint> elements. This is what a combined description uses, so
+        that the arm and the hand end up inside ONE <ros2_control> component.
+        That is not a style preference: mujoco_ros2_control instantiates one
+        MuJoCo simulation per hardware component, so a second component would
+        put the hand in its own separate world, where it could never touch
+        anything the arm is holding.
+
+    inspire_hand_ros2_control
+        The same joints wrapped in their own component, for simulating a hand
+        with no arm.
+
+  Driven vs. passive.
+  Six joints take commands; the other six are followers, realised in MuJoCo as
+  equality constraints (see inspire_franka_sim/scripts/make_hand_mjcf.py). The
+  followers are still declared here, as state-only, because otherwise nothing
+  publishes their positions and robot_state_publisher drops every fingertip
+  frame from TF.
+
+  This mirrors what the real driver does: it commands six DOF and publishes
+  twelve joints. A script written against one works against the other.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- One driven joint: position always, effort optionally. -->
+  <xacro:macro name="inspire_driven_joint" params="name include_effort_command:=true">
+    <joint name="${name}">
+      <command_interface name="position"/>
+      <xacro:if value="${include_effort_command}">
+        <command_interface name="effort"/>
+      </xacro:if>
+      <!-- The hand rests open, so every driven joint starts at its lower limit.
+           Must agree with the MJCF's `open` keyframe. -->
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- One follower. No command interface: it cannot be driven independently of
+       the joint that drives it, on hardware or in MuJoCo. -->
+  <xacro:macro name="inspire_passive_joint" params="name">
+    <joint name="${name}">
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </xacro:macro>
+
+  <!--
+    All twelve joints, in the same order as
+    inspire_hand_driver.kinematics.ALL_JOINTS - driven first, then followers.
+    Written out rather than looped: xacro has no for-each, and the recursive
+    macro that emulates one costs more in readability than the twelve lines it
+    saves.
+  -->
+  <xacro:macro name="inspire_hand_ros2_control_joints"
+    params="prefix:='' include_effort_command:=true">
+
+    <xacro:inspire_driven_joint name="${prefix}pinky_proximal_joint"
+      include_effort_command="${include_effort_command}"/>
+    <xacro:inspire_driven_joint name="${prefix}ring_proximal_joint"
+      include_effort_command="${include_effort_command}"/>
+    <xacro:inspire_driven_joint name="${prefix}middle_proximal_joint"
+      include_effort_command="${include_effort_command}"/>
+    <xacro:inspire_driven_joint name="${prefix}index_proximal_joint"
+      include_effort_command="${include_effort_command}"/>
+    <xacro:inspire_driven_joint name="${prefix}thumb_proximal_pitch_joint"
+      include_effort_command="${include_effort_command}"/>
+    <xacro:inspire_driven_joint name="${prefix}thumb_proximal_yaw_joint"
+      include_effort_command="${include_effort_command}"/>
+
+    <xacro:inspire_passive_joint name="${prefix}pinky_intermediate_joint"/>
+    <xacro:inspire_passive_joint name="${prefix}ring_intermediate_joint"/>
+    <xacro:inspire_passive_joint name="${prefix}middle_intermediate_joint"/>
+    <xacro:inspire_passive_joint name="${prefix}index_intermediate_joint"/>
+    <xacro:inspire_passive_joint name="${prefix}thumb_intermediate_joint"/>
+    <xacro:inspire_passive_joint name="${prefix}thumb_distal_joint"/>
+
+  </xacro:macro>
+
+  <!-- The hand as its own hardware component: a hand-only simulation. -->
+  <xacro:macro name="inspire_hand_ros2_control"
+    params="name:='InspireHandSystem'
+            prefix:=''
+            hardware_type:='mock'
+            mujoco_model:=''
+            pids_config_file:=''
+            headless:=true">
+
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <xacro:if value="${hardware_type == 'mujoco'}">
+          <plugin>mujoco_ros2_control/MujocoSystemInterface</plugin>
+          <param name="mujoco_model">${mujoco_model}</param>
+          <xacro:unless value="${pids_config_file == ''}">
+            <param name="pids_config_file">${pids_config_file}</param>
+          </xacro:unless>
+          <param name="initial_keyframe">open</param>
+          <!-- Normalised to lowercase: xacro coerces a bare `true` default into
+               a Python bool, which would serialise as "True" and fail to parse. -->
+          <param name="headless">${str(headless).lower()}</param>
+        </xacro:if>
+        <xacro:if value="${hardware_type == 'mock'}">
+          <plugin>mock_components/GenericSystem</plugin>
+        </xacro:if>
+      </hardware>
+
+      <xacro:inspire_hand_ros2_control_joints prefix="${prefix}"/>
+    </ros2_control>
+
+  </xacro:macro>
+</robot>

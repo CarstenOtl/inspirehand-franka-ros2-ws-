@@ -1,0 +1,68 @@
+services:
+  inspire_franka:
+    container_name: inspire_franka
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # The build reaches packages.ros.org (apt) and github.com (libfranka).
+      # Host networking is here because Docker's bridge DNS is unreliable on
+      # some corporate networks; drop it if yours is fine.
+      network: host
+    volumes:
+      # The whole workspace, so edits on the host are live in the container.
+      # Consequence: anything the image baked into src/ would be shadowed -
+      # nothing here relies on that, but keep it in mind if you add something.
+      - ../:/root/develop_ws
+      - ./.bashrc:/root/.bashrc
+      # The USB-RS485 adapter the hand is on, usually /dev/ttyUSB0.
+      - /dev:/dev
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${HOME}/.Xauthority:/root/.Xauthority:rw
+      # Keeps the MuJoCo viewer startable. If the image's mesa is older than the
+      # host kernel's DRM, every windowed launch fails over from the iris driver
+      # ("libGL error: failed to load driver: iris") and rebuilds its shader
+      # cache. On a cold cache that can take over 10 s - and mujoco_ros2_control
+      # gives the window a bounded time to signal ready before declaring the
+      # hardware component dead. Persisting the cache means only the first
+      # launch on a fresh volume pays that cost.
+      #
+      # Symptom if this is missing: "Timed out waiting to start simulation
+      # rendering!", often followed by a misleading complaint about the robot
+      # description. Relaunching is enough, because the cache is warm by then.
+      - mesa_shader_cache:/root/.cache/mesa_shader_cache
+    environment:
+      - DISPLAY=$DISPLAY
+      - QT_X11_NO_MITSHM=1
+      # Uncomment to build every package in src/franka_ros2, including the
+      # Gazebo, MoveIt, mobile-base and RealSense/ZED ones the entrypoint
+      # otherwise marks COLCON_IGNORE. Their dependencies are not in this image;
+      # you will have to install them yourself.
+      # - FRANKA_ROS2_BUILD_ALL=1
+    restart: no
+    # host networking so the FCI at its company-network address is reachable
+    # with no port mapping and no bridge address to translate.
+    network_mode: host
+    # The serial adapter. `dialout` covers /dev/ttyUSB* on a stock Ubuntu host;
+    # this is a good deal narrower than privileged: true, which is what a raw
+    # EtherCAT NIC would have needed. The Inspire hand is plain serial, so it
+    # does not.
+    group_add:
+      - dialout
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    # Real-time limits for the FCI's 1 kHz loop, matching what upstream
+    # franka_ros2's own compose file sets.
+    #
+    # SYS_NICE is what actually lets the control thread take a real-time
+    # priority; rtprio is the limit it is allowed to ask for. memlock matters
+    # independently: libfranka locks its pages to keep the control loop off the
+    # pager, and Docker's default limit is far too small for that to succeed.
+    cap_add:
+      - SYS_NICE
+    ulimits:
+      rtprio: 99
+      rttime: -1
+      memlock: 8428281856
+
+volumes:
+  mesa_shader_cache:

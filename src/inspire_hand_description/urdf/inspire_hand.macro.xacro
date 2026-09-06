@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!--
+  The macro to instantiate an Inspire RH56 hand from another description.
+
+  Dispatches on `side` to one of the two generated macros. They are separate
+  files because the two hands are not a mirror of each other in URDF terms -
+  every link origin, inertia and mesh differs - so a single parameterised macro
+  would just be both of them behind an if/else anyway.
+
+  Instantiating it standalone (hand_mount becomes the root link):
+
+      <xacro:inspire_hand side="right"/>
+
+  Bolting it to something (a flange, a bench post, another robot's link):
+
+      <xacro:inspire_hand side="right" parent="fr3_link8" xyz="0 0 0.01" rpy="0 0 0"/>
+
+  Two hands in one description need a prefix each, and the driver node needs the
+  matching `joint_prefix` parameter or its joint states will name joints that do
+  not exist:
+
+      <xacro:inspire_hand side="left"  prefix="left_"  parent="torso"  .../>
+      <xacro:inspire_hand side="right" prefix="right_" parent="torso"  .../>
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find inspire_hand_description)/urdf/inspire_hand_right.macro.xacro"/>
+  <xacro:include filename="$(find inspire_hand_description)/urdf/inspire_hand_left.macro.xacro"/>
+
+  <xacro:macro name="inspire_hand"
+    params="side:='right' prefix:='' parent:='' xyz:='0 0 0' rpy:='0 0 0'">
+
+    <xacro:if value="${side == 'right'}">
+      <xacro:inspire_hand_right prefix="${prefix}" parent="${parent}" xyz="${xyz}" rpy="${rpy}"/>
+    </xacro:if>
+    <xacro:if value="${side == 'left'}">
+      <xacro:inspire_hand_left prefix="${prefix}" parent="${parent}" xyz="${xyz}" rpy="${rpy}"/>
+    </xacro:if>
+    <!-- Fails the expansion rather than silently producing a hand-less
+         description. See inspire_franka_description's copy of this idiom for
+         why it is a KeyError and not xacro.error(). -->
+    <xacro:unless value="${side in ('left', 'right')}">
+      <link name="${dict()['inspire_hand: side must be left or right.']}"/>
+    </xacro:unless>
+
+  </xacro:macro>
+</robot>

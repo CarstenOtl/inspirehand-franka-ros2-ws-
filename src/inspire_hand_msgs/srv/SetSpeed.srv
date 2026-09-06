@@ -1,0 +1,11 @@
+# Set the per-DOF motion speed limit. Naming follows SetAngles.
+#
+# Volatile: the hand forgets these on power cycle unless they are committed to
+# flash, which this driver deliberately never does.
+string[] name
+
+# 0..1000, the hand's own register units. Clamped.
+int32[] speed
+---
+bool accepted
+string message
