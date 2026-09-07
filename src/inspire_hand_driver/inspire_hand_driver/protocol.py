@@ -150,11 +150,11 @@ class HandTransport:
             raise HandCommunicationError("CRC mismatch in reply")
         nbytes = resp[2]
         return [
-            int.from_bytes(resp[3 + 2 * i : 5 + 2 * i], "little") for i in range(nbytes // 2)
+            int.from_bytes(resp[3 + 2 * i : 5 + 2 * i], "big") for i in range(nbytes // 2)
         ]
 
     def _write_modbus(self, addr: int, values: Sequence[int]) -> None:
-        payload = b"".join(int(v).to_bytes(2, "little") for v in values)
+        payload = b"".join(int(v).to_bytes(2, "big") for v in values)
         req = (
             bytes([self.hand_id, 0x10])
             + addr.to_bytes(2, "big")

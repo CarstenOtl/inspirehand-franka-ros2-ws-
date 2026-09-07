@@ -78,9 +78,20 @@ ros2 launch inspire_franka_bringup hand.launch.py port:=/dev/ttyUSB0  # hand alo
 ros2 launch inspire_franka_trajectory_replay replay.launch.py \
     robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0
 
+# Either device alone. The runner flag must match the launch argument:
+# arm:=false with --no-arm, hand:=false with --no-hand.
+ros2 launch inspire_franka_trajectory_replay replay.launch.py \
+    hand_port:=/dev/ttyUSB0 arm:=false
+
 # In another sourced shell: home from YAML, then replay one recorded rollout.
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
     apps/traj_replay/demo_trajs/traj_1 --cycle 1 \
+    --home apps/traj_replay/demo_trajs/homing/threading.yaml
+
+# Hand only. Replays on the recording's own clock, not the arm's scaled one,
+# so no FR3 limit check applies - see the package README.
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    apps/traj_replay/demo_trajs/traj_1 --cycle 1 --no-arm \
     --home apps/traj_replay/demo_trajs/homing/threading.yaml
 
 # Inspect the source trajectory in Chi's MuJoCo replay viewer. Do not run a
@@ -221,7 +232,7 @@ Running both:
 /robot_description             the arm's URDF
 /inspire_hand/joint_states     the hand, twelve joints in radians
 /inspire_hand/state            the hand, six channels as open ratios
-/inspire_hand/command          command the hand
+/inspire_hand/command          command the hand, open ratios (1.0 = open)
 /hand/robot_description        the hand's URDF, namespaced so it does not
                                collide with the arm's
 /tf                            both, merged
@@ -313,8 +324,15 @@ no error at all — just a robot that quietly does the wrong thing.
   packages compile on ROS 2 Jazzy.** The full Franka/Inspire workspace was last
   verified before the camera wrapper was added; camera streaming still requires
   a connected D415.
-- **94 tests pass in the container**, 0 failures: 29 driver, 20 description, 16
-  MJCF, 4 mimic cross-check, plus xmllint and lint_cmake.
+- **153 tests pass in the container**, 0 failures, including the 48 driver
+  tests (29 originally, plus the endianness regression and the command
+  unit/range tests below). Add `inspire_franka_trajectory_replay` to
+  `rg2test`'s selection to pick up its 9 as well; the stock selection misses
+  them. Note that `rg2test` selects
+  `camera_calibration`, whose package has no `test/` directory - its tests live
+  in `apps/camera_calibration/tests/` - so pytest collects nothing there and
+  colcon reports the package as failed with exit code 5. That is a stale
+  selection in `rg2test`, not a broken test.
 - **Simulation — verified end to end.** MuJoCo runs headless with
   `MujocoSystemInterface` active at 1 kHz, all three controllers active, sim
   clock advancing. Arm and hand trajectories sent *simultaneously* both report
@@ -331,10 +349,72 @@ no error at all — just a robot that quietly does the wrong thing.
   Menagerie-derived PID gains under gravity, not a plumbing problem; the hand,
   which was tuned here, lands within 0.1 mrad. Tune `config/pids.yaml` if you
   need the arm tighter.
-- **Hand driver — unit-tested, not yet run against this hand.** The transport
-  and register map come from a driver already working against an RH56 on a
-  bench; the joint-state and coupling layer above it is new here and has only
-  been exercised in mock and simulation.
+- **Hand driver — verified against this hand.** Read, write and a full
+  trajectory replay all confirmed on the bench RH56 over RS485 at 50 Hz.
+
+  Getting there required a real fix. The Modbus path encoded and decoded
+  register *values* little-endian; Modbus RTU is big-endian, and the register
+  addresses in the same frames were already correct. Nothing caught it, because
+  `test_protocol.py` built its fake replies with the driver's own byte order —
+  the test and the code shared one assumption, so 29 tests passed against a
+  driver that could not talk to the hardware. It read `HAND_ID` 1 as 256 and a
+  fully-open angle of 1000 as 59395, and the same swap on the write path turned
+  every commanded angle into an out-of-range value. `test_protocol.py` now
+  asserts both directions against bytes captured from the hand.
+
+  A second problem sat in the node above the transport, and inferring the unit
+  was the root of it. `_apply` decided radians-or-ratios from the *naming* --
+  joint names meant radians, channel ids meant ratios -- which put two
+  conventions on one `position` field. `1.5` as a channel id clamped to a
+  fully open hand; the same `1.5` as a joint name clamped to a fully closed
+  one. One number, opposite ends of travel, nothing logged either way. It also
+  made `SetAngles` misread its own field: called with joint names, the field
+  literally named `open_ratio` was read as radians, so `0.0` -- fully closed --
+  produced a fully **open** hand.
+
+  **Commands are now open ratios everywhere: `1.0` fully open, `0.0` fully
+  closed.** Names address DOF and nothing else, so channel ids and joint names
+  may be mixed. Out-of-range targets are **rejected, not clamped** -- the whole
+  message fails and the log names the offending entries, because clamping is
+  what turned a typo into a full-travel move.
+
+  Two consequences worth knowing:
+
+  - **Commands and `joint_states` deliberately run opposite ways.**
+    `joint_states` stays in radians, where `0.0` is the *open* pose, because
+    that is what the URDF, `robot_state_publisher` and TF need. So a rising
+    `joint_states` value means a closing hand, and a rising commanded ratio
+    means an opening one.
+  - **Callers holding radians convert at the boundary.**
+    `inspire_franka_trajectory_replay` does exactly that in `command_hand`;
+    its trajectories and homing YAMLs stay in radians, because those files
+    also carry the FR3's seven joints and a mixed-unit YAML would be worse
+    than a conversion. That runner also now derives the hand's joint limits
+    from `inspire_hand_driver.kinematics` instead of keeping its own copy --
+    the copy is what the conversion divides by, so a drifted one would have
+    silently mis-scaled every hand command rather than failing a comparison.
+
+  Nothing covered the node's command paths at all before this;
+  `test_command_units.py` now pins the unit and the range on both paths, and
+  `test_replay.py` pins the radian-to-ratio conversion at both ends of travel.
+
+  Measured tracking, cycle 1 of the checked-in threading recording, hand-only
+  at the recording's native 15 Hz resampled to a 50 Hz command stream (jitter
+  1.4 ms sd, worst interval 25 ms):
+
+  | joint | commanded range | RMSE | worst error | lag |
+  |---|---|---|---|---|
+  | `index_proximal_joint` | 0.657 | 0.027 | 0.083 | ~185 ms |
+  | `thumb_proximal_yaw_joint` | 0.300 | 0.035 | 0.048 | ~165 ms |
+  | `thumb_proximal_pitch_joint` | 0.305 | 0.009 | 0.023 | ~180 ms |
+  | three held fingers | 0.022 | 0.004 | 0.012 | not resolvable |
+
+  All radians, error quoted after shifting by the lag. **The ~0.17 s lag is the
+  hand's own closed-loop response, and it is the number that matters for
+  coordinated replay**: the RH56 takes a position target, not a trajectory, so
+  the hand trails the arm by about that much regardless of the command rate.
+  The held fingers move 0.022 rad in total, which is too little to fit a lag
+  to — their figure is curve-fitting noise, not a measurement.
 - **Arm — not yet run over the FCI from this workspace.** `franka_ros2` v3.5.3
   is a major version newer than the v2.6.0 line used previously on this machine,
   so treat the first FCI connection as unproven. `fci_check` is the cheapest

@@ -1,9 +1,25 @@
-"""Bring up the FR3 replay controller and the real Inspire hand."""
+"""Bring up the FR3 replay controller and the real Inspire hand.
+
+Either device can be left out, because on hardware they are two independent
+stacks (see the workspace README). Bringing up one alone is the whole bring-up
+for that device, not a degraded version of the pair:
+
+    ros2 launch inspire_franka_trajectory_replay replay.launch.py \
+        hand_port:=/dev/ttyUSB0 arm:=false      # hand only, no FCI needed
+    ros2 launch inspire_franka_trajectory_replay replay.launch.py \
+        robot_ip:=10.7.7.7 hand:=false          # arm only
+
+Match the runner to whatever was launched: `--no-arm` for a hand-only session,
+`--no-hand` for an arm-only one. The runner reaches the arm through the
+controller manager, so a hand-only launch plus a coordinated run would block
+waiting for a controller that was never started.
+"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -24,6 +40,7 @@ def generate_launch_description():
             ),
             "robot_ips": LaunchConfiguration("robot_ip"),
         }.items(),
+        condition=IfCondition(LaunchConfiguration("arm")),
     )
     hand = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -37,8 +54,9 @@ def generate_launch_description():
             "protocol": LaunchConfiguration("hand_protocol"),
             "mock": LaunchConfiguration("hand_mock"),
             "publish_description": "true",
-            "description_namespace": "hand",
+            "description_namespace": LaunchConfiguration("description_namespace"),
         }.items(),
+        condition=IfCondition(LaunchConfiguration("hand")),
     )
     return LaunchDescription(
         [
@@ -47,6 +65,23 @@ def generate_launch_description():
             DeclareLaunchArgument("hand_id", default_value="1"),
             DeclareLaunchArgument("hand_protocol", default_value="modbus"),
             DeclareLaunchArgument("hand_mock", default_value="false"),
+            DeclareLaunchArgument(
+                "arm", default_value="true", description="Bring up the FR3 replay controller."
+            ),
+            DeclareLaunchArgument(
+                "hand", default_value="true", description="Bring up the Inspire hand driver."
+            ),
+            # Two latched publishers on /robot_description means RViz shows
+            # whichever it heard last, so the hand yields the global topic to the
+            # arm. Alone, it has no reason to hide.
+            DeclareLaunchArgument(
+                "description_namespace",
+                default_value=PythonExpression(
+                    ["'hand' if '", LaunchConfiguration("arm"), "'.lower() in ",
+                     "('true', '1', 'yes', 'on') else ''"]
+                ),
+                description="Namespace for the hand's robot_state_publisher.",
+            ),
             arm,
             hand,
         ]

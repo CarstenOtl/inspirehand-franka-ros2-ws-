@@ -129,10 +129,23 @@ coexist as two nodes with different names and different ports.
 | `~/set_speed` | `inspire_hand_msgs/srv/SetSpeed` |
 | `~/set_force` | `inspire_hand_msgs/srv/SetForce` |
 
-`~/command` and `set_angles` accept **either** channel ids (`"1".."6"`, values
-read as open ratios) **or** driven joint names (values read as radians). The two
-name sets are disjoint, so a message says which it means; mixing them in one
-message is rejected rather than guessed at.
+`~/command` and `set_angles` both take **open ratios: `1.0` fully open, `0.0`
+fully closed.** Names say only *which* DOF to address — channel ids
+(`"1".."6"`) or driven joint names, mixed freely — and never what the unit is.
+
+**Commands and `joint_states` run opposite ways, deliberately.** `joint_states`
+is in radians because that is what the URDF and `robot_state_publisher` need,
+and there `0.0` is the *open* pose; a rising `joint_states` value means a
+closing hand, while a rising commanded ratio means an opening one. Convert at
+the boundary with `kinematics.rad_to_open_ratio` if you are holding radians —
+which is what `inspire_franka_trajectory_replay` does, keeping its trajectories
+and homing YAMLs in radians because those files also carry the FR3's joints.
+
+A target outside `[0.0, 1.0]` **rejects the whole message or request** and says
+which entries offended. It is not clamped. The unit used to be inferred from
+the naming, so `1.5` as a channel id clamped to a fully open hand and the same
+`1.5` as a joint name clamped to a fully closed one — one number, opposite ends
+of travel, nothing logged either way.
 
 Any subset may be addressed. A DOF that is not named holds its previous target
 rather than snapping to a default — which is what makes a partial command safe.
@@ -151,9 +164,13 @@ everywhere including the simulation's controller config:
 ros2 service call /inspire_hand/set_angles inspire_hand_msgs/srv/SetAngles \
   "{name: ['1','2','3','4'], open_ratio: [0.2, 0.2, 0.2, 0.2]}"
 
-# The same thing in radians, by joint name
+# The same thing on the topic, by joint name - still open ratios
 ros2 topic pub -1 /inspire_hand/command sensor_msgs/msg/JointState \
-  "{name: [index_proximal_joint, middle_proximal_joint], position: [1.2, 1.2]}"
+  "{name: [index_proximal_joint, middle_proximal_joint], position: [0.2, 0.2]}"
+
+# Rejected: 1.2 is outside [0, 1]. Previously this clamped to fully open.
+ros2 topic pub -1 /inspire_hand/command sensor_msgs/msg/JointState \
+  "{name: [index_proximal_joint], position: [1.2]}"
 
 # Open everything
 ros2 service call /inspire_hand/set_angles inspire_hand_msgs/srv/SetAngles \

@@ -22,15 +22,37 @@ Published
 
 Subscribed
     ``~/command``        ``sensor_msgs/JointState``
-        Names may be channel ids (``"1".."6"``, positions read as open ratios)
-        or driven joint names (positions read as radians). The two sets are
-        disjoint, so the message is self-describing; mixing them in one message
-        is rejected. Any subset may be addressed -- unnamed DOF hold.
+        ``position`` is **always an open ratio**: ``1.0`` fully open, ``0.0``
+        fully closed, matching ``~/state`` and the registers. Names only say
+        *which* DOF -- channel ids (``"1".."6"``) or driven joint names, mixed
+        freely. Any subset may be addressed; unnamed DOF hold. A target outside
+        ``[0.0, 1.0]`` rejects the whole message.
 
 Services
     ``~/set_angles``     ``inspire_hand_msgs/srv/SetAngles``
     ``~/set_speed``      ``inspire_hand_msgs/srv/SetSpeed``
     ``~/set_force``      ``inspire_hand_msgs/srv/SetForce``
+
+Commanding in ratios, not radians
+---------------------------------
+``~/joint_states`` publishes radians because that is what ``robot_state_publisher``
+and the URDF need, and there ``0.0`` is the *open* pose. Commands deliberately
+do not follow it. The two conventions therefore run opposite ways, which is
+worth stating once rather than discovering: **a rising joint_states value means
+a closing hand, and a rising commanded ratio means an opening one.**
+
+The reason is that the previous scheme -- infer the unit from the naming, so
+joint names meant radians and channel ids meant ratios -- put both conventions
+on one ``position`` field. ``1.5`` addressed as a channel id clamped to a fully
+open hand; the same ``1.5`` addressed by joint name clamped to a fully closed
+one. One number, opposite ends of travel, no warning either way. Ratios are now
+the single commanding unit: one range, ``[0, 1]``, identical for all six DOF,
+and out-of-range is an error instead of a full-travel move.
+
+Callers holding radians convert at this boundary with
+:func:`inspire_hand_driver.kinematics.rad_to_open_ratio`, which is what
+``inspire_franka_trajectory_replay`` does -- its trajectories and homing YAMLs
+stay in radians, because those files also carry the FR3's seven joints.
 
 Why the driven/follower split is visible in the interface: only six things can
 be commanded, but twelve have to be published or TF breaks. Commands therefore
@@ -57,6 +79,28 @@ from .protocol import (
     HandTransport,
     MockTransport,
 )
+
+
+# The commandable range, in open-ratio units. Every DOF shares it, which is
+# the point of commanding in ratios: the equivalent radian limits differ per
+# joint (1.47, 0.6, 1.308) and belong to the description, not to this wire
+# protocol. Targets outside it are rejected rather than clamped -- silently
+# clamping turned a typo into a full-travel move with no warning anywhere.
+RATIO_OPEN = 1.0
+RATIO_CLOSED = 0.0
+
+
+def out_of_range(names: Sequence[str], values: Sequence[float]) -> List[str]:
+    """Name every target outside the commandable open-ratio range.
+
+    NaN compares false against both bounds and so is reported, which is what
+    we want: it must never reach the registers.
+    """
+    return [
+        f"{name}={float(value):g}"
+        for name, value in zip(names, values)
+        if not RATIO_CLOSED <= float(value) <= RATIO_OPEN
+    ]
 
 
 def angle_to_open_ratio(angle: int) -> float:
@@ -222,16 +266,13 @@ class InspireHandNode(Node):
         return kin.dof_index(key)
 
     def _merge(
-        self, names: Sequence[str], values: Sequence[float], radians: bool
+        self, names: Sequence[str], values: Sequence[float]
     ) -> Tuple[Optional[List[int]], str]:
-        """Merge a partial set of named targets onto the last command.
+        """Merge a partial set of named open-ratio targets onto the last command.
 
         Unaddressed DOF keep their current target rather than snapping to a
         default -- which is what makes a partial command safe to send.
         """
-        if len(names) != len(values):
-            return None, f"name has {len(names)} entries but value has {len(values)}"
-
         base = self._last_command
         if base is None:
             # First command of the session: start from where the hand actually
@@ -254,10 +295,7 @@ class InspireHandNode(Node):
             except KeyError:
                 unknown.append(str(name))
                 continue
-            ratio = (
-                kin.rad_to_open_ratio(index, value) if radians else float(value)
-            )
-            angles[index] = open_ratio_to_angle(ratio)
+            angles[index] = open_ratio_to_angle(float(value))
             touched = True
 
         if unknown:
@@ -265,23 +303,6 @@ class InspireHandNode(Node):
         if not touched:
             return None, f"no recognised channel named (got: {', '.join(map(str, names))})"
         return angles, ""
-
-    def _classify(self, names: Sequence[str]) -> Tuple[Optional[bool], str]:
-        """Decide whether `names` are channel ids or joint names.
-
-        Returns ``(radians, error)``: True when the caller is speaking joint
-        names and radians, False for channel ids and open ratios.
-        """
-        stripped = [
-            n[len(self._prefix) :] if self._prefix and n.startswith(self._prefix) else n
-            for n in map(str, names)
-        ]
-        channels = any(n in CHANNEL_IDS for n in stripped)
-        joints = any(n in kin.DRIVEN_JOINTS for n in stripped)
-        if channels and joints:
-            return None, "message mixes channel ids and joint names; use one or the other"
-        # Unrecognised names fall through as channel ids and get reported by _merge.
-        return joints, ""
 
     def _send(self, angles: List[int]) -> Tuple[bool, str]:
         try:
@@ -292,13 +313,29 @@ class InspireHandNode(Node):
         self._last_command = angles
         return True, ""
 
-    def _apply(self, names: Sequence[str], values: Sequence[float]) -> Tuple[bool, str]:
+    def _apply(
+        self, names: Sequence[str], values: Sequence[float]
+    ) -> Tuple[bool, str]:
+        """Write a partial set of named open-ratio targets.
+
+        Names address DOF and nothing else: either channel ids or driven joint
+        names, and the two may be mixed freely because they no longer select a
+        unit. ``values`` are always open ratios, 1.0 fully open. That used to
+        be inferred from the naming, so the same number meant opposite ends of
+        travel depending on how the DOF was addressed.
+        """
         if not names:
             return False, "no channels named"
-        radians, error = self._classify(names)
-        if error:
-            return False, error
-        angles, error = self._merge(names, values, radians=bool(radians))
+        if len(names) != len(values):
+            return False, f"name has {len(names)} entries but value has {len(values)}"
+        bad = out_of_range(names, values)
+        if bad:
+            return False, (
+                f"open ratio out of the commandable range "
+                f"[{RATIO_CLOSED:g}, {RATIO_OPEN:g}] "
+                f"(1.0 = fully open, 0.0 = fully closed): {', '.join(bad)}"
+            )
+        angles, error = self._merge(names, values)
         if angles is None:
             return False, error
         return self._send(angles)

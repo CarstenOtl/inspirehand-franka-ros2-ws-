@@ -6,6 +6,12 @@ therefore run through libfranka's internal joint-impedance mode. The hand stays
 on its independent 50 Hz RS485 driver and receives synchronized position
 commands on `/inspire_hand/command`.
 
+Everything in this package is in **radians** -- the Forge trajectories, the
+homing YAMLs, the tracking comparison against `joint_states`. The driver
+commands in **open ratios** (`1.0` fully open), running the opposite way.
+`CoordinatedReplayClient.command_hand` is the single place the two meet; the
+YAMLs stay in radians because they also carry the FR3's seven joints.
+
 The runner performs this sequence:
 
 1. load and validate the homing YAML and trajectory;
@@ -65,7 +71,54 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
 ```
 
 The runner prompts before homing and again before replay. `--yes` disables the
-prompts, and `--no-hand` keeps the original arm-only behavior.
+prompts, `--no-hand` keeps the original arm-only behavior, and `--no-arm` is
+the mirror of it.
+
+## One device at a time
+
+On hardware the arm and the hand are two independent stacks, so either can be
+left out of both the launch and the run. **The launch argument and the runner
+flag have to agree**: the runner reaches the arm through the controller
+manager, so a hand-only launch plus a coordinated run blocks waiting for a
+controller that was never started.
+
+```bash
+# --- hand only: no FCI, no arm, no FR3 limit check ------------------------
+ros2 launch inspire_franka_trajectory_replay replay.launch.py \
+  hand_port:=/dev/ttyUSB0 arm:=false
+
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_1 --cycle 1 --no-arm \
+  --home apps/traj_replay/demo_trajs/homing/threading.yaml
+
+# --- arm only -------------------------------------------------------------
+ros2 launch inspire_franka_trajectory_replay replay.launch.py \
+  robot_ip:=10.7.7.7 hand:=false
+
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_1 --cycle 1 --no-hand
+```
+
+`--no-arm` **replays the hand on the recording's own clock**, not on the arm's.
+That is the one behavioural difference worth knowing about, and it is
+deliberate. The coordinated path resamples the hand onto the arm's *prepared*
+clock, which the FR3 limit check time-scales (roughly 1.6x on the current
+file); with no arm there is nothing to scale for, so the hand runs at the
+timing the policy actually produced. `--hand-time-scale` stretches or
+compresses that clock and is rejected unless `--no-arm` is given, because the
+coordinated stream does not own its timing.
+
+Two consequences follow from the decoupling:
+
+- **No cycle is gated by the FR3.** Cycle 21 is rejected outright in a
+  coordinated run, and replays fine on the hand alone. That is correct — the
+  guard protects the arm — but it means a hand-only pass proves nothing about
+  whether the arm can follow the same cycle.
+- **Hand-only timing is not coordinated timing.** A cycle that tracks well at
+  15 Hz native will see the same targets ~1.6x slower in a coordinated run.
+
+Hand-only replay is verified on the bench RH56 (see the workspace README's
+status section for the measured tracking).
 
 The checked-in recording contains cycles 1 through 22. Cycles 1–20 and 22 are
 made FR3-safe by the normal automatic time scaling (roughly 1.6x on the current

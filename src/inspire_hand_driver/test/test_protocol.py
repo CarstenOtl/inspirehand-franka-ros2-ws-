@@ -12,6 +12,7 @@ from inspire_hand_driver.protocol import (  # noqa: E402
     ANGLE_MAX,
     DOF_ORDER,
     CHANNEL_IDS,
+    REG_ANGLE_ACT,
     REG_ANGLE_SET,
     HandTransport,
     MockTransport,
@@ -55,9 +56,9 @@ def test_modbus_read_frame_is_well_formed():
             pass
 
         def read(self, n):
-            # slave, fc, bytecount, 6 registers little-endian, crc
+            # slave, fc, bytecount, 6 registers big-endian, crc
             body = bytes([2, 0x03, 12]) + b"".join(
-                v.to_bytes(2, "little") for v in (1000, 900, 800, 700, 600, 500)
+                v.to_bytes(2, "big") for v in (1000, 900, 800, 700, 600, 500)
             )
             return body + crc16_modbus(body)
 
@@ -128,3 +129,41 @@ def test_mock_slews_toward_target_rather_than_jumping():
 def test_unknown_protocol_rejected_at_construction():
     with pytest.raises(ValueError):
         HandTransport(protocol="ethercat")
+
+
+def test_modbus_words_are_big_endian_against_captured_hardware_reply():
+    """Byte-for-byte reply captured from the bench RH56, fully open at rest.
+
+    Modbus RTU register values are big-endian on the wire. Decoding them
+    little-endian is not a cosmetic error: it read HAND_ID 1 as 256 and an
+    angle of 1000 as 59395, and the same swap on the write path turned every
+    commanded angle into an out-of-range value. Both directions are asserted
+    here with real bytes so a fake reply can never re-encode the driver's own
+    assumption.
+    """
+    t = HandTransport(hand_id=1, protocol="modbus")
+    sent = {}
+
+    class FakeSerial:
+        is_open = True
+
+        def reset_input_buffer(self):
+            pass
+
+        def write(self, data):
+            sent["req"] = data
+
+        def flush(self):
+            pass
+
+        def read(self, n):
+            # ANGLE_ACT, six DOF, as captured: 03 e8 = 1000 = fully open.
+            body = bytes([1, 0x03, 12]) + bytes.fromhex("03e803e803e803e803e403dd")
+            return body + crc16_modbus(body)
+
+    t._serial = FakeSerial()
+    assert t.read_registers(REG_ANGLE_ACT, 6) == [1000, 1000, 1000, 1000, 996, 989]
+
+    t.write_angles([1000, 900, 800, 700, 600, 500])
+    payload = sent["req"][7:-2]
+    assert payload == bytes.fromhex("03e80384032002bc025801f4")

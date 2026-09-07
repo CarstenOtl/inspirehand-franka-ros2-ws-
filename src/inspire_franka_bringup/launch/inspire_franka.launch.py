@@ -32,7 +32,7 @@ What ends up on the graph:
     /robot_description                the arm, from franka's robot_state_publisher
     /inspire_hand/joint_states        the hand, in radians, from the driver
     /inspire_hand/state               the hand, in open-ratio units
-    /inspire_hand/command             command the hand (radians or ratios)
+    /inspire_hand/command             command the hand (open ratios, 1.0 = open)
     /hand/robot_description           the hand's URDF, namespaced so it does not
                                       collide with the arm's
     /tf                               both, merged
