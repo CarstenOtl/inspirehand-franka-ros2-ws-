@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Replay the retained forgeUltra FR3 threading trajectory in MuJoCo.
 
-This is a kinematic compatibility viewer, not a second physics rollout. It
-writes all 19 recorded joint poses into an FR3 model carrying the exact Inspire
-hand kinematics and meshes used by the source training environment, and it
-displays the recorded nut pose. A green sphere is the recorded TCP; a smaller
-magenta sphere is the replayed thumb/index-tip midpoint. They should overlap.
+This is a kinematic comparison viewer, not a second physics rollout. It writes
+all 19 recorded joint poses into an FR3 model carrying the official TienKung 2
+Pro hand kinematics and meshes, and it displays the recorded nut pose. A green
+sphere is the recorded TCP; a smaller magenta sphere is the replayed
+thumb/index-tip midpoint. Their separation shows the model change directly.
 
 Examples::
 
@@ -13,10 +13,9 @@ Examples::
     python apps/traj_replay/tests/test_mujoco_traj_replay.py --speed 2 --loop
     python apps/traj_replay/tests/test_mujoco_traj_replay.py --headless
 
-The replay-only MJCF intentionally differs from the ROS-control MJCF: the
-recording contains the older 12-DoF training hand, while the hardware workspace
-uses a different six-driver linkage. Mixing those models visibly distorts the
-grasp and introduces about 10 mm of TCP error.
+The replay scene retains the source environment's 12 joint names so recorded
+coordinates bind without rewriting trajectory data. Its geometry, link frames,
+inertias, limits and mimic ratios are the official TienKung values.
 """
 
 from __future__ import annotations
@@ -64,6 +63,18 @@ MODEL_TO_RECORDED_JOINT = {
         "thumb_joint_2",
         "thumb_joint_3",
     )
+}
+
+# Keep recorded driver coordinates while projecting passive links onto the
+# official TienKung mimic relationships. The source recording's follower
+# coordinates came from a different hand model and cannot be applied directly.
+OFFICIAL_FOLLOWERS = {
+    "index_joint_1": ("index_joint_0", 1.1169),
+    "middle_joint_1": ("middle_joint_0", 1.1169),
+    "ring_joint_1": ("ring_joint_0", 1.1169),
+    "little_joint_1": ("little_joint_0", 1.1169),
+    "thumb_joint_2": ("thumb_joint_1", 1.1425),
+    "thumb_joint_3": ("thumb_joint_2", 0.7508),
 }
 
 
@@ -295,6 +306,17 @@ def apply_sample(
         data.qvel[binding.qvel_address] = trajectory.joint_vel[
             sample_index, binding.source_column
         ]
+
+    local_bindings = {binding.local_name: binding for binding in bindings}
+    for follower_name, (driver_name, multiplier) in OFFICIAL_FOLLOWERS.items():
+        follower = local_bindings[follower_name]
+        driver = local_bindings[driver_name]
+        data.qpos[follower.qpos_address] = (
+            multiplier * data.qpos[driver.qpos_address]
+        )
+        data.qvel[follower.qvel_address] = (
+            multiplier * data.qvel[driver.qvel_address]
+        )
     nut_mocap = _mocap_id(model, "recorded_nut")
     data.mocap_pos[nut_mocap] = trajectory.nut_pos[sample_index]
     _set_normalized_quaternion(data.mocap_quat[nut_mocap], trajectory.nut_quat[sample_index])
@@ -354,7 +376,7 @@ def print_fit_report(trajectory: ReplayTrajectory, report: FitReport) -> None:
         f"{trajectory.metadata.get('recording_frequency_hz', 'unknown')} Hz"
     )
     print(
-        "Training-hand tip midpoint vs recorded TCP: "
+        "Official-hand tip midpoint vs recorded TCP: "
         f"RMSE={report.tcp_rmse_m * 1000.0:.4f} mm, "
         f"mean={report.tcp_mean_error_m * 1000.0:.4f} mm, "
         f"max={report.tcp_max_error_m * 1000.0:.4f} mm"
@@ -462,7 +484,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def test_replay_contract_and_training_geometry() -> None:
+def test_replay_contract_and_official_geometry() -> None:
     """Pytest smoke test; never opens the interactive viewer."""
     if mujoco is None:
         import pytest
@@ -482,8 +504,14 @@ def test_replay_contract_and_training_geometry() -> None:
         trajectory.nut_pos[0],
     )
 
+    bindings_by_name = {binding.local_name: binding for binding in bindings}
     for binding in bindings:
-        expected = trajectory.joint_pos[0, binding.source_column]
+        if binding.local_name in OFFICIAL_FOLLOWERS:
+            driver_name, multiplier = OFFICIAL_FOLLOWERS[binding.local_name]
+            driver = bindings_by_name[driver_name]
+            expected = multiplier * data.qpos[driver.qpos_address]
+        else:
+            expected = trajectory.joint_pos[0, binding.source_column]
         assert np.isclose(data.qpos[binding.qpos_address], expected)
 
     report = evaluate_fit(
@@ -492,7 +520,10 @@ def test_replay_contract_and_training_geometry() -> None:
     assert report.sample_count > 20
     assert np.isfinite(report.tcp_rmse_m)
     assert np.isfinite(report.tcp_max_error_m)
-    assert report.tcp_max_error_m < 2.0e-6
+    # This trajectory was recorded with a different hand model, so exact TCP
+    # overlap is neither expected nor desirable as a contract. Keep a broad
+    # sanity bound that still catches broken frames or unit scaling.
+    assert report.tcp_max_error_m < 0.1
 
 
 def main(argv: Sequence[str] | None = None) -> int:

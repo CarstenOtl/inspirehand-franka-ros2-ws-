@@ -5,9 +5,9 @@
        robot transform, and hand kinematics match the recorded FR3 run.
 
        All mesh paths are relative to this file and stay inside this asset
-       bundle. fr3_link8 is the flange frame, 107 mm beyond fr3_link7. The palm
-       body uses forgeUltra franka-chi's zero-offset flange-to-palm quaternion
-       (0.5, -0.5, -0.5, 0.5), in wxyz order. -->
+       bundle. fr3_link8 is the flange frame, 107 mm beyond fr3_link7. The hand
+       geometry and physical settings come from Open-X-Humanoid's official
+       TienKung 2 Pro URDF; a -pi/2 adapter aligns it with the FR3 flange. -->
 
   <compiler angle="radian" meshdir="./"/>
 
@@ -34,9 +34,14 @@
       </default>
     </default>
 
-    <default class="training_hand">
-      <joint damping="0.5" armature="0.02" frictionloss="0.02"/>
-      <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1"/>
+    <default class="official_hand">
+      <joint damping="1" frictionloss="0.5" actuatorfrcrange="-50 50"/>
+      <default class="hand_visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" density="0"/>
+      </default>
+      <default class="hand_collision">
+        <geom type="mesh" group="3" rgba="1 1 1 1"/>
+      </default>
     </default>
 
   </default>
@@ -66,23 +71,24 @@
     <material name="recorded_tcp" rgba="0.1 1 0.2 0.85"/>
     <material name="replayed_tcp" rgba="1 0.1 0.8 0.85"/>
     <material name="apriltag_36h11_id0" texture="apriltag_36h11_id0_texture"
-      texuniform="false" reflectance="0" specular="0" shininess="0"/>
+      rgba="1 1 1 1" texuniform="false" reflectance="0" specular="0" shininess="0"/>
     <mesh name="forge_m24_nut" file="forge_nut_bolt/m24/m24_nut.stl"/>
     <mesh name="forge_m24_bolt" file="forge_nut_bolt/m24/m24_bolt.stl"/>
-    <!-- Exact Inspire meshes used by the source franka-chi training USD. -->
-    <mesh name="training_palm" file="training_hand/palm.STL"/>
-    <mesh name="training_index_link_0" file="training_hand/index_link_0.STL"/>
-    <mesh name="training_index_link_1" file="training_hand/index_link_1.STL"/>
-    <mesh name="training_middle_link_0" file="training_hand/middle_link_0.STL"/>
-    <mesh name="training_middle_link_1" file="training_hand/middle_link_1.STL"/>
-    <mesh name="training_ring_link_0" file="training_hand/ring_link_0.STL"/>
-    <mesh name="training_ring_link_1" file="training_hand/ring_link_1.STL"/>
-    <mesh name="training_little_link_0" file="training_hand/little_link_0.STL"/>
-    <mesh name="training_little_link_1" file="training_hand/little_link_1.STL"/>
-    <mesh name="training_thumb_link_0" file="training_hand/thumb_link_0.STL"/>
-    <mesh name="training_thumb_link_1" file="training_hand/thumb_link_1.STL"/>
-    <mesh name="training_thumb_link_2" file="training_hand/thumb_link_2.STL"/>
-    <mesh name="training_thumb_link_3" file="training_hand/thumb_link_3.STL"/>
+    <!-- One canonical hand mesh set, copied byte-for-byte from the official
+         TienKung 2 Pro package. -->
+    <mesh name="hand_R_base_link" content_type="model/stl" file="hand/R_base_link.STL"/>
+    <mesh name="hand_right_thumb_1" content_type="model/stl" file="hand/right_thumb_1.STL"/>
+    <mesh name="hand_right_thumb_2" content_type="model/stl" file="hand/right_thumb_2.STL"/>
+    <mesh name="hand_right_thumb_3" content_type="model/stl" file="hand/right_thumb_3.STL"/>
+    <mesh name="hand_right_thumb_4" content_type="model/stl" file="hand/right_thumb_4.STL"/>
+    <mesh name="hand_right_index_1" content_type="model/stl" file="hand/right_index_1.STL"/>
+    <mesh name="hand_right_index_2" content_type="model/stl" file="hand/right_index_2.STL"/>
+    <mesh name="hand_right_middle_1" content_type="model/stl" file="hand/right_middle_1.STL"/>
+    <mesh name="hand_right_middle_2" content_type="model/stl" file="hand/right_middle_2.STL"/>
+    <mesh name="hand_right_ring_1" content_type="model/stl" file="hand/right_ring_1.STL"/>
+    <mesh name="hand_right_ring_2" content_type="model/stl" file="hand/right_ring_2.STL"/>
+    <mesh name="hand_right_little_1" content_type="model/stl" file="hand/right_little_1.STL"/>
+    <mesh name="hand_right_little_2" content_type="model/stl" file="hand/right_little_2.STL"/>
     <mesh name="link0_0" content_type="model/obj" file="fr3/mujoco_visual/link0_0.obj"/>
     <mesh name="link0_1" content_type="model/obj" file="fr3/mujoco_visual/link0_1.obj"/>
     <mesh name="link0_2" content_type="model/obj" file="fr3/mujoco_visual/link0_2.obj"/>
@@ -119,23 +125,6 @@
     <mesh name="link5_coll" content_type="model/stl" file="fr3/collision/link5.stl"/>
     <mesh name="link6_coll" content_type="model/stl" file="fr3/collision/link6.stl"/>
     <mesh name="link7_coll" content_type="model/stl" file="fr3/collision/link7.stl"/>
-    <mesh name="base_link" content_type="model/stl" file="inspirehand/visual/base_link.stl"/>
-    <mesh name="thumb_proximal_base" content_type="model/stl" file="inspirehand/visual/thumb_proximal_base.stl"/>
-    <mesh name="thumb_proximal" content_type="model/stl" file="inspirehand/visual/thumb_proximal.stl"/>
-    <mesh name="thumb_intermediate" content_type="model/stl" file="inspirehand/visual/thumb_intermediate.stl"/>
-    <mesh name="thumb_distal" content_type="model/stl" file="inspirehand/visual/thumb_distal.stl"/>
-    <mesh name="index_proximal" content_type="model/stl" file="inspirehand/visual/index_proximal.stl"/>
-    <mesh name="index_intermediate" content_type="model/stl" file="inspirehand/visual/index_intermediate.stl"/>
-    <mesh name="middle_intermediate" content_type="model/stl" file="inspirehand/visual/middle_intermediate.stl"/>
-    <mesh name="pinky_intermediate" content_type="model/stl" file="inspirehand/visual/pinky_intermediate.stl"/>
-    <mesh name="thumb_proximal_base_collision" content_type="model/obj" file="inspirehand/collision/thumb_proximal_base.obj"/>
-    <mesh name="thumb_proximal_collision" content_type="model/obj" file="inspirehand/collision/thumb_proximal.obj"/>
-    <mesh name="thumb_intermediate_collision" content_type="model/obj" file="inspirehand/collision/thumb_intermediate.obj"/>
-    <mesh name="thumb_distal_collision" content_type="model/obj" file="inspirehand/collision/thumb_distal.obj"/>
-    <mesh name="index_proximal_collision" content_type="model/obj" file="inspirehand/collision/index_proximal.obj"/>
-    <mesh name="index_intermediate_collision" content_type="model/obj" file="inspirehand/collision/index_intermediate.obj"/>
-    <mesh name="middle_intermediate_collision" content_type="model/obj" file="inspirehand/collision/middle_intermediate.obj"/>
-    <mesh name="pinky_intermediate_collision" content_type="model/obj" file="inspirehand/collision/pinky_intermediate.obj"/>
   </asset>
 
   <worldbody>
@@ -241,82 +230,86 @@
                       <site name="attachment_site" pos="0 0 0.107"/>
                       <frame childclass="fr3">
                         <body name="fr3_link8" pos="0 0 0.107">
-                          <body name="palm" quat="0.5 -0.5 -0.5 0.5" childclass="training_hand">
-                            <body name="training_hand_links">
-                              <inertial pos="-0.0025264 -0.066047 0.0019598" mass="0.3" diaginertia="0.00012281 8.3831e-05 7.6663e-05"/>
-                              <geom mesh="training_palm"/>
-                              <!-- Same dorsal hand-mounted target as the real
-                                   calibration setup. This training palm mesh is
-                                   thinner, so it has its own flush-fit offset. -->
-                              <body name="apriltag_0" pos="0.01750 -0.075 0"
-                                quat="0.70696536 -0.01414119 0.70696536 0.01414119">
-                                <geom name="apriltag_36h11_id0" type="box"
-                                  size="0.025 0.025 0.0001"
-                                  material="apriltag_36h11_id0"
-                                  contype="0" conaffinity="0" group="2"/>
-                                <site name="apriltag_0_frame" type="box"
-                                  size="0.020 0.020 0.0006"
-                                  rgba="0 0 0 0" group="4"/>
-                              </body>
-                              <body name="thumb_link_0" pos="-0.02296 -0.05885 -0.02045"
-                                quat="0.499998163397 0.499999999997 -0.499999999997 0.500001836603">
-                                <joint name="thumb_joint_0" axis="0 0 -1" range="0.3 1.2"/>
-                                <geom mesh="training_thumb_link_0"/>
-                                <body name="thumb_link_1" pos="-0.012782 0.013348 0.0022"
-                                  quat="0.0996842973055 0.099684663467 0.700046287378 0.700043715969">
-                                  <joint name="thumb_joint_1" axis="0 0 1" range="0 0.5"/>
-                                  <geom mesh="training_thumb_link_1"/>
-                                  <body name="thumb_link_2" pos="0.05507 0.025553 -0.00355"
-                                    quat="1.34924357313e-11 3.67320510332e-06 0.999999999987 3.67320510332e-06">
-                                    <joint name="thumb_joint_2" axis="0 0 -1" range="0 0.5"/>
-                                    <geom mesh="training_thumb_link_2"/>
-                                    <body name="thumb_link_3" pos="-0.016763 0.023079 -0.00255">
-                                      <joint name="thumb_joint_3" axis="0 0 -1" range="0 0.4"/>
-                                      <geom mesh="training_thumb_link_3"/>
-                                      <body name="thumb_tip" pos="-0.01 0.015 0.005"/>
-                                    </body>
+                          <body name="palm" quat="0.707106781187 0 0 -0.707106781187" childclass="official_hand">
+                            <inertial pos="0.00252515168164585 -0.001960054926157 0.0660467739648412" mass="0.38756" fullinertia="0.00059831308 0.00050077156 0.00018467082 5.60829e-06 2.87014e-06 3.4831e-06"/>
+                            <geom class="hand_visual" mesh="hand_R_base_link"/>
+                            <geom class="hand_collision" mesh="hand_R_base_link"/>
+                            <body name="apriltag_0" pos="0.0275 0 0.075" quat="0.70710678 0 0.70710678 0">
+                              <geom name="apriltag_36h11_id0" type="box" size="0.025 0.025 0.0001" material="apriltag_36h11_id0" rgba="1 1 1 1" contype="0" conaffinity="0" group="2"/>
+                              <site name="apriltag_0_frame" type="box" size="0.020 0.020 0.0006" rgba="0 0 0 0" group="4"/>
+                            </body>
+                            <body name="thumb_link_0" pos="0.01696 0.02045 0.06635">
+                              <inertial pos="0.000853491366153925 0.00482216769884483 -0.00481999614705116" mass="0.00483" fullinertia="1.9502e-07 1.4336e-07 1.6891e-07 -3.536e-08 -3.1e-09 -7.9e-09"/>
+                              <joint name="thumb_joint_0" axis="0 0 -1" range="0 1.246165"/>
+                              <geom class="hand_visual" mesh="hand_right_thumb_1"/>
+                              <geom class="hand_collision" mesh="hand_right_thumb_1"/>
+                              <body name="thumb_link_1" pos="0.010735 0.0090002 -0.0065" euler="1.5708 0 1.3055">
+                                <inertial pos="0.0194641293930403 0.0162980383727088 -0.00803857337744943" mass="0.05759" fullinertia="1.06662e-05 8.92353e-06 1.700133e-05 -4.4136e-06 -5.15e-09 2.59e-09"/>
+                                <joint name="thumb_joint_1" axis="0 0 1" range="0 0.48"/>
+                                <geom class="hand_visual" mesh="hand_right_thumb_2"/>
+                                <geom class="hand_collision" mesh="hand_right_thumb_2"/>
+                                <body name="thumb_link_2" pos="0.037617 0.041486 -0.0008">
+                                  <inertial pos="0.00946651884646355 0.00207630823866701 -0.00720000588824668" mass="0.00985" fullinertia="1.21069e-06 6.0118e-07 1.28966e-06 -1.0767e-07 -1e-11 -3e-11"/>
+                                  <joint name="thumb_joint_2" axis="0 0 1" range="0 0.3578"/>
+                                  <geom class="hand_visual" mesh="hand_right_thumb_3"/>
+                                  <geom class="hand_collision" mesh="hand_right_thumb_3"/>
+                                  <body name="thumb_link_3" pos="0.014957 0.017012 -0.0012">
+                                    <inertial pos="0.00604904909827651 0.00861522746372045 -0.00600329390500667" mass="0.00552" fullinertia="3.1668e-07 1.2999e-07 3.3747e-07 -4.536e-08 1e-11 4e-10"/>
+                                    <joint name="thumb_joint_3" axis="0 0 1" range="0 0.2775"/>
+                                    <geom class="hand_visual" mesh="hand_right_thumb_4"/>
+                                    <geom class="hand_collision" mesh="hand_right_thumb_4"/>
+                                    <body name="thumb_tip" pos="0.006 0.022 -0.006"/>
                                   </body>
                                 </body>
                               </body>
-                              <body name="index_link_0" pos="0.00028533 -0.1366 -0.027269"
-                                quat="-3.67264564312e-06 6.41070303918e-08 -0.0174526138856 0.999847691529">
-                                <joint name="index_joint_0" axis="0 0 -1" range="0 1.1"/>
-                                <geom mesh="training_index_link_0"/>
-                                <body name="index_link_1" pos="0.0070171 0.037468 -0.00215">
-                                  <joint name="index_joint_1" axis="0 0 -1" range="0 1.7"/>
-                                  <geom mesh="training_index_link_1"/>
-                                  <body name="index_tip" pos="0.005 0.035 0.002"/>
-                                </body>
+                            </body>
+                            <body name="index_link_0" pos="-0.000285 0.020275 0.136946" euler="1.5359 0 0">
+                              <inertial pos="0.000852715296526529 0.0119735955318245 -0.00599986563267159" mass="0.01229" fullinertia="1.93998e-06 5.6245e-07 2.05872e-06 -1.5035e-07 -4.1e-10 -3.49e-09"/>
+                              <joint name="index_joint_0" axis="0 -0.069756 -0.997564" range="0 1.333"/>
+                              <geom class="hand_visual" mesh="hand_right_index_1"/>
+                              <geom class="hand_collision" mesh="hand_right_index_1"/>
+                              <body name="index_link_1" pos="0.008099 0.031095 -0.001">
+                                <inertial pos="0.00408342999190195 0.0192600939391442 -0.00500000380847467" mass="0.00633" fullinertia="9.4327e-07 2.897e-07 1.14024e-06 -3.8912e-07 -2e-11 -5e-11"/>
+                                <joint name="index_joint_1" axis="0 0 -1" range="0 1.527"/>
+                                <geom class="hand_visual" mesh="hand_right_index_2"/>
+                                <geom class="hand_collision" mesh="hand_right_index_2"/>
+                                <body name="index_tip" pos="0.004 0.043 -0.005"/>
                               </body>
-                              <body name="middle_link_0" pos="0.00028533 -0.1371 -0.00795"
-                                quat="-3.67320510335e-06 0 0 0.999999999993">
-                                <joint name="middle_joint_0" axis="0 0 -1" range="0 1.1"/>
-                                <geom mesh="training_middle_link_0"/>
-                                <body name="middle_link_1" pos="0.0067937 0.037509 -0.00215">
-                                  <joint name="middle_joint_1" axis="0 0 -1" range="0 1.7"/>
-                                  <geom mesh="training_middle_link_1"/>
-                                  <body name="middle_tip" pos="0.005 0.035 0.002"/>
-                                </body>
+                            </body>
+                            <body name="middle_link_0" pos="-0.000285 0.00295 0.1371" euler="1.5708 0 0">
+                              <inertial pos="0.000852855866232599 0.011973606798452 -0.00399984588006246" mass="0.01229" fullinertia="1.94e-06 5.6248e-07 2.05872e-06 -1.5036e-07 -9.9e-10 -5.01e-09"/>
+                              <joint name="middle_joint_0" axis="0 0 -1" range="0 1.333"/>
+                              <geom class="hand_visual" mesh="hand_right_middle_1"/>
+                              <geom class="hand_collision" mesh="hand_right_middle_1"/>
+                              <body name="middle_link_1" pos="0.0081 0.031095 0.001">
+                                <inertial pos="0.0047113458880482 0.0203465768773643 -0.00500003269708214" mass="0.00681" fullinertia="1.18348e-06 3.558e-07 1.43878e-06 -5.0397e-07 0 0"/>
+                                <joint name="middle_joint_1" axis="0 0 -1" range="0 1.527"/>
+                                <geom class="hand_visual" mesh="hand_right_middle_2"/>
+                                <geom class="hand_collision" mesh="hand_right_middle_2"/>
                               </body>
-                              <body name="ring_link_0" pos="0.00028533 -0.13681 0.0112844"
-                                quat="-3.67194638181e-06 -9.61535249114e-08 -0.0261770095068 -0.999657323366">
-                                <joint name="ring_joint_0" axis="0 0 -1" range="0 1.1"/>
-                                <geom mesh="training_ring_link_0"/>
-                                <body name="ring_link_1" pos="0.0067937 0.037509 -0.00215">
-                                  <joint name="ring_joint_1" axis="0 0 -1" range="0 1.7"/>
-                                  <geom mesh="training_ring_link_1"/>
-                                  <body name="ring_tip" pos="0.005 0.035 0.002"/>
-                                </body>
+                            </body>
+                            <body name="ring_link_0" pos="-0.000285 -0.018271 0.136282" euler="1.6232 0 0">
+                              <inertial pos="0.00085245845917839 0.0119734648811593 -0.00599989251266642" mass="0.01229" fullinertia="1.93998e-06 5.6244e-07 2.05872e-06 -1.5033e-07 -5.1e-10 -3.52e-09"/>
+                              <joint name="ring_joint_0" axis="0 0 -1" range="0 1.333"/>
+                              <geom class="hand_visual" mesh="hand_right_ring_1"/>
+                              <geom class="hand_collision" mesh="hand_right_ring_1"/>
+                              <body name="ring_link_1" pos="0.008099 0.031095 -0.001">
+                                <inertial pos="0.00408287363348225 0.0192599767415159 -0.00499998343104271" mass="0.00633" fullinertia="9.4329e-07 2.9615e-07 1.13377e-06 -3.8762e-07 -3.394e-08 -7.389e-08"/>
+                                <joint name="ring_joint_1" axis="0 0 -1" range="0 1.527"/>
+                                <geom class="hand_visual" mesh="hand_right_ring_2"/>
+                                <geom class="hand_collision" mesh="hand_right_ring_2"/>
                               </body>
-                              <body name="little_link_0" pos="0.00028533 -0.13551 0.030477"
-                                quat="-3.66817107988e-06 -1.92241150692e-07 -0.052336078515 -0.99862952834">
-                                <joint name="little_joint_0" axis="0 0 -1" range="0 1.1"/>
-                                <geom mesh="training_little_link_0"/>
-                                <body name="little_link_1" pos="0.0067937 0.037509 -0.00215">
-                                  <joint name="little_joint_1" axis="0 0 -1" range="0 1.7"/>
-                                  <geom mesh="training_little_link_1"/>
-                                  <body name="little_tip" pos="0.005 0.035 0.003"/>
-                                </body>
+                            </body>
+                            <body name="little_link_0" pos="-0.000285 -0.037422 0.13446" euler="1.6755 0 0">
+                              <inertial pos="0.000851610973032574 0.0119735303202265 -0.00599989467442243" mass="0.01229" fullinertia="1.94e-06 5.6242e-07 2.05872e-06 -1.5023e-07 -3e-10 -3.18e-09"/>
+                              <joint name="little_joint_0" axis="0 0 -1" range="0 1.333"/>
+                              <geom class="hand_visual" mesh="hand_right_little_1"/>
+                              <geom class="hand_collision" mesh="hand_right_little_1"/>
+                              <body name="little_link_1" pos="0.008097 0.031096 -0.001">
+                                <inertial pos="0.00273929963119374 0.0161600317264199 -0.00499667765900381" mass="0.00525" fullinertia="5.5787e-07 1.8624e-07 6.6906e-07 -2.175e-07 0 0"/>
+                                <joint name="little_joint_1" axis="0 0 -1" range="0 1.527"/>
+                                <geom class="hand_visual" mesh="hand_right_little_2"/>
+                                <geom class="hand_collision" mesh="hand_right_little_2"/>
                               </body>
                             </body>
                           </body>
@@ -335,15 +328,27 @@
 
   <contact>
     <exclude body1="fr3_link0" body2="fr3_link1"/>
+    <exclude body1="palm" body2="thumb_link_0"/>
+    <exclude body1="palm" body2="index_link_0"/>
+    <exclude body1="palm" body2="middle_link_0"/>
+    <exclude body1="palm" body2="ring_link_0"/>
+    <exclude body1="palm" body2="little_link_0"/>
+    <exclude body1="thumb_link_0" body2="thumb_link_1"/>
+    <exclude body1="thumb_link_1" body2="thumb_link_2"/>
+    <exclude body1="thumb_link_2" body2="thumb_link_3"/>
+    <exclude body1="index_link_0" body2="index_link_1"/>
+    <exclude body1="middle_link_0" body2="middle_link_1"/>
+    <exclude body1="ring_link_0" body2="ring_link_1"/>
+    <exclude body1="little_link_0" body2="little_link_1"/>
   </contact>
 
   <equality>
-    <joint name="index_joint_1_mimic" joint1="index_joint_1" joint2="index_joint_0" polycoef="0 1.54545 0 0 0"/>
-    <joint name="middle_joint_1_mimic" joint1="middle_joint_1" joint2="middle_joint_0" polycoef="0 1.54545 0 0 0"/>
-    <joint name="ring_joint_1_mimic" joint1="ring_joint_1" joint2="ring_joint_0" polycoef="0 1.54545 0 0 0"/>
-    <joint name="little_joint_1_mimic" joint1="little_joint_1" joint2="little_joint_0" polycoef="0 1.54545 0 0 0"/>
-    <joint name="thumb_joint_2_mimic" joint1="thumb_joint_2" joint2="thumb_joint_1" polycoef="0 1 0 0 0"/>
-    <joint name="thumb_joint_3_mimic" joint1="thumb_joint_3" joint2="thumb_joint_2" polycoef="0 0.8 0 0 0"/>
+    <joint name="index_joint_1_mimic" joint1="index_joint_1" joint2="index_joint_0" polycoef="0 1.1169 0 0 0"/>
+    <joint name="middle_joint_1_mimic" joint1="middle_joint_1" joint2="middle_joint_0" polycoef="0 1.1169 0 0 0"/>
+    <joint name="ring_joint_1_mimic" joint1="ring_joint_1" joint2="ring_joint_0" polycoef="0 1.1169 0 0 0"/>
+    <joint name="little_joint_1_mimic" joint1="little_joint_1" joint2="little_joint_0" polycoef="0 1.1169 0 0 0"/>
+    <joint name="thumb_joint_2_mimic" joint1="thumb_joint_2" joint2="thumb_joint_1" polycoef="0 1.1425 0 0 0"/>
+    <joint name="thumb_joint_3_mimic" joint1="thumb_joint_3" joint2="thumb_joint_2" polycoef="0 0.7508 0 0 0"/>
   </equality>
 
   <actuator>
@@ -354,16 +359,17 @@
     <general name="fr3_joint5" class="fr3" joint="fr3_joint5" ctrlrange="-12 12" biastype="none"/>
     <general name="fr3_joint6" class="fr3" joint="fr3_joint6" ctrlrange="-12 12" biastype="none"/>
     <general name="fr3_joint7" class="fr3" joint="fr3_joint7" ctrlrange="-12 12" biastype="none"/>
-    <position name="index_joint_0" joint="index_joint_0" ctrlrange="0 1.1" kp="10" kv="2"/>
-    <position name="middle_joint_0" joint="middle_joint_0" ctrlrange="0 1.1" kp="10" kv="2"/>
-    <position name="ring_joint_0" joint="ring_joint_0" ctrlrange="0 1.1" kp="10" kv="2"/>
-    <position name="little_joint_0" joint="little_joint_0" ctrlrange="0 1.1" kp="10" kv="2"/>
-    <position name="thumb_joint_0" joint="thumb_joint_0" ctrlrange="0.3 1.2" kp="10" kv="2"/>
-    <position name="thumb_joint_1" joint="thumb_joint_1" ctrlrange="0 0.5" kp="10" kv="2"/>
+    <position name="index_joint_0" joint="index_joint_0" ctrlrange="0 1.333" kp="10" kv="2"/>
+    <position name="middle_joint_0" joint="middle_joint_0" ctrlrange="0 1.333" kp="10" kv="2"/>
+    <position name="ring_joint_0" joint="ring_joint_0" ctrlrange="0 1.333" kp="10" kv="2"/>
+    <position name="little_joint_0" joint="little_joint_0" ctrlrange="0 1.333" kp="10" kv="2"/>
+    <position name="thumb_joint_0" joint="thumb_joint_0" ctrlrange="0 1.246165" kp="10" kv="2"/>
+    <position name="thumb_joint_1" joint="thumb_joint_1" ctrlrange="0 0.48" kp="10" kv="2"/>
   </actuator>
 
   <keyframe>
-    <!-- Exact first sample from the retained sequential-threading replay. -->
-    <key name="start" qpos="-0.348915994167 -0.0332739986479 -0.0264340005815 -1.79915297031 1.36881804466 2.02867698669 -1.84610199928 1.13999998569 0.20000000298 0.20000000298 0.160000011325 0.439999997616 0.679997980595 1.09990000725 1.69984042645 1.09990000725 1.69984042645 1.09990000725 1.69984042645"/>
+    <!-- First-sample drivers with followers projected onto the official mimic
+         manifold. -->
+    <key name="start" qpos="-0.348915994167 -0.0332739986479 -0.0264340005815 -1.79915297031 1.36881804466 2.02867698669 -1.84610199928 1.13999998569 0.20000000298 0.228500003405 0.171557802557 0.439999997616 0.491435997337 1.09990000725 1.2284783181 1.09990000725 1.2284783181 1.09990000725 1.2284783181"/>
   </keyframe>
 </mujoco>

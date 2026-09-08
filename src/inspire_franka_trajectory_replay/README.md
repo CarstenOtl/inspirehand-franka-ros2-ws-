@@ -49,9 +49,9 @@ python3 apps/traj_replay/tests/test_mujoco_traj_replay.py \
 ```
 
 Add `--headless` to validate every sample and print the TCP-fit report without
-opening a window. The viewer deliberately uses the recording's original
-12-DoF training-hand geometry. It does not publish ROS commands and cannot move
-the physical robot.
+opening a window. The viewer retains the recording's original 12 joint names,
+but uses the official TienKung 2 Pro hand geometry and physical settings. It
+does not publish ROS commands and cannot move the physical robot.
 
 Bring up the real replay stack (this replaces the ordinary
 `inspire_franka_bringup` launch for a replay session):

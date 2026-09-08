@@ -59,7 +59,8 @@ HAND_FOLLOWERS = (
     "thumb_distal_joint",
 )
 CONTROLLED_JOINTS = ARM_JOINTS + HAND_JOINTS
-FRANKA_CHI_FLANGE_TO_PALM_QUAT = np.array((0.5, -0.5, -0.5, 0.5))
+# FR3 adapter for the official TienKung 2 Pro hand coordinate frame.
+TIENKUNG_FLANGE_TO_PALM_QUAT = np.array((2**-0.5, 0.0, 0.0, -(2**-0.5)))
 PICKUP_INIT = dict(
     zip(
         CONTROLLED_JOINTS,
@@ -263,7 +264,7 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
     flange_to_palm = np.empty(4)
     mujoco.mju_mulQuat(flange_to_palm, flange_inverse, data.xquat[palm_id])
     assert np.isclose(
-        abs(np.dot(flange_to_palm, FRANKA_CHI_FLANGE_TO_PALM_QUAT)),
+        abs(np.dot(flange_to_palm, TIENKUNG_FLANGE_TO_PALM_QUAT)),
         1.0,
         atol=1e-6,
     )
