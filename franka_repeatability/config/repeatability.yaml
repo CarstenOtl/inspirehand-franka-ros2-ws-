@@ -1,0 +1,72 @@
+# Run configuration for the TCP repeatability measurement.
+#
+# ------------------------------------------------------------------------------------------
+# THE THREE POSES BELOW ARE PLACEHOLDERS. They sit in front of the arm at roughly the height
+# of the FR3 ready pose and assume nothing is on the table. Check them against your cell
+# before the first run:
+#
+#   ros2 run franka_repeatability run_repeatability.py --config <this file> --dry-run
+#
+# Dry run resolves every pose through the same compute_ik service the controller uses and
+# prints the joint solution and the largest joint step, without commanding the arm.
+# ------------------------------------------------------------------------------------------
+
+namespace: NS_1
+controller_name: repeatability_ik_controller
+
+# Frame the poses below are expressed in, and the link the pose refers to. `ee_link` must match
+# the controller's `ik_link_name` (empty ik_link_name resolves to the group tip: fr3_link8
+# without a gripper, fr3_hand_tcp with one). Forward kinematics in the analysis reports this
+# same link, relative to `base_frame`.
+base_frame: fr3_link0
+ee_link: fr3_link8
+
+# Three points, 180 degrees about X (RPY 180/0/0) = quaternion [1, 0, 0, 0] in x, y, z, w,
+# i.e. the flange z axis pointing straight down. Positions are in metres; the request was in
+# millimetres: [400, 0, 300], [400, -300, 100], [400, 300, 100].
+#
+# Note this is a 45 degree yaw away from the orientation fr3_link8 has at the ready pose
+# ([0.92388, -0.38268, 0, 0]); joint 7 absorbs the difference.
+poses:
+  - name: P1
+    position: [0.400, 0.000, 0.300]
+    orientation: [1.0, 0.0, 0.0, 0.0]   # x, y, z, w
+  - name: P2
+    position: [0.400, -0.300, 0.100]
+    orientation: [1.0, 0.0, 0.0, 0.0]
+  - name: P3
+    position: [0.400, 0.300, 0.100]
+    orientation: [1.0, 0.0, 0.0, 0.0]
+
+# How many times each pose is revisited. Repeatability statistics need a decent sample count;
+# ISO 9283 uses 30. Ten is a reasonable first run, and the analysis reports the sample count so
+# the numbers can be read with the right amount of scepticism.
+cycles: 10
+
+# How the arm is driven between poses.
+#   cached    - solve IK once per pose during a warm-up pass, then command that exact joint
+#               target on every visit. Measures the arm. Use this for repeatability.
+#   per_visit - send the Cartesian pose every visit and let the controller re-solve IK each
+#               time. The solver is seeded from the current configuration, which differs
+#               slightly per cycle, so the joint target itself moves between cycles. Use this
+#               only to characterise the pose-in / IK-in-the-loop path as a whole.
+ik_mode: cached
+
+timing:
+  # Must match the controller's `motion_duration` parameter; the run script uses it only for
+  # timeouts, the actual ramp is the controller's.
+  motion_duration: 5.0
+  # Quiet time after the ramp reports finished, before the measurement window opens. Lets the
+  # impedance control law settle out its own transient.
+  settle_seconds: 1.5
+  # Length of the averaging window at each pose.
+  dwell_seconds: 2.0
+
+recording:
+  # rosbag2 records the 1 kHz streams. Doing this in Python would drop samples.
+  storage_id: sqlite3
+  topics:
+    - franka_robot_state_broadcaster/robot_state
+    - repeatability_ik_controller/controller_state
+
+output_dir: ~/franka_repeatability_runs

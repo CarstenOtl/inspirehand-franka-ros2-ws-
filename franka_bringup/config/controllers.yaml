@@ -44,6 +44,9 @@
       joint_impedance_with_ik_example_controller:
         type: franka_example_controllers/JointImpedanceWithIKExampleController
 
+      cartesian_impedance_example_controller:
+        type: franka_example_controllers/CartesianImpedanceExampleController
+
       joint_position_example_controller:
         type: franka_example_controllers/JointPositionExampleController
 
@@ -109,6 +112,20 @@
         - 10.0
         - 10.0
         - 5.0
+
+/**:
+  cartesian_impedance_example_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+      # Stiffness of the Cartesian spring between the measured and the equilibrium pose.
+      # Damping is derived from it as 2*sqrt(k), i.e. critically damped. Both can be changed
+      # at runtime through the ~/set_cartesian_stiffness service.
+      translational_stiffness: 150.0  # N/m
+      rotational_stiffness: 10.0      # Nm/rad
+      # Pulls the arm back towards the configuration it was activated in, inside the
+      # nullspace of the Cartesian task. Live-tunable as a parameter.
+      nullspace_stiffness: 20.0       # Nm/rad
 
 /**:
   move_to_start_example_controller:

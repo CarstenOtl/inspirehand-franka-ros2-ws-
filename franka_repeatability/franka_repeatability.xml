@@ -1,0 +1,12 @@
+<library path="franka_repeatability">
+    <class name="franka_repeatability/CartesianTargetImpedanceIKController"
+           type="franka_repeatability::CartesianTargetImpedanceIKController"
+           base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Joint impedance control with an externally commanded target. Accepts a Cartesian pose
+            (resolved via the MoveIt compute_ik service) or a joint configuration, ramps the
+            commanded joint position towards it with a quintic profile, and publishes the applied
+            reference alongside the measured state for tracking analysis.
+        </description>
+    </class>
+</library>

@@ -112,3 +112,9 @@ TEST_F(TestLoadControllers, LoadsGripperExampleController) {
   expectControllerLoads("test_gripper_example_controller",
                         "franka_example_controllers/GripperExampleController");
 }
+
+TEST_F(TestLoadControllers, LoadsCartesianImpedanceExampleController) {
+  expectControllerLoads("test_cartesian_impedance_example_controller",
+                        "franka_example_controllers/"
+                        "CartesianImpedanceExampleController");
+}

@@ -1,0 +1,110 @@
+# Controller manager configuration for the repeatability rig.
+#
+# Passed to franka.launch.py via its `controllers_yaml` argument so that nothing in
+# franka_bringup/config/controllers.yaml has to be edited. It therefore has to declare every
+# controller the bringup spawns (joint_state_broadcaster, franka_robot_state_broadcaster) in
+# addition to the measurement controller itself.
+#
+# Namespace agnostic: the `/**` wildcard matches whatever namespace the robot config file sets.
+#
+# Everything lives under a single `/**` key on purpose. franka_bringup's own controllers.yaml
+# repeats `/**:` several times, which only works because rcl_yaml_param_parser merges duplicate
+# keys - every standards-compliant YAML parser keeps just the last block and silently drops the
+# rest, including the controller type declarations.
+
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+      thread_priority: 98
+
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+        state_interfaces:
+          robot_state
+
+      repeatability_ik_controller:
+        type: franka_repeatability/CartesianTargetImpedanceIKController
+
+  franka_robot_state_broadcaster:
+    ros__parameters:
+      # The full robot state on ~/robot_state always publishes at the controller update rate
+      # (1 kHz) - that is the measurement topic. The convenience topics are not used here, so
+      # they are throttled rather than left at the upstream 1 kHz.
+      convenience_publish_rate: 100
+
+  repeatability_ik_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+
+      # Same gains as franka_bringup's joint_impedance_with_ik_example_controller, so the
+      # tracking numbers describe the stock control law rather than a retuned one.
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.0
+
+      # MoveIt group used for compute_ik. Empty means "<arm_prefix><robot_type>_arm".
+      ik_group_name: ""
+      # Link the target pose refers to. Empty means the group tip link, which is fr3_link8 when
+      # load_gripper is false and fr3_hand_tcp when it is true. Whatever is used here must match
+      # `ee_link` in repeatability.yaml, otherwise the forward kinematics reports a different
+      # frame than the one that was commanded.
+      ik_link_name: ""
+      avoid_collisions: true
+      ik_timeout: 0.05
+      ik_service_timeout: 30.0
+
+      # Seconds to ramp the commanded joint position from where it is to a new target. The ramp
+      # is quintic, so it starts and ends at zero velocity and acceleration.
+      motion_duration: 5.0
+
+      # Refuse any target further than this from the current measured configuration, per joint.
+      # Guards against commanding a pose on the far side of the workspace by accident. Move the
+      # arm to a sane start configuration first (move_to_start_example_controller) rather than
+      # raising this.
+      max_joint_step: 1.5
+
+      # Collision thresholds, applied over service_server/set_full_collision_behavior when the
+      # controller configures. These are exactly the values
+      # franka_example_controllers/default_robot_behavior_utils.hpp installs before the upstream
+      # joint_impedance_with_ik example runs - without them the robot keeps whatever Desk last
+      # set, which is low enough that the impedance law's own restoring torque can trip a
+      # cartesian_reflex and abort control.
+      #
+      # The force thresholds (6 values: Fx Fy Fz Mx My Mz) are the ones that produce
+      # "cartesian_reflex"; the torque thresholds (7 values, per joint) produce "joint_reflex".
+      # Raise the force thresholds if you need to lean on the arm harder, but understand that
+      # you are raising the force at which the robot will stop protecting itself.
+      set_collision_behavior: true
+      lower_torque_thresholds_nominal:      [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]
+      upper_torque_thresholds_nominal:      [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
+      lower_torque_thresholds_acceleration: [25.0, 25.0, 22.0, 20.0, 19.0, 17.0, 14.0]
+      upper_torque_thresholds_acceleration: [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
+      lower_force_thresholds_nominal:       [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
+      upper_force_thresholds_nominal:       [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
+      lower_force_thresholds_acceleration:  [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
+      upper_force_thresholds_acceleration:  [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
+
+      # Maximum change of the commanded torque per millisecond, in Nm. This is the ONE thing
+      # this controller applies that the upstream joint_impedance_with_ik example does not; the
+      # control law itself is identical. Set it to 0.0 to disable the limiter and reproduce the
+      # example's applied torque exactly. The analysis reports the largest torque step actually
+      # seen, so you can confirm whether the limiter ever engaged during a run.
+      torque_rate_limit: 1.0

@@ -5,6 +5,14 @@ v2.6.0 (2026-08-10)
 -------------------
 Requires libfranka >= 0.20.4 and franka_description >= 2.8.1 requires ROS 2 Humble
 
+* feat: franka_example_controllers: add ``cartesian_impedance_example_controller``
+  (backport of the Jazzy controller onto Humble). A Cartesian spring/damper between the
+  measured and an equilibrium pose, mapped to joint torques through the transposed Jacobian,
+  with a nullspace term holding the activation configuration. The equilibrium pose follows an
+  internal demo motion until ``~/equilibrium_pose`` is published; Cartesian stiffness is
+  settable at runtime via ``~/set_cartesian_stiffness`` and nullspace stiffness via the
+  parameter of the same name. The controller was already referenced by
+  ``franka_gazebo_controllers.yaml`` but had no implementation on this branch.
 * fix: tune mobile teleop velocity/acceleration limits to stay within the RCU
   2-norm bounds. Raise swerve translational limits to 0.35 m/s / 0.4 m/s^2 and
   rotational to 0.5 rad/s / 0.3 rad/s^2 in ``controllers.yaml``, rescale the xbox

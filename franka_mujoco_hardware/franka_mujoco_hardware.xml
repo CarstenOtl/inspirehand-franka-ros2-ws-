@@ -1,0 +1,7 @@
+<library path="franka_mujoco_hardware">
+  <class name="franka_mujoco_hardware/MujocoSystem"
+         type="franka_mujoco_hardware::MujocoSystem"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>MuJoCo-backed stand-in for franka_hardware.</description>
+  </class>
+</library>

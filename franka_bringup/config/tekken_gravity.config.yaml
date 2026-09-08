@@ -1,0 +1,21 @@
+# Gravity-float + RViz config for Franka-Tekken-00.
+#
+# Differences vs tekken.config.yaml:
+#   namespace: ""    -> RViz (launched un-namespaced by example.launch.py) hardcodes
+#                       /robot_description and fixed frame "base" in
+#                       franka_description/rviz/visualize_franka.rviz, so a namespaced
+#                       robot_state_publisher leaves the RViz view empty.
+#   use_rviz: "true" -> example.launch.py spawns rviz2 with that display config.
+#
+# robot_ip is the C2 shop-floor address: FCI is NOT served on the X5 robot network.
+
+ROBOT1:
+  robot_type: "fr3"
+  arm_prefix: ""
+  fake_sensor_commands: "false"
+  joint_state_rate: 30
+  load_gripper: "false"
+  namespace: ""
+  robot_ip: "robot.example"  # Replace with the robot's IP address or hostname
+  use_fake_hardware: "false"
+  use_rviz: "true"

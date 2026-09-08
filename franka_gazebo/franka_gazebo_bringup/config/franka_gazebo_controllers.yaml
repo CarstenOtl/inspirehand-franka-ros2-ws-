@@ -108,3 +108,15 @@
     ros__parameters:
       robot_type: 'fr3'
       arm_prefix: ''
+
+  # Loads and activates in simulation, but does NOT hold the arm here: joint 7 of the
+  # Gazebo FR3 carries no rotor inertia, so ~1 Nm drives it to its velocity limit within a
+  # single 1 ms step and the wrist chatters. The Cartesian impedance law needs the real
+  # arm's reflected inertia - run this controller on hardware (franka_bringup), not in Gazebo.
+  cartesian_impedance_example_controller:
+    ros__parameters:
+      robot_type: 'fr3'
+      arm_prefix: ''
+      translational_stiffness: 150.0
+      rotational_stiffness: 10.0
+      nullspace_stiffness: 20.0

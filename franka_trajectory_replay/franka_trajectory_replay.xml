@@ -1,0 +1,10 @@
+<library path="franka_trajectory_replay">
+  <class name="franka_trajectory_replay/TrajectoryReplayController"
+         type="franka_trajectory_replay::TrajectoryReplayController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Replays a joint trajectory on an FR3, in position mode (robot-internal joint impedance) or
+      effort mode (example joint impedance law), and publishes reference vs measured at 1 kHz.
+    </description>
+  </class>
+</library>

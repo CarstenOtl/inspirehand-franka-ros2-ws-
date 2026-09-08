@@ -78,4 +78,11 @@
         </description>
     </class>
 
+    <class name="franka_example_controllers/CartesianImpedanceExampleController"
+           type="franka_example_controllers::CartesianImpedanceExampleController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            The Cartesian impedance example controller implements impedance control in Cartesian space with an internal periodic demo motion.
+        </description>
+    </class>
+
 </library>

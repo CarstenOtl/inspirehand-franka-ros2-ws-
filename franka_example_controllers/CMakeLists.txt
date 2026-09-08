@@ -27,6 +27,7 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(realtime_tools REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -34,6 +35,7 @@ add_library(
         ${PROJECT_NAME}
         SHARED
         src/fr3/cartesian_elbow_example_controller.cpp
+        src/fr3/cartesian_impedance_example_controller.cpp
         src/fr3/cartesian_orientation_example_controller.cpp
         src/fr3/cartesian_pose_example_controller.cpp
         src/fr3/cartesian_velocity_example_controller.cpp
@@ -68,6 +70,7 @@ ament_target_dependencies(
         pluginlib
         rclcpp
         rclcpp_lifecycle
+        realtime_tools
         std_srvs
 )
 
