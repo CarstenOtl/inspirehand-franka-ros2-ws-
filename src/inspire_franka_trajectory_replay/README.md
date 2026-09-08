@@ -20,7 +20,9 @@ home action and begins moving, then the robot stops on
 `joint_motion_generator_acceleration_discontinuity`. The latest attempt reached
 about 0.4 s before the reflex. Starting each goal from the previous desired
 command removed the accompanying velocity discontinuity, and enabling
-libfranka's joint-position rate limiter did not eliminate the remaining one.
+libfranka's joint-position rate limiter in a discarded experiment did not
+eliminate the remaining one. Both Franka submodules remain unchanged from
+their pinned upstream revisions.
 
 This workstation is not a valid final FCI test host: it runs a generic
 `PREEMPT_DYNAMIC` kernel, `/sys/kernel/realtime` is absent, and its CPU governor
@@ -32,9 +34,9 @@ TODO on the PREEMPT_RT workstation:
 - Verify `/sys/kernel/realtime` contains `1`, the controller process receives
   FIFO priority, the CPU governor is `performance`, and the dedicated robot NIC
   has stable 1 kHz latency before enabling motion.
-- Build and source both `franka_hardware` and
-  `inspire_franka_trajectory_replay`; retain the experimental libfranka
-  joint-position rate limiter in this checkpoint for the first comparison.
+- Build and source the pinned upstream `franka_hardware` and
+  `inspire_franka_trajectory_replay`; do not patch `franka_ros2` or
+  `franka_description` for this test.
 - Run the `threading_5x_flange180` dry-run, then test arm-only homing before
   connecting the hand. Record the complete controller-manager log and confirm
   that homing and the 49.65 s prepared trajectory finish without an FCI reflex.
@@ -43,9 +45,8 @@ TODO on the PREEMPT_RT workstation:
   position adapter paced from the FR3 `robot_time` state. It must continue to
   claim the position interfaces so libfranka uses the robot's internal joint
   impedance controller; do not reintroduce the custom effort/PD/IK controller.
-- Once hardware succeeds, decide whether the global `franka_hardware`
-  position-rate-limiter change is still necessary, document the result here,
-  and add a hardware-tested launch profile.
+- Once hardware succeeds, document the result here and add a hardware-tested
+  launch profile.
 
 Everything in this package is in **radians** -- the Forge trajectories, the
 homing YAMLs, the tracking comparison against `joint_states`. The driver

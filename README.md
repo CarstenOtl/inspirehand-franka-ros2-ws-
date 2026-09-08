@@ -429,10 +429,11 @@ no error at all — just a robot that quietly does the wrong thing.
   the complete stock position-`JointTrajectoryController` path pass the 49.65 s
   MuJoCo replay. On this generic `PREEMPT_DYNAMIC`/`powersave` host, the real FR3
   accepts and begins the home action but stops on
-  `joint_motion_generator_acceleration_discontinuity`, including with
-  libfranka's position-rate limiter enabled. Do not keep repeating that hardware
-  test here. The RT-host checklist and the robot-time-paced position-adapter
-  fallback are recorded in
+  `joint_motion_generator_acceleration_discontinuity`. An experiment with
+  libfranka's position-rate limiter did not resolve it and was discarded; the
+  Franka submodules remain at their pinned upstream revisions. Do not keep
+  repeating that hardware test here. The RT-host checklist and the
+  robot-time-paced position-adapter fallback are recorded in
   `src/inspire_franka_trajectory_replay/README.md`.
 - **Simulation — verified end to end.** MuJoCo runs headless with
   `MujocoSystemInterface` active at 1 kHz, all three controllers active, sim
