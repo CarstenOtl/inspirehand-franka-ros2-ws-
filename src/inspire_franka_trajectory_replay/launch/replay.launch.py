@@ -7,7 +7,7 @@ for that device, not a degraded version of the pair:
     ros2 launch inspire_franka_trajectory_replay replay.launch.py \
         hand_port:=/dev/ttyUSB0 arm:=false      # hand only, no FCI needed
     ros2 launch inspire_franka_trajectory_replay replay.launch.py \
-        robot_ip:=10.7.7.7 hand:=false          # arm only
+        robot_ip:=172.16.0.2 hand:=false         # arm only
 
 Match the runner to whatever was launched: `--no-arm` for a hand-only session,
 `--no-hand` for an arm-only one. The runner reaches the arm through the
@@ -60,7 +60,7 @@ def generate_launch_description():
     )
     return LaunchDescription(
         [
-            DeclareLaunchArgument("robot_ip", default_value="10.7.7.7"),
+            DeclareLaunchArgument("robot_ip", default_value="172.16.0.2"),
             DeclareLaunchArgument("hand_port", default_value="/dev/ttyUSB0"),
             DeclareLaunchArgument("hand_id", default_value="1"),
             DeclareLaunchArgument("hand_protocol", default_value="modbus"),

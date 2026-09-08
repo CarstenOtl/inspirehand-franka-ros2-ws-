@@ -65,18 +65,20 @@ ros2 launch inspire_franka_sim sim.launch.py headless:=false      # MuJoCo viewe
 ros2 launch inspire_franka_sim sim.launch.py arm:=false           # hand only
 
 # --- Real hardware ----------------------------------------------------------
-ros2 run inspire_franka_bringup fci_check 10.7.7.7                # is the FCI up?
+ros2 run inspire_franka_bringup fci_check 172.16.0.2               # is the FCI up?
 ros2 run inspire_hand_driver inspire_hand_probe /dev/ttyUSB0      # is the hand up?
 
 ros2 launch inspire_franka_bringup inspire_franka.launch.py \
-    robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0                    # both
+    hand_port:=/dev/ttyUSB0                                       # both
 
-ros2 launch inspire_franka_bringup arm.launch.py robot_ip:=10.7.7.7   # arm alone
+ros2 launch inspire_franka_bringup arm.launch.py                  # arm alone
+ros2 launch inspire_franka_bringup arm.launch.py \
+    gravity_compensation:=true                                    # arm, hand-guiding/float mode
 ros2 launch inspire_franka_bringup hand.launch.py port:=/dev/ttyUSB0  # hand alone
 
 # Coordinated replay: this launch replaces ordinary bringup for the session.
 ros2 launch inspire_franka_trajectory_replay replay.launch.py \
-    robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0
+    hand_port:=/dev/ttyUSB0
 
 # Either device alone. The runner flag must match the launch argument:
 # arm:=false with --no-arm, hand:=false with --no-hand.
@@ -107,12 +109,30 @@ ros2 launch realsense2_camera rs_launch.py device_type:=d415
     --tag-id 0 --tag-size-m 0.040
 
 # Start all three, require live telemetry, and print a per-device report:
-./apps/traj_replay/tests/system_check.py --robot-ip 10.7.7.7
+./apps/traj_replay/tests/system_check.py --robot-ip 172.16.0.2
 
 # Neither device present, everything else identical:
 ros2 launch inspire_franka_bringup inspire_franka.launch.py \
     use_fake_hardware:=true hand_mock:=true start_rviz:=true
 ```
+
+The real-arm launch files default `robot_ip` to the fixed Control C2 address
+`172.16.0.2`, so it does not need to be repeated. Pass `robot_ip:=...` only when
+temporarily targeting a different control box. `fci_check` is a standalone
+executable rather than a launch file, so its IP remains a positional argument.
+
+If a previous simulation or hardware launch was not fully stopped, its
+`/controller_manager` can capture controller requests from the next launch. Stop
+old launch terminals with Ctrl-C. When it is unclear which ROS processes remain,
+reset the container from the host:
+
+```bash
+docker restart inspire_franka
+docker exec -it inspire_franka bash
+```
+
+After restarting, `ros2 control list_controllers` should fail until a new launch
+starts; that confirms there is no stale controller manager.
 
 GUIs need `xhost +local:root` on the host.
 

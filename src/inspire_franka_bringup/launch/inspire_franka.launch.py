@@ -1,7 +1,7 @@
 """Both assets on real hardware: the FR3 over the FCI, the Inspire hand over RS485.
 
     ros2 launch inspire_franka_bringup inspire_franka.launch.py \
-        robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0 \
+        robot_ip:=172.16.0.2 hand_port:=/dev/ttyUSB0 \
         gravity_compensation:=true
 
     # neither piece of hardware present, everything else identical
@@ -9,7 +9,7 @@
         use_fake_hardware:=true hand_mock:=true start_rviz:=true
 
     # one asset only - the same as arm.launch.py / hand.launch.py
-    ros2 launch inspire_franka_bringup inspire_franka.launch.py hand:=false robot_ip:=10.7.7.7
+    ros2 launch inspire_franka_bringup inspire_franka.launch.py hand:=false robot_ip:=172.16.0.2
     ros2 launch inspire_franka_bringup inspire_franka.launch.py arm:=false
 
 This starts the two stacks side by side. They share a ROS graph and a TF tree
@@ -55,8 +55,7 @@ from launch_ros.substitutions import FindPackageShare
 HAND_DESCRIPTION_NAMESPACE = "hand"
 
 ARM_ARGS = (
-    ("robot_ip", "", "Hostname or IP address of the FR3's FCI. Required unless "
-                     "use_fake_hardware:=true. There is no default - see docs/network.md."),
+    ("robot_ip", "172.16.0.2", "Hostname or IP address of the FR3's FCI."),
     ("robot_type", "fr3", "Arm model, passed through to franka_description."),
     ("arm_prefix", "", "Prefix for arm topics and joint names."),
     ("load_gripper", "false", "Use Franka's two-finger gripper as the end effector."),
