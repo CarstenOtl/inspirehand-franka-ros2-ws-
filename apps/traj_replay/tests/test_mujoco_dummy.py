@@ -221,14 +221,14 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
     print("Open the right sidebar's Control section to move the arm and hand.")
     print("Close the window or press Ctrl+C in this terminal to exit.")
 
-    with mujoco.viewer.launch_passive(
-        model,
-        data,
-        show_left_ui=True,
-        show_right_ui=True,
-    ) as viewer:
-        next_step = time.monotonic()
-        try:
+    try:
+        with mujoco.viewer.launch_passive(
+            model,
+            data,
+            show_left_ui=True,
+            show_right_ui=True,
+        ) as viewer:
+            next_step = time.monotonic()
             while viewer.is_running():
                 with viewer.lock():
                     mujoco.mj_step(model, data)
@@ -240,9 +240,11 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
                     time.sleep(delay)
                 else:
                     next_step = time.monotonic()
-        except KeyboardInterrupt:
-            viewer.close()
-            print("\nMuJoCo viewer stopped by user.")
+    except KeyboardInterrupt:
+        # Let the context manager close the viewer exactly once before handling
+        # Ctrl+C. Calling close() here as well races MuJoCo's viewer thread and
+        # can segfault during shutdown.
+        print("\nMuJoCo viewer stopped by user.", flush=True)
 
 
 def test_dummy_scene_has_sidebar_position_controls() -> None:
