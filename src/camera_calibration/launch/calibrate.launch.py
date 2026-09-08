@@ -1,4 +1,4 @@
-"""Start the D415 and collect eye-to-hand calibration samples."""
+"""Start the D435 RGB stream and collect hand-guided calibration samples."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -19,7 +19,23 @@ ARGS = (
     ("camera_optical_frame", "", "Optical frame; empty takes it from CameraInfo."),
     ("image_topic", "/camera/camera/color/image_raw", "Rectified or raw color image."),
     ("camera_info_topic", "/camera/camera/color/camera_info", "Matching color intrinsics."),
-    ("auto_capture", "true", "Automatically collect sufficiently different poses."),
+    (
+        "capture_mode",
+        "manual",
+        "manual records guided poses; auto moves through 12 poses; triggered waits for capture.",
+    ),
+    (
+        "auto_motion_authorized",
+        "false",
+        "Required explicit safety acknowledgement before auto mode may command the robot.",
+    ),
+    (
+        "trajectory_action",
+        "/fr3_arm_controller/follow_joint_trajectory",
+        "FollowJointTrajectory action used by auto mode.",
+    ),
+    ("auto_waypoint_duration_s", "5.0", "Seconds for each automatic waypoint move."),
+    ("auto_sample_timeout_s", "8.0", "Maximum wait for a valid sample at each waypoint."),
     ("minimum_samples", "12", "Smallest sample set accepted by the solver."),
 )
 
@@ -30,7 +46,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "start_camera",
                 default_value="true",
-                description="Also launch the RealSense D415 driver.",
+                description="Also launch the RealSense D435 RGB driver.",
             ),
             *[
                 DeclareLaunchArgument(name, default_value=default, description=description)
@@ -42,7 +58,12 @@ def generate_launch_description() -> LaunchDescription:
                         [FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"]
                     )
                 ),
-                launch_arguments={"device_type": "d415", "enable_color": "true"}.items(),
+                launch_arguments={
+                    "device_type": "d435",
+                    "enable_color": "true",
+                    "enable_depth": "false",
+                    "rgb_camera.color_profile": "1920x1080x30",
+                }.items(),
                 condition=IfCondition(LaunchConfiguration("start_camera")),
             ),
             Node(

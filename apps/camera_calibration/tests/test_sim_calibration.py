@@ -22,8 +22,8 @@ starting Python, for example::
     MUJOCO_GL=egl python3 apps/camera_calibration/tests/test_sim_calibration.py --headless
 
 The physical D435's factory intrinsics vary by device.  The simulation uses a
-centered 640x480 pinhole model with fx=fy=615 px; real calibration continues to
-use the measured ``CameraInfo`` values from the camera driver.
+centered 1920x1080 pinhole model with fx=fy=1383.75 px; real calibration
+continues to use the measured ``CameraInfo`` values from the camera driver.
 """
 
 from __future__ import annotations
@@ -56,9 +56,11 @@ from camera_calibration.calibration_math import (  # noqa: E402
     quaternion_xyzw_to_matrix,
     rotation_angle_deg,
 )
+from camera_calibration.auto_waypoints import AUTO_WAYPOINTS  # noqa: E402
 
 
 CAMERA_NAME = "rs435_rgb"
+CAMERA_ROLL_DEG = 90.0
 TAG_BODY_NAME = "apriltag_0"
 TAG_ID = 0
 TAG_SIZE_M = 0.040  # Black-square edge, excluding the white quiet zone.
@@ -67,14 +69,14 @@ ARM_JOINTS = tuple(f"fr3_joint{index}" for index in range(1, 8))
 
 @dataclass(frozen=True)
 class D435RgbIntrinsics:
-    """Nominal 640x480 D435 RGB calibration used by the virtual camera."""
+    """Nominal full-resolution D435 RGB calibration for the virtual camera."""
 
-    width: int = 640
-    height: int = 480
-    fx: float = 615.0
-    fy: float = 615.0
-    cx: float = 320.0
-    cy: float = 240.0
+    width: int = 1920
+    height: int = 1080
+    fx: float = 1383.75
+    fy: float = 1383.75
+    cx: float = 960.0
+    cy: float = 540.0
 
     @property
     def matrix(self) -> np.ndarray:
@@ -209,6 +211,15 @@ def _initial_camera_pose(
     )
     camera_right /= np.linalg.norm(camera_right)
     camera_up = np.cross(camera_back, camera_right)
+
+    # Roll the physical sensor so the workcell appears upright in the RGB
+    # image.  With MuJoCo's +Y-up camera convention, right'=up and up'=-right
+    # rotates the rendered image 90 degrees clockwise without changing the
+    # optical axis or camera position.
+    roll = math.radians(CAMERA_ROLL_DEG)
+    original_right = camera_right.copy()
+    camera_right = math.cos(roll) * original_right + math.sin(roll) * camera_up
+    camera_up = -math.sin(roll) * original_right + math.cos(roll) * camera_up
     world_to_camera_mujoco = make_transform(
         np.column_stack((camera_right, camera_up, camera_back)), camera_position
     )
@@ -264,6 +275,12 @@ def _absolute_asset_xml_with_camera(
     tag_geom.set("type", "mesh")
     tag_geom.set("mesh", planar_mesh_name)
     tag_geom.attrib.pop("size", None)
+
+    visual_global = root.find("./visual/global")
+    if visual_global is None:
+        raise RuntimeError(f"{ROBOT_SCENE} has no visual/global configuration")
+    visual_global.set("offwidth", str(intrinsics.width))
+    visual_global.set("offheight", str(intrinsics.height))
 
     worldbody = root.find("worldbody")
     if worldbody is None:
@@ -647,7 +664,7 @@ def run_simulated_calibration(
     frames_per_sample: int = 3,
     camera_distance_m: float = 0.50,
     interactive: bool = False,
-    fps: float = 30.0,
+    fps: float = 10.0,
     intrinsics: D435RgbIntrinsics = D435RgbIntrinsics(),
 ) -> SimulationCalibrationRun:
     """Render RGB, collect OpenCV/FK pose pairs, and calibrate the camera."""
@@ -776,7 +793,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=18)
     parser.add_argument("--frames-per-sample", type=int, default=3)
     parser.add_argument("--camera-distance", type=float, default=0.50, metavar="METRES")
-    parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=10.0,
+        help="interactive motion speed in rendered frames per second (default: 10)",
+    )
     parser.add_argument(
         "--output-image",
         type=Path,
@@ -833,6 +855,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def test_nominal_d435_rgb_projection_contract() -> None:
     intrinsics = D435RgbIntrinsics()
     intrinsics.validate()
+    assert (intrinsics.width, intrinsics.height) == (1920, 1080)
     assert intrinsics.matrix.shape == (3, 3)
     assert intrinsics.fovy_deg == pytest.approx(42.636, abs=0.01)
 
@@ -849,6 +872,29 @@ def test_simulated_rgb_calibration_recovers_fixed_camera() -> None:
     assert int(np.count_nonzero(run.retained)) >= 8
     assert run.camera_translation_error_m < 0.025
     assert run.camera_rotation_error_deg < 4.0
+
+
+def test_real_auto_waypoint_interpolations_keep_tag_in_simulated_view() -> None:
+    """Check endpoints and slow controller interpolation, including the first move."""
+    pytest.importorskip("mujoco")
+    mj, model, data, world_to_camera = load_calibration_scene()
+    addresses = _arm_joint_addresses(mj, model)
+    qpos_template = data.qpos.copy()
+    tag_body_id = _named_id(mj, model, mj.mjtObj.mjOBJ_BODY, TAG_BODY_NAME)
+    poses = [qpos_template[addresses].copy(), *map(np.asarray, AUTO_WAYPOINTS)]
+
+    for start, goal in zip(poses, poses[1:]):
+        for fraction in np.linspace(0.0, 1.0, 31):
+            arm_position = (1.0 - fraction) * start + fraction * goal
+            _set_arm_pose(
+                mj, model, data, qpos_template, addresses, arm_position
+            )
+            world_to_tag = _pose(
+                data.xpos[tag_body_id], data.xmat[tag_body_id]
+            )
+            assert _tag_is_safely_visible(
+                world_to_camera, world_to_tag, D435RgbIntrinsics()
+            )
 
 
 # Imported late so the direct-run path has no dependency on pytest.

@@ -4,6 +4,7 @@ import pytest
 from camera_calibration.calibration_math import (
     CalibrationError,
     calibrate_eye_to_hand,
+    calibrate_fixed_tag_eye_to_hand,
     invert_transform,
     make_transform,
     matrix_to_quaternion_xyzw,
@@ -82,3 +83,39 @@ def test_rejects_pose_set_without_rotation():
     observations = [sample @ hand_to_tag for sample in robot]
     with pytest.raises(CalibrationError, match="rotational excitation"):
         calibrate_eye_to_hand(robot, observations)
+
+
+def test_fixed_tag_calibration_recovers_camera_without_estimating_mount():
+    expected_camera, known_tag, robot, observations = synthetic_samples()
+    result, retained = calibrate_fixed_tag_eye_to_hand(
+        robot, observations, known_tag, minimum_samples=12
+    )
+    np.testing.assert_allclose(result.world_to_camera, expected_camera, atol=1e-10)
+    np.testing.assert_allclose(result.hand_to_tag, known_tag, atol=1e-12)
+    assert retained.all()
+
+
+def test_fixed_tag_calibration_rejects_bad_rgb_observation():
+    expected_camera, known_tag, robot, observations = synthetic_samples(20)
+    observations[5] = observations[5].copy()
+    observations[5][:3, 3] += [0.12, -0.09, 0.04]
+    result, retained = calibrate_fixed_tag_eye_to_hand(
+        robot, observations, known_tag, minimum_samples=12
+    )
+    assert retained.sum() == 19
+    assert not retained[5]
+    np.testing.assert_allclose(result.world_to_camera, expected_camera, atol=1e-10)
+
+
+def test_fixed_tag_calibration_allows_translation_only_motion():
+    world_to_camera = make_transform(axis_angle([0.2, -0.4, 0.7], 0.6), [0.8, 0.1, 0.7])
+    known_tag = make_transform(axis_angle([0.1, 0.9, -0.2], -0.4), [0.0, 0.02, 0.092])
+    robot = [make_transform(np.eye(3), [0.3 + 0.03 * index, 0.0, 0.4]) for index in range(12)]
+    observations = [
+        invert_transform(world_to_camera) @ world_to_hand @ known_tag
+        for world_to_hand in robot
+    ]
+    result, _ = calibrate_fixed_tag_eye_to_hand(
+        robot, observations, known_tag, minimum_samples=12
+    )
+    np.testing.assert_allclose(result.world_to_camera, world_to_camera, atol=1e-10)

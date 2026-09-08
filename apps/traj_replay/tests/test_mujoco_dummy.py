@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import signal
 import sys
 import time
 from typing import Any
@@ -221,6 +222,13 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
     print("Open the right sidebar's Control section to move the arm and hand.")
     print("Close the window or press Ctrl+C in this terminal to exit.")
 
+    shutdown_requested = False
+
+    def request_shutdown(_signum: int, _frame: Any) -> None:
+        nonlocal shutdown_requested
+        shutdown_requested = True
+
+    previous_sigint_handler = signal.signal(signal.SIGINT, request_shutdown)
     try:
         with mujoco.viewer.launch_passive(
             model,
@@ -229,7 +237,7 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
             show_right_ui=True,
         ) as viewer:
             next_step = time.monotonic()
-            while viewer.is_running():
+            while viewer.is_running() and not shutdown_requested:
                 with viewer.lock():
                     mujoco.mj_step(model, data)
                 viewer.sync()
@@ -240,10 +248,18 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
                     time.sleep(delay)
                 else:
                     next_step = time.monotonic()
-    except KeyboardInterrupt:
-        # Let the context manager close the viewer exactly once before handling
-        # Ctrl+C. Calling close() here as well races MuJoCo's viewer thread and
-        # can segfault during shutdown.
+
+        # launch_passive() owns a daemon UI thread. Its context manager only
+        # requests shutdown, so wait for the native viewer object to be
+        # released before Python starts interpreter teardown. Without this,
+        # MuJoCo 3.10 can segfault after an otherwise successful Ctrl+C.
+        teardown_deadline = time.monotonic() + 5.0
+        while viewer._sim() is not None and time.monotonic() < teardown_deadline:
+            time.sleep(0.01)
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint_handler)
+
+    if shutdown_requested:
         print("\nMuJoCo viewer stopped by user.", flush=True)
 
 
