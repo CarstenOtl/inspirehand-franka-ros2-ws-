@@ -1,7 +1,6 @@
 """Calibrate a fixed camera from an AprilTag on the Inspire Hand's back."""
 
 import json
-import math
 
 import cv2
 import numpy as np
@@ -22,10 +21,11 @@ from .calibration_math import (
     calibrate_eye_to_hand,
     invert_transform,
     make_transform,
-    matrix_to_quaternion_xyzw,
     quaternion_xyzw_to_matrix,
     rotation_angle_deg,
 )
+from .report import calibration_document
+from .tag_pose import estimate_tag_pose, to_ippe_order
 
 
 APRILTAG_FAMILIES = ("tag16h5", "tag25h9", "tag36h10", "tag36h11")
@@ -163,36 +163,6 @@ class CameraCalibrationNode(Node):
             return None
         return matches[0].corners
 
-    def _estimate_tag_pose(self, image_corners: np.ndarray):
-        half = self._tag_size * 0.5
-        object_corners = np.asarray(
-            [[-half, half, 0.0], [half, half, 0.0], [half, -half, 0.0], [-half, -half, 0.0]],
-            dtype=np.float64,
-        )
-        success, rotation_vector, translation_vector = cv2.solvePnP(
-            object_corners,
-            image_corners,
-            self._camera_matrix,
-            self._distortion,
-            flags=cv2.SOLVEPNP_IPPE_SQUARE,
-        )
-        if not success:
-            return None, math.inf
-        if float(translation_vector[2]) <= 0.0:
-            return None, math.inf
-        projected, _ = cv2.projectPoints(
-            object_corners,
-            rotation_vector,
-            translation_vector,
-            self._camera_matrix,
-            self._distortion,
-        )
-        reprojection_error = float(
-            np.sqrt(np.mean(np.sum((projected.reshape(4, 2) - image_corners) ** 2, axis=1)))
-        )
-        rotation, _ = cv2.Rodrigues(rotation_vector)
-        return make_transform(rotation, translation_vector.reshape(3)), reprojection_error
-
     def _image_callback(self, message: Image) -> None:
         if self._camera_matrix is None:
             self._notice("intrinsics", "Waiting for CameraInfo before detecting the tag.")
@@ -214,9 +184,14 @@ class CameraCalibrationNode(Node):
             self._notice("cv_bridge", f"Cannot decode image: {error}")
             return
         gray_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
-        image_corners = self._detect_tag(gray_image)
-        if image_corners is not None:
-            camera_to_tag, reprojection_error = self._estimate_tag_pose(image_corners)
+        detector_corners = self._detect_tag(gray_image)
+        if detector_corners is not None:
+            camera_to_tag, reprojection_error = estimate_tag_pose(
+                to_ippe_order(detector_corners),
+                self._camera_matrix,
+                self._distortion,
+                self._tag_size,
+            )
             if camera_to_tag is not None and reprojection_error <= self._max_reprojection_error:
                 self._try_capture(message, camera_to_tag, reprojection_error)
 
@@ -330,46 +305,25 @@ class CameraCalibrationNode(Node):
     def _calibration_log(
         self, result, world_to_mount: np.ndarray, retained_count: int
     ) -> dict:
-        def transform_dict(transform: np.ndarray) -> dict:
-            quaternion = matrix_to_quaternion_xyzw(transform[:3, :3])
-            return {
-                "translation": {
-                    "x": float(transform[0, 3]),
-                    "y": float(transform[1, 3]),
-                    "z": float(transform[2, 3]),
-                },
-                "rotation_xyzw": {
-                    "x": float(quaternion[0]),
-                    "y": float(quaternion[1]),
-                    "z": float(quaternion[2]),
-                    "w": float(quaternion[3]),
-                },
-                "matrix_4x4": transform.tolist(),
-            }
-
-        return {
-            "schema_version": 1,
-            "parent_frame": self._world_frame,
-            "child_frame": self._camera_mount_frame,
-            "camera_optical_frame": self._camera_optical_frame,
-            "camera_intrinsics": {
-                "matrix_3x3": self._camera_matrix.tolist(),
-                "distortion": self._distortion.tolist(),
-            },
-            "transform": transform_dict(world_to_mount),
-            "estimated_carrier_to_tag": {
-                "parent_frame": self._hand_frame,
-                "child_frame": f"apriltag_{self._tag_id}",
-                **transform_dict(result.hand_to_tag),
-            },
-            "quality": {
+        return calibration_document(
+            parent_frame=self._world_frame,
+            child_frame=self._camera_mount_frame,
+            camera_optical_frame=self._camera_optical_frame,
+            camera_matrix=self._camera_matrix,
+            distortion=self._distortion,
+            world_to_child=world_to_mount,
+            carrier_frame=self._hand_frame,
+            hand_to_tag=result.hand_to_tag,
+            tag_id=self._tag_id,
+            tag_size_m=self._tag_size,
+            quality={
                 "samples_collected": len(self._world_to_hand_samples),
                 "samples_used": retained_count,
                 "translation_rmse_m": result.translation_rmse_m,
                 "rotation_rmse_deg": result.rotation_rmse_deg,
+                "capture_mode": "moving" if self._auto_capture else "manual",
             },
-            "tag": {"id": self._tag_id, "size_m": self._tag_size},
-        }
+        )
 
 
 def main(args=None) -> None:

@@ -1,0 +1,50 @@
+schema_version: 1
+name: pickup_multi_homing
+description: Reset pose of the Isaac-Forge-Franka-Pickplace-Multi-v0 capture.
+units: radians
+
+# Commandable joints only. The six passive Inspire joints are populated by the
+# hand's mimic constraints and must not be commanded independently.
+joint_names:
+  - fr3_joint1
+  - fr3_joint2
+  - fr3_joint3
+  - fr3_joint4
+  - fr3_joint5
+  - fr3_joint6
+  - fr3_joint7
+  - pinky_proximal_joint
+  - ring_proximal_joint
+  - middle_proximal_joint
+  - index_proximal_joint
+  - thumb_proximal_pitch_joint
+  - thumb_proximal_yaw_joint
+positions:
+  - -0.087300
+  - -0.610900
+  - 0.000000
+  - -2.618000
+  - -0.523600
+  - 2.967100
+  - 0.000000
+  - 1.099900
+  - 1.099900
+  - 1.099900
+  - 0.440000
+  - 0.200000
+  - 1.140000
+
+source:
+  repository: forgeUltra
+  branch: franka-chi
+  derived_from: apps/traj_replay/demo_trajs/pickup_1/replay_data.npz
+  task: Isaac-Forge-Franka-Pickplace-Multi-v0
+  method: >
+    Read off the first sample of every episode in the capture. All six
+    episodes across the three environments agree to within 1e-6 rad, so this
+    is the pose the task resets to rather than one rollout's starting point.
+  note: >
+    The hand block is identical to homing/pickup.yaml, which matches this
+    capture exactly; only the seven arm joints differ. pickup.yaml cites
+    forge_franka_pickplace/config/reset_pose.yaml, a single-object variant,
+    and its arm pose is up to 2.62 rad from where this capture begins.

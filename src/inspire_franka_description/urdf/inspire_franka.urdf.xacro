@@ -2,19 +2,13 @@
 <!--
   The Franka FR3 and the Inspire RH56 hand in one description.
 
-  By default they are two separate objects sharing a world: the arm at the
-  origin, the hand standing on the bench beside it. That is the "bench hand"
-  arrangement - the two are independent assets that happen to be in the same
-  workspace, which is exactly how the real setup is wired (one FCI connection,
-  one USB-RS485 adapter, no mechanical coupling).
+  When both assets are enabled, the hand is always bolted to the arm's flange
+  using the same fr3_link8-to-palm transform as forgeUltra's franka-chi asset.
+  With only one asset enabled, that asset is described on its own.
 
-  `hand_mount:=flange` bolts the hand to the arm's flange instead, using the
-  same fr3_link8-to-palm transform as forgeUltra's franka-chi asset.
-
-      xacro inspire_franka.urdf.xacro                          # arm + bench hand
+      xacro inspire_franka.urdf.xacro                          # arm + flange hand
       xacro inspire_franka.urdf.xacro hand:=false              # bare arm
       xacro inspire_franka.urdf.xacro arm:=false               # hand only
-      xacro inspire_franka.urdf.xacro hand_mount:=flange       # hand on the flange
 
   ros2_control here is SIMULATION ONLY (`mujoco` or `mock`). The real arm goes
   through upstream franka_bringup and the real hand through inspire_hand_driver;
@@ -37,14 +31,6 @@
   <xacro:arg name="hand_side" default="right"/>
   <xacro:arg name="hand_prefix" default=""/>
 
-  <!-- 'bench'  - the hand stands on the table beside the arm, unattached.
-       'flange' - the hand is bolted to the arm's flange (fr3_link8).
-       'custom' - use hand_xyz/hand_rpy verbatim, against hand_parent. -->
-  <xacro:arg name="hand_mount" default="bench"/>
-  <xacro:arg name="hand_parent" default="world"/>
-  <xacro:arg name="hand_xyz" default="0 0 0"/>
-  <xacro:arg name="hand_rpy" default="0 0 0"/>
-
   <!-- ros2_control, for simulation. -->
   <xacro:arg name="ros2_control" default="false"/>
   <xacro:arg name="hardware_type" default="mujoco"/>
@@ -65,7 +51,6 @@
 
   <xacro:property name="with_arm" value="$(arg arm)"/>
   <xacro:property name="with_hand" value="$(arg hand)"/>
-  <xacro:property name="mount" value="$(arg hand_mount)"/>
 
   <!--
     Guards. A silent empty or half-built URDF is a miserable thing to debug, so
@@ -81,12 +66,6 @@
   -->
   <xacro:unless value="${with_arm or with_hand}">
     <link name="${dict()['inspire_franka: arm and hand are both false, so there is nothing to describe. Set arm:=true or hand:=true.']}"/>
-  </xacro:unless>
-  <xacro:if value="${mount == 'flange' and not with_arm}">
-    <link name="${dict()['inspire_franka: hand_mount:=flange needs an arm to bolt the hand to, but arm:=false.']}"/>
-  </xacro:if>
-  <xacro:unless value="${mount in ('bench', 'flange', 'custom')}">
-    <link name="${dict()['inspire_franka: hand_mount must be bench, flange or custom.']}"/>
   </xacro:unless>
 
   <!-- franka_arm creates its own `connected_to` link, so `world` comes from the
@@ -117,40 +96,20 @@
       value="${('$(arg arm_prefix)' + '_' if '$(arg arm_prefix)' else '') + '$(arg robot_type)' + '_'}"/>
 
     <!--
-      Bench pose: 0.45 m forward and 0.35 m to the arm's right, standing on the
-      table. 0.57 m from the base, comfortably inside the FR3's reach, so the
-      arm can be driven to touch the hand.
-
-      Orientation: hand_mount's +z is the direction the fingers point (the
-      vendored model's base_joint rotates hand_base_link's -y onto +z), so an
-      identity rotation stands the hand upright on the bench.
-    -->
-    <xacro:property name="hand_bench_xyz" value="0.45 -0.35 0.0"/>
-    <xacro:property name="hand_bench_rpy" value="0 0 0"/>
-
-    <!--
-      Match forgeUltra's franka-chi asset, which welds fr3_link8 directly to
-      palm at zero translation with q_wxyz=(0.5, -0.5, -0.5, 0.5).
-
-      This description has an intermediate hand_mount frame. Its fixed
-      base_joint contributes rpy=(-pi/2, 0, pi), so applying a -pi/2 yaw here
-      gives the same composed fr3_link8-to-hand_base_link (palm) transform.
+      Mount hand_mount directly on fr3_link8 with a 180-degree clocking angle. The
+      hand's fixed base_joint still defines the model-internal
+      hand_mount-to-hand_base_link orientation.
       Keep these values synchronized with inspire_hand_on_flange.xml.
     -->
     <xacro:property name="hand_flange_xyz" value="0 0 0"/>
-    <xacro:property name="hand_flange_rpy" value="0 0 -1.5707963267948966"/>
+    <xacro:property name="hand_flange_rpy" value="0 0 3.141592653589793"/>
 
     <xacro:property name="hand_parent_resolved"
-      value="${arm_link_prefix + 'link8' if mount == 'flange'
-              else '$(arg hand_parent)'}"/>
+      value="${arm_link_prefix + 'link8' if with_arm else 'world'}"/>
     <xacro:property name="hand_xyz_resolved"
-      value="${hand_flange_xyz if mount == 'flange'
-              else hand_bench_xyz if mount == 'bench'
-              else '$(arg hand_xyz)'}"/>
+      value="${hand_flange_xyz if with_arm else '0 0 0.2'}"/>
     <xacro:property name="hand_rpy_resolved"
-      value="${hand_flange_rpy if mount == 'flange'
-              else hand_bench_rpy if mount == 'bench'
-              else '$(arg hand_rpy)'}"/>
+      value="${hand_flange_rpy if with_arm else '0 0 0'}"/>
 
     <xacro:inspire_hand
       side="$(arg hand_side)"

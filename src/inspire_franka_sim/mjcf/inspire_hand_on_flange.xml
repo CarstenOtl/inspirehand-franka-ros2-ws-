@@ -7,14 +7,10 @@
 
        - materialise the fr3_link8 body, which Menagerie's FR3 does not have
          (it ends at fr3_link7 plus `attachment_site`);
-       - apply the same flange-to-palm transform as forgeUltra's franka-chi
-         asset, accounting for this model's intermediate hand_mount frame.
-
-       franka-chi welds fr3_link8 directly to palm at zero translation with
-       q_wxyz=(0.5, -0.5, -0.5, 0.5). This hand model already rotates
-       hand_mount to hand_base_link by rpy=(-pi/2, 0, pi), so a -pi/2 yaw here
-       composes to exactly that flange-to-palm quaternion. Keep this transform
-       equal to hand_flange_xyz/rpy in
+       - attach hand_mount to the flange with zero translation and a 180-degree
+         clocking angle. The hand model retains its internal
+         hand_mount-to-hand_base_link rotation. Keep this transform equal to
+         hand_flange_xyz/rpy in
        inspire_franka_description/urdf/inspire_franka.urdf.xacro. -->
 
   <asset>
@@ -23,7 +19,7 @@
 
   <worldbody>
     <body name="fr3_link8">
-      <frame quat="0.7071067811865476 0 0 -0.7071067811865476">
+      <frame quat="0 0 0 1">
         <attach model="inspire_hand" prefix=""/>
       </frame>
     </body>

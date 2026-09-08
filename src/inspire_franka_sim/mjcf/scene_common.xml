@@ -1,27 +1,77 @@
 <mujoco model="scene_common">
-  <!-- Lighting, sky and floor, shared by every scene in this package so they
-       differ only in which robots they contain.
+  <!-- Lighting, sky, floor and camera, shared by every scene in this package
+       so they differ only in which robots they contain.
 
-       Derived from MuJoCo Menagerie's franka_fr3/scene.xml - see
+       The look (skybox/groundplane colors, headlight, haze, viewer camera,
+       table) is matched to assets/fr3_inspirehand/fr3_inspirehand_replay.xml
+       so the ros2_control sim and the offline trajectory-replay viewer
+       present the same environment - see the "unify the visual environment"
+       plan. `global azimuth`/`elevation` were already the same in both.
+
+       Originally derived from MuJoCo Menagerie's franka_fr3/scene.xml - see
        MJCF_PROVENANCE.md. -->
   <visual>
-    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.55 0.55 0.55" specular="0 0 0"/>
+    <rgba haze="0.7 0.7 0.7 1"/>
     <global azimuth="120" elevation="-20"/>
   </visual>
 
   <asset>
-    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+    <texture type="skybox" builtin="flat" rgb1="0.92 0.92 0.92"
       width="512" height="3072"/>
     <texture type="2d" name="groundplane" builtin="checker" mark="edge"
-      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8"
+      rgb1="0.31 0.31 0.31" rgb2="0.31 0.31 0.31" markrgb="0.78 0.78 0.78"
       width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true"
-      texrepeat="5 5" reflectance="0.2"/>
+      texrepeat="2 2" reflectance="0.05"/>
+    <material name="table_top" rgba="0.93 0.93 0.91 1" roughness="0.55"/>
+    <material name="table_leg" rgba="0.13 0.14 0.15 1" roughness="0.35" metallic="0.65"/>
   </asset>
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- Cosmetic only (contype/conaffinity 0): this rig's real bench isn't
+         measured in this workspace, so this is a decoration, not a modelled
+         fixture. It can never register a contact or affect test_mjcf.py's
+         contact checks.
+
+         Positioned at the replay scene's true pose *relative to the arm*,
+         not copied by world coordinate. There, base=(1.2,0,-0.333) with a
+         180 deg yaw and table=(0.335,0,0); undoing that yaw gives a
+         base-local offset of (0.865, 0, 0.333) - table top level with
+         fr3_link1 (fr3.xml: pos="0 0 0.333" off fr3_link0/base), not with
+         base/link0 itself. That's the same fr3_link1 height here (our base
+         has no rotation and sits at the origin, so the local offset is the
+         world offset), which is why the table top sits at z=0.333, not 0.
+
+         The legs are shortened from the replay's 0.36 half-length: that
+         scene's table stands on a room floor 0.75 m below its z=0, which
+         doesn't exist here - our floor plane is z=0, 0.303 m under this
+         table's top (0.333 - 0.03 slab thickness), so the legs are sized to
+         reach exactly that, not left floating or punched through the floor. -->
+    <body name="table" pos="0.865 0 0.333">
+      <geom name="table_top" type="box" pos="0 0 -0.015" size="0.4 0.3 0.015"
+        material="table_top" contype="0" conaffinity="0"/>
+      <geom name="table_leg_0" type="cylinder" pos="0.35 0.25 -0.1815"
+        size="0.015 0.1515" material="table_leg" contype="0" conaffinity="0"/>
+      <geom name="table_leg_1" type="cylinder" pos="0.35 -0.25 -0.1815"
+        size="0.015 0.1515" material="table_leg" contype="0" conaffinity="0"/>
+      <geom name="table_leg_2" type="cylinder" pos="-0.35 0.25 -0.1815"
+        size="0.015 0.1515" material="table_leg" contype="0" conaffinity="0"/>
+      <geom name="table_leg_3" type="cylinder" pos="-0.35 -0.25 -0.1815"
+        size="0.015 0.1515" material="table_leg" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- Same relative vantage as the replay scene's "policy_replay_front"
+         (eye=(-0.5,-0.7,0.5), lookat=(0.6,0,0.15) there), translated by the
+         difference in where the two scenes place the arm's `base` body
+         ((0,0,0) here vs (1.2,0,-0.333) there) so it frames the arm the same
+         way despite the different world origin. Orientation (xyaxes) is
+         unchanged - a rigid translation of eye and lookat together doesn't
+         change the viewing direction. -->
+    <camera name="policy_replay_front" pos="-1.7 -0.7 0.833" fovy="35"
+      xyaxes="0.536875492 -0.843661488 0 0.218705647 0.139176321 0.965813086"/>
   </worldbody>
 </mujoco>

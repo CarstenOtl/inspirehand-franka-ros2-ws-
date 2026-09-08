@@ -9,7 +9,10 @@ install(
 )
 
 install(
-  PROGRAMS scripts/make_hand_mjcf.py
+  PROGRAMS
+    scripts/make_hand_mjcf.py
+    scripts/inspire_hand_sim_bridge.py
+    scripts/mujoco_vis_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -36,6 +39,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_lint_auto_find_test_dependencies()
   ament_add_pytest_test(mjcf test/test_mjcf.py)
+  ament_add_pytest_test(mujoco_vis_node test/test_mujoco_vis_node.py)
 endif()
 
 ament_package()

@@ -3,9 +3,8 @@
 
        All mesh paths are relative to this file and stay inside this asset
        bundle. fr3_link8 is the flange frame, 107 mm beyond fr3_link7. The
-       hand_mount body applies a -pi/2 yaw which, composed with the hand's
-       existing base-link rotation, matches forgeUltra franka-chi's zero-offset
-       flange-to-palm quaternion (0.5, -0.5, -0.5, 0.5), in wxyz order. -->
+       hand_mount is attached with zero translation and a 180-degree clocking angle.
+       The hand retains its existing internal base-link rotation. -->
 
   <compiler angle="radian" meshdir="./"/>
 
@@ -169,7 +168,7 @@
                       <site name="attachment_site" pos="0 0 0.107"/>
                       <frame childclass="fr3">
                         <body name="fr3_link8" pos="0 0 0.107">
-                          <body name="hand_mount" quat="0.7071067811865476 0 0 -0.7071067811865476">
+                          <body name="hand_mount" quat="0 0 0 1">
                             <body name="hand_base_link" quat="9.38189e-07 -9.38183e-07 -0.707105 0.707109">
                               <inertial pos="-0.0025264 -0.066047 0.0019598" quat="0.993005 -0.113528 -0.0210604 0.0246792" mass="0.14143" diaginertia="0.000122991 8.41186e-05 7.61951e-05"/>
                               <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" density="0" mesh="base_link"/>

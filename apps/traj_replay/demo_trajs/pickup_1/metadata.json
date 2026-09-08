@@ -1,0 +1,195 @@
+{
+  "replay": "policy",
+  "task": "Isaac-Forge-Franka-Pickplace-Multi-v0",
+  "checkpoint": "/home/carsten.oertel/code/forgeUltra-franka/forge_ultra/tasks/forge_franka_pickplace/logs/rl_games/ForgeTg2/franka_pickplace-Forge-franka-pickplace-multi-franka_pickplace_multi_run01-2026-08-26_15-28-06/nn/ForgeTg2.pth",
+  "dt": 0.06666666666666667,
+  "recording_frequency_hz": 15.0,
+  "joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+    "index_joint_0",
+    "little_joint_0",
+    "middle_joint_0",
+    "ring_joint_0",
+    "thumb_joint_0",
+    "index_joint_1",
+    "little_joint_1",
+    "middle_joint_1",
+    "ring_joint_1",
+    "thumb_joint_1",
+    "thumb_joint_2",
+    "thumb_joint_3"
+  ],
+  "arm_joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7"
+  ],
+  "arm_joint_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "hand_joint_names": [
+    "thumb_joint_0",
+    "thumb_joint_1",
+    "index_joint_0",
+    "middle_joint_0",
+    "ring_joint_0",
+    "little_joint_0"
+  ],
+  "hand_joint_ids": [
+    11,
+    16,
+    7,
+    9,
+    10,
+    8
+  ],
+  "physics_dt": 0.008333333333333333,
+  "decimation": 8,
+  "recording_clock": "policy_step",
+  "seed": 0,
+  "distillation": false,
+  "distillation_gravity_enabled": false,
+  "teacher_execution": "native_policy_action",
+  "rollout_mode": "deterministic_mean",
+  "distillation_teacher_gravity_matched": false,
+  "distillation_gravity_compensation_enabled": true,
+  "disturbance_mode": "none",
+  "impulse_time_range_s": [
+    0.25,
+    1.0
+  ],
+  "impulse_magnitude_range_ns": [
+    0.05,
+    0.25
+  ],
+  "impulse_seed": null,
+  "trajectory_name": "traj_1",
+  "schema_version": 2,
+  "created_at": "2026-09-04T11:33:59.157403",
+  "sample_count": 1351,
+  "data_file": "replay_data.npz",
+  "fields": {
+    "step": [
+      1351
+    ],
+    "joint_pos": [
+      1351,
+      3,
+      19
+    ],
+    "joint_vel": [
+      1351,
+      3,
+      19
+    ],
+    "tcp_pos": [
+      1351,
+      3,
+      3
+    ],
+    "tcp_quat": [
+      1351,
+      3,
+      4
+    ],
+    "nut_pos": [
+      1351,
+      3,
+      3
+    ],
+    "nut_quat": [
+      1351,
+      3,
+      4
+    ],
+    "joint_pos_target": [
+      1351,
+      3,
+      19
+    ],
+    "nut_lin_vel": [
+      1351,
+      3,
+      3
+    ],
+    "nut_ang_vel": [
+      1351,
+      3,
+      3
+    ],
+    "threading_proper_grip": [
+      1351,
+      3
+    ],
+    "pickup_grasped_once": [
+      1351,
+      3
+    ],
+    "pickup_lifted_object": [
+      1351,
+      3
+    ],
+    "pickup_waypoint_index": [
+      1351,
+      3
+    ],
+    "pickup_goal_qualified": [
+      1351,
+      3
+    ],
+    "pickup_goal_position_distance": [
+      1351,
+      3
+    ],
+    "pickup_goal_z_aligned": [
+      1351,
+      3
+    ],
+    "pickup_goal_hold_steps": [
+      1351,
+      3
+    ],
+    "pickup_success": [
+      1351,
+      3
+    ],
+    "debug_nut_frame_pos": [
+      1351,
+      3,
+      3
+    ],
+    "debug_nut_frame_quat": [
+      1351,
+      3,
+      4
+    ]
+  },
+  "trajectory_layout": "time, environment, component",
+  "temporal_alignment": {
+    "joint_pos_target": "post-step command: for policy transitions, observation[t] pairs with joint_pos_target[t+1]"
+  },
+  "coordinate_convention": {
+    "tcp_position": "environment-relative metres",
+    "nut_position": "environment-relative metres",
+    "quaternion": "WXYZ",
+    "joint_position": "radians",
+    "joint_velocity": "radians/second",
+    "joint_position_target": "radians; controller command active at sample time"
+  }
+}

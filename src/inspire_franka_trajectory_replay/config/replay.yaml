@@ -27,3 +27,13 @@ timing:
   settle_seconds: 1.0
   cycles: 1
   goto_timeout: 60.0
+
+# Rest-to-rest trajectory sent through the stock JointTrajectoryController.
+# The controller claims position interfaces, so franka_hardware uses the
+# robot-internal joint-impedance controller; these are path-shaping limits, not
+# impedance gains.
+goto:
+  max_velocity: 0.5
+  max_acceleration: 1.0
+  min_duration: 5.0
+  max_joint_step: 3.0

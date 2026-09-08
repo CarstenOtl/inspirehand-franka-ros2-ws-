@@ -1,7 +1,9 @@
 """Home and replay a coordinated Forge trajectory on an FR3 and Inspire RH56."""
 
 import argparse
+import dataclasses
 from pathlib import Path
+import sys
 import threading
 import time
 
@@ -14,11 +16,12 @@ from sensor_msgs.msg import JointState
 
 from franka_trajectory_replay.prepare import prepare, summarize
 from franka_trajectory_replay import limits
-from franka_trajectory_replay.replay_client import Rejected, ReplayClient
+from franka_trajectory_replay.replay_client import Rejected
 from franka_trajectory_replay.runconfig import load_config
 from franka_trajectory_replay.trajectory_io import Trajectory as ArmTrajectory
 from inspire_hand_driver import kinematics as kin
 
+from .joint_trajectory_client import JointTrajectoryClient
 from .trajectory import ARM_JOINTS, HAND_JOINTS, load_trajectory
 
 
@@ -32,6 +35,15 @@ HAND_DOF = tuple(kin.dof_index(name) for name in HAND_JOINTS)
 # not fail a comparison, it would scale every hand command wrongly.
 HAND_LOWER = np.array([kin.DOFS[index].lower for index in HAND_DOF])
 HAND_UPPER = np.array([kin.DOFS[index].upper for index in HAND_DOF])
+
+# How far outside those limits a sample may sit and still be treated as being
+# *at* the limit. Forge writes float32, so a joint the policy drove hard onto
+# its own stop arrives a couple of micro-radians past it -- the pickplace
+# capture reaches -2.09e-6 rad on index_proximal. Rejecting a whole trajectory
+# over that is wrong, and so is a tolerance that hides a real overshoot: 1e-4
+# rad is 0.07 of the hand's 1/1000 register step, so anything snapped by it
+# was going to round to the same command anyway.
+HAND_LIMIT_TOLERANCE = 1e-4
 
 
 def _packaged(name):
@@ -156,21 +168,58 @@ def _hand_stream_native(trajectory, rate, time_scale):
 
 
 def _validate_hand(values, label):
+    """Reject a hand trajectory that leaves the URDF's limits; return it snapped.
+
+    Snapping only ever moves a sample that was already within
+    :data:`HAND_LIMIT_TOLERANCE` of a limit, and it happens *after* the check,
+    so it can never mask the overshoot it would otherwise hide.
+    """
     values = np.asarray(values, dtype=float)
     low = values.min(axis=0) if values.ndim == 2 else values
     high = values.max(axis=0) if values.ndim == 2 else values
     outside = [
-        HAND_JOINTS[index]
+        f"{HAND_JOINTS[index]} "
+        f"[{low[index]:.6f}, {high[index]:.6f}] outside "
+        f"[{HAND_LOWER[index]:g}, {HAND_UPPER[index]:g}]"
         for index in range(6)
-        if low[index] < HAND_LOWER[index] - 1e-6
-        or high[index] > HAND_UPPER[index] + 1e-6
+        if low[index] < HAND_LOWER[index] - HAND_LIMIT_TOLERANCE
+        or high[index] > HAND_UPPER[index] + HAND_LIMIT_TOLERANCE
     ]
     if outside:
-        raise ValueError(f"{label} exceeds Inspire hand limits for: {outside}")
+        raise ValueError(f"{label} exceeds Inspire hand limits: {'; '.join(outside)}")
+    return np.clip(values, HAND_LOWER, HAND_UPPER)
 
 
-class CoordinatedReplayClient(ReplayClient):
-    """The proven Franka replay client plus the hand's low-rate position link."""
+def _check_home(home_arm, first, home_path, tolerance):
+    """Refuse a homing pose that is not where the trajectory actually begins.
+
+    Replay homes to the YAML, then moves to the trajectory's first point. When
+    the two agree that second move is nothing; when they do not, the arm makes
+    an unplanned trip at the moment replay starts, and -- worse -- the scene
+    the policy was recorded against is not the scene it is being replayed into.
+    The threading YAML matches its capture to the last digit, so a mismatch
+    here means the YAML belongs to a different task configuration rather than
+    that a tolerance is too tight.
+    """
+    delta = np.abs(np.asarray(home_arm, dtype=float) - np.asarray(first, dtype=float))
+    if delta.max() <= tolerance:
+        return
+    offenders = "; ".join(
+        f"{ARM_JOINTS[index]} home {home_arm[index]:+.6f} vs trajectory "
+        f"{first[index]:+.6f} ({delta[index]:.3f} rad)"
+        for index in np.argsort(-delta)
+        if delta[index] > tolerance
+    )
+    raise ValueError(
+        f"the homing pose in {home_path} is {delta.max():.3f} rad from the "
+        f"trajectory's first point, over the {tolerance:g} rad limit: {offenders}. "
+        f"Point --home at the YAML recorded with this trajectory, or raise "
+        f"--max-home-delta to accept the move."
+    )
+
+
+class CoordinatedReplayClient(JointTrajectoryClient):
+    """Stock FR3 trajectory action client plus the hand's position link."""
 
     def __init__(self, config, hand_topic, hand_state_topic):
         super().__init__(
@@ -290,11 +339,32 @@ def main(argv=None):
         default=None,
         help="one rollout cycle from a multi-cycle Forge recording",
     )
+    parser.add_argument(
+        "--segment",
+        type=int,
+        default=None,
+        help="one episode from a Forge recording that resets without a cycle field",
+    )
     parser.add_argument("--hand-rate", type=float, default=50.0)
     parser.add_argument("--hand-topic", default=None)
     parser.add_argument("--hand-state-topic", default=None)
     parser.add_argument("--hand-timeout", type=float, default=20.0)
     parser.add_argument("--hand-tolerance", type=float, default=0.08)
+    parser.add_argument(
+        "--max-home-delta",
+        type=float,
+        default=0.1,
+        help="reject a homing YAML that does not start where the trajectory does (rad)",
+    )
+    parser.add_argument(
+        "--timeout-margin",
+        type=float,
+        default=15.0,
+        help="wall-clock grace beyond the trajectory's own duration before giving up. "
+             "The controller's watchdogs are deliberately on the wall clock, so a "
+             "simulator running below real time needs this raised even though nothing "
+             "is wrong: MuJoCo sits near 0.9x, so allow roughly 0.3 * duration.",
+    )
     parser.add_argument(
         "--max-prepared-duration",
         type=float,
@@ -315,6 +385,16 @@ def main(argv=None):
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--yes", "-y", action="store_true", help="skip motion prompts")
+    # `ros2 run` appends "--ros-args ..." for node parameters, and the whole
+    # tail belongs to rclpy rather than to argparse. Only the tail is dropped,
+    # so a mistyped flag before it is still an error rather than being quietly
+    # ignored. This is what lets a simulated run take use_sim_time: MuJoCo runs
+    # near but not at real time, and every timeout below is measured on this
+    # node's clock, so without it a long trajectory times out against a
+    # simulator that is merely slow.
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--ros-args" in argv:
+        argv = argv[: argv.index("--ros-args")]
     args = parser.parse_args(argv)
 
     if args.hand_rate <= 0:
@@ -323,6 +403,10 @@ def main(argv=None):
         parser.error("--max-prepared-duration must be positive")
     if args.hand_time_scale <= 0:
         parser.error("--hand-time-scale must be positive")
+    if args.max_home_delta < 0:
+        parser.error("--max-home-delta must not be negative")
+    if args.timeout_margin < 0:
+        parser.error("--timeout-margin must not be negative")
     if args.no_arm and args.no_hand:
         parser.error("--no-arm and --no-hand together leave nothing to replay")
     if args.hand_time_scale != 1.0 and not args.no_arm:
@@ -334,7 +418,9 @@ def main(argv=None):
     hand_state_topic = args.hand_state_topic or "/inspire_hand/joint_states"
 
     try:
-        trajectory = load_trajectory(args.trajectory, args.rate, args.env, args.cycle)
+        trajectory = load_trajectory(
+            args.trajectory, args.rate, args.env, args.cycle, args.segment
+        )
         home_arm, home_hand = load_home(home_path)
         prepared = None
         if not args.no_arm:
@@ -343,11 +429,15 @@ def main(argv=None):
             )
             if not prepared.report["ok"]:
                 raise ValueError("prepared arm trajectory violates FR3 limits")
+        if not args.no_arm:
+            _check_home(home_arm, trajectory.arm[0], home_path, args.max_home_delta)
         if trajectory.hand is None and not args.no_hand:
             raise ValueError("trajectory has no Inspire hand positions; pass --no-hand for arm-only")
         if trajectory.hand is not None:
-            _validate_hand(trajectory.hand, "trajectory")
-        _validate_hand(home_hand, "homing pose")
+            trajectory = dataclasses.replace(
+                trajectory, hand=_validate_hand(trajectory.hand, "trajectory")
+            )
+        home_hand = _validate_hand(home_hand, "homing pose")
     except (OSError, ValueError, KeyError) as exc:
         print(f"trajectory error: {exc}")
         return 2
@@ -365,6 +455,8 @@ def main(argv=None):
     print(f"source: {trajectory.source}")
     if trajectory.cycle is not None:
         print(f"Forge rollout cycle: {trajectory.cycle}")
+    if trajectory.segment is not None:
+        print(f"Forge episode segment: {trajectory.segment}")
     print(
         f"coordinated source: {len(trajectory.time)} samples, "
         f"{trajectory.duration:.2f} s, hand={'yes' if hand_positions is not None else 'no'}"
@@ -453,6 +545,7 @@ def main(argv=None):
             node.send_trajectory(
                 prepared,
                 config["prepare"]["send_rate"],
+                timeout_margin=args.timeout_margin,
                 on_accept=started.set,
             )
         else:
@@ -460,7 +553,7 @@ def main(argv=None):
             # nothing for the hand thread to wait on: release it immediately.
             started.set()
         if hand_thread is not None:
-            hand_thread.join(timeout=replay_duration + 5.0)
+            hand_thread.join(timeout=replay_duration + args.timeout_margin)
             if hand_thread.is_alive():
                 raise TimeoutError("hand replay thread did not finish")
             if hand_errors:

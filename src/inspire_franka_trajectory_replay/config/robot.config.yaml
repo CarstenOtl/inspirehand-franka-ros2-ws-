@@ -5,6 +5,6 @@ ROBOT1:
   joint_state_rate: 30
   load_gripper: "false"
   namespace: ""
-  robot_ip: "10.7.7.7"
+  robot_ip: "172.16.0.2"
   use_fake_hardware: "false"
   use_rviz: "false"

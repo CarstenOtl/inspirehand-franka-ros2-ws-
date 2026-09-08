@@ -26,9 +26,11 @@ things that matter:
    anywhere. Undamped, mesh-collided finger joints at 5 g apiece are a stiff
    system that rings; see JOINT_DYNAMICS.
 
-4. **A rest pose.** ``mujoco_ros2_control`` starts from a named keyframe. The
-   ``open`` keyframe here matches the ``initial_value`` of the position state
-   interfaces in inspire_hand_description's ros2_control block.
+The reusable hand asset intentionally has no keyframe. Keyframes remain pending
+through ``<attach>``, and the flange model passes the hand through two nested
+attachment levels; MuJoCo cannot namespace such a keyframe safely. The final
+hand-only and combined scenes own their complete ``open``/``start`` poses
+instead.
 
 Why ``<motor>`` and not ``<position>``
 --------------------------------------
@@ -203,17 +205,6 @@ def build(spec, side: str) -> None:
         equality.name1 = follower
         equality.name2 = driver
         equality.data[:5] = [offset, multiplier, 0.0, 0.0, 0.0]
-
-    # The open pose: every driven joint at its lower limit, every follower where
-    # its coupling puts it. Matches the `initial_value` of the position state
-    # interfaces in inspire_hand_description/ros2_control.
-    order = [joint.name for joint in spec.joints]
-    qpos = dict.fromkeys(order, 0.0)
-    for follower, _driver, _multiplier, offset in COUPLINGS:
-        qpos[follower] = offset
-    key = spec.add_key()
-    key.name = "open"
-    key.qpos = [qpos[name] for name in order]
 
 
 def main(argv=None) -> int:

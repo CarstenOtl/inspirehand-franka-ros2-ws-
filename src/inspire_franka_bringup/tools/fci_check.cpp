@@ -1,6 +1,6 @@
 // Minimal FCI reachability check: no ROS, no controllers, no motion, no torque.
 //
-//     ros2 run inspire_franka_bringup fci_check 10.7.7.7
+//     ros2 run inspire_franka_bringup fci_check 172.16.0.2
 //
 // It connects, reads one robot state, prints the joint angles and exits. That is the
 // smallest possible answer to "is the FCI actually reachable and speaking my protocol",

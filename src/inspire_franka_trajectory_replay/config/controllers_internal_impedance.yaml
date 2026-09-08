@@ -1,0 +1,63 @@
+# Standard ROS 2 trajectory controller over the FR3 position interfaces.
+#
+# Claiming position (not effort) makes franka_hardware call
+# startJointPositionControl(ControllerMode::kJointImpedance).  The interpolation
+# and action handling live in the stock JointTrajectoryController; the actual
+# impedance loop and its gains live on the robot.
+
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+      # Match franka_bringup's hardware-tested controller-manager timing.
+      # The FCI read is blocking and supplies the 1 kHz cadence, so skipping
+      # controller-manager cycles on a small overrun fights the hardware clock.
+      thread_priority: 97
+      overruns:
+        manage: false
+        print_warnings: false
+
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+        state_interfaces:
+          robot_state
+
+      trajectory_replay_controller:
+        type: joint_trajectory_controller/JointTrajectoryController
+
+  franka_robot_state_broadcaster:
+    ros__parameters:
+      convenience_publish_rate: 100
+
+  trajectory_replay_controller:
+    ros__parameters:
+      joints:
+        - fr3_joint1
+        - fr3_joint2
+        - fr3_joint3
+        - fr3_joint4
+        - fr3_joint5
+        - fr3_joint6
+        - fr3_joint7
+      command_interfaces:
+        - position
+      state_interfaces:
+        - position
+        - velocity
+      interpolation_method: splines
+      # Continue from the command already being sent to libfranka, rather than
+      # from measured q.  The two differ under load; treating that tracking
+      # error as a 1 ms move trips Franka's velocity/acceleration continuity
+      # reflex at the start of an action goal.
+      interpolate_from_desired_state: true
+      set_last_command_interface_value_as_state_on_activation: true
+      state_publish_rate: 50.0
+      action_monitor_rate: 20.0
+      allow_partial_joints_goal: false
+      allow_nonzero_velocity_at_trajectory_end: false
+      constraints:
+        stopped_velocity_tolerance: 0.01
+        goal_time: 0.0

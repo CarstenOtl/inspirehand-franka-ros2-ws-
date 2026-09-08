@@ -25,6 +25,7 @@ setup(
     entry_points={
         "console_scripts": [
             "replay_trajectory = inspire_franka_trajectory_replay.replay:main",
+            "make_cycle_trajectory = inspire_franka_trajectory_replay.make_cycles:main",
         ],
     },
 )

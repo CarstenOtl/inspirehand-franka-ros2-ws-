@@ -27,6 +27,8 @@ ARGS = (
     ("protocol", "modbus", "Wire protocol: 'modbus' or 'legacy'."),
     ("mock", "false", "Run against a simulated hand instead of hardware."),
     ("publish_rate_hz", "50.0", "State publish rate."),
+    ("state_extras_divisor", "1", "Read current and force once per N publishes. "
+                                  "Raise it to free RS485 bandwidth for a command stream."),
     ("node_name", "inspire_hand", "Node name, which is also the topic namespace."),
     ("side", "right", "Which hand's geometry to describe: 'left' or 'right'."),
     ("joint_prefix", "", "Prefix on every joint name; must match the description."),

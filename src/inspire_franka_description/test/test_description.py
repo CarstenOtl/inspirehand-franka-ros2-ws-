@@ -61,7 +61,6 @@ def tree(root: ET.Element):
         {},
         {"hand": "false"},
         {"arm": "false"},
-        {"hand_mount": "flange"},
         {"hand_side": "left"},
         {"franka_gripper": "true"},
         {"arm_prefix": "a", "hand_prefix": "h_"},
@@ -81,13 +80,13 @@ def test_every_variant_has_exactly_one_root_and_no_dangling_links(mappings):
     assert roots == {"world"}, f"expected a single `world` root, got {roots}"
 
 
-def test_the_bench_hand_hangs_off_the_world_not_the_arm():
-    _, parents = tree(expand())
+def test_the_standalone_hand_hangs_off_the_world():
+    _, parents = tree(expand(arm="false"))
     assert parents["hand_mount"] == "world"
 
 
-def test_the_flange_hand_hangs_off_the_arm():
-    root = expand(hand_mount="flange")
+def test_the_combined_hand_hangs_off_the_arm():
+    root = expand()
     _, parents = tree(root)
     assert parents["hand_mount"] == "fr3_link8"
 
@@ -100,7 +99,7 @@ def test_the_flange_hand_hangs_off_the_arm():
         [0.0, 0.0, 0.0]
     )
     assert [float(value) for value in origin.get("rpy").split()] == pytest.approx(
-        [0.0, 0.0, -math.pi / 2]
+        [0.0, 0.0, math.pi]
     )
 
 
@@ -153,9 +152,7 @@ def test_hand_joint_names_match_the_driver():
     "mappings",
     [
         {"arm": "false", "hand": "false"},
-        {"arm": "false", "hand_mount": "flange"},
         {"hand_side": "bogus"},
-        {"hand_mount": "bogus"},
     ],
 )
 def test_unsupported_combinations_fail_loudly(mappings):

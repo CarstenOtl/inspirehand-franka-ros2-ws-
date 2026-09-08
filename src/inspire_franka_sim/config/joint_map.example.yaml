@@ -1,0 +1,11 @@
+# Optional ROS name -> MuJoCo MJCF name aliases for passive_viewer.launch.py.
+# Exact-name joints need no entry.  For example, a Panda-named JointState can
+# drive the FR3 model with:
+joint_map:
+  panda_joint1: fr3_joint1
+  panda_joint2: fr3_joint2
+  panda_joint3: fr3_joint3
+  panda_joint4: fr3_joint4
+  panda_joint5: fr3_joint5
+  panda_joint6: fr3_joint6
+  panda_joint7: fr3_joint7

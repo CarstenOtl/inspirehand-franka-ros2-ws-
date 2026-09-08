@@ -15,9 +15,13 @@
 
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>apriltag</exec_depend>
+  <!-- The automated runner drives the arm through the replay controller's guarded
+       goto, and reuses its FR3 forward kinematics and joint limits. -->
+  <exec_depend>franka_trajectory_replay</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>

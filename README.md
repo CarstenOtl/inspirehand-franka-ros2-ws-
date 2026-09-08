@@ -14,7 +14,7 @@ tracked as pinned Git submodules.
 docker/                          dev image, compose, entrypoint
 docs/hand.md                     RS485 wiring, bring-up, and the driver's interface
 docs/network.md                  network layout and FCI access
-apps/camera_calibration/         calibration entry script, utilities, and hardware tests
+apps/camera_calibration/         calibration entry scripts, utilities, and hardware tests
 .gitmodules                     external ROS repositories
 src/
   inspire_hand_msgs/             service definitions for the hand
@@ -25,7 +25,7 @@ src/
   inspire_franka_bringup/        real hardware: arm, hand, or both
   franka_trajectory_replay/      guarded FR3 replay controller and preparation
   inspire_franka_trajectory_replay/ coordinated FR3 + Inspire replay runner
-  camera_calibration/            ROS node and launch files for D415 eye-to-hand calibration
+  camera_calibration/            D415 eye-to-hand calibration: automated runner, passive recorder
   franka_ros2/                   submodule - Franka's stack
   franka_description/            submodule - Franka's descriptions
   realsense_d415/                submodule - RealSense ROS wrapper
@@ -60,9 +60,13 @@ Then pick one:
 
 ```bash
 # --- Simulation (no hardware needed) ---------------------------------------
-ros2 launch inspire_franka_sim sim.launch.py                      # arm + bench hand
+ros2 launch inspire_franka_sim sim.launch.py                      # arm + flange hand
 ros2 launch inspire_franka_sim sim.launch.py headless:=false      # MuJoCo viewer
 ros2 launch inspire_franka_sim sim.launch.py arm:=false           # hand only
+
+# Read-only MuJoCo visualization/replay; this is not a simulator control GUI.
+# With default real-hardware bringup it mirrors the FR3 on /joint_states only.
+ros2 launch inspire_franka_sim passive_viewer.launch.py
 
 # --- Real hardware ----------------------------------------------------------
 ros2 run inspire_franka_bringup fci_check 172.16.0.2               # is the FCI up?
@@ -104,7 +108,17 @@ python3 apps/traj_replay/tests/test_mujoco_traj_replay.py \
 # RealSense D415 (publishes under /camera/camera by default):
 ros2 launch realsense2_camera rs_launch.py device_type:=d415
 
-# Calibrate the fixed D415 in the Franka world frame with a hand-mounted AprilTag:
+# Calibrate the fixed D415 against the Franka base frame with a hand-mounted
+# AprilTag. The arm drives itself through generated poses and stops at each one;
+# teach the seed poses once under gravity compensation first. The frame and
+# namespace flags match franka.launch.py's own bringup - see the app's README.
+./apps/camera_calibration/auto_calibrate.py --teach \
+    --namespace "" --world-frame base --base-frame fr3_link0
+./apps/camera_calibration/auto_calibrate.py \
+    --namespace "" --world-frame base --base-frame fr3_link0 \
+    --tag-id 0 --tag-size-m 0.040
+
+# The passive hand-guided recorder, when no controller can be brought up:
 ./apps/camera_calibration/calibrate.py \
     --tag-id 0 --tag-size-m 0.040
 
@@ -120,6 +134,46 @@ The real-arm launch files default `robot_ip` to the fixed Control C2 address
 `172.16.0.2`, so it does not need to be repeated. Pass `robot_ip:=...` only when
 temporarily targeting a different control box. `fci_check` is a standalone
 executable rather than a launch file, so its IP remains a positional argument.
+
+### Simulation GUI versus passive viewer
+
+`sim.launch.py` and `passive_viewer.launch.py` deliberately open different
+MuJoCo integrations:
+
+| launch | purpose | where motion comes from |
+|---|---|---|
+| `sim.launch.py headless:=false` | simulated robot plant, with physics and `ros2_control` | simulated controllers and ROS command/action topics |
+| `sim.launch.py start_rviz:=true` | RViz view of the simulated robot | TF and `/joint_states` |
+| `passive_viewer.launch.py` | read-only display of a state topic or planned trajectory | `/joint_states` or `/mujoco_sim/joint_trajectory` |
+
+The passive viewer is useful for inspecting a recording or previewing a
+trajectory in the MJCF scene without starting a controller manager. It can also
+display live measurements, but it does not connect to hardware itself: it only
+subscribes to ROS messages already published by a driver. With the default
+real-hardware bringup, `/joint_states` contains the physical FR3 while
+`/inspire_hand/joint_states` contains the physical hand. One viewer instance
+accepts one joint-state topic, so the default invocation displays the arm only;
+use `joint_state_topic:=/inspire_hand/joint_states` to display the hand instead.
+It does not currently merge the two real-hardware topics into one combined
+model.
+
+The passive viewer's side-panel sliders are **not functional pose controls** in
+this node. They edit MuJoCo actuator controls, while the node deliberately
+disables actuation, does not step physics by default, and clears those controls
+before every optional step. Disabling the joint-state subscriber does not change
+that. The viewer publishes no ROS commands and cannot configure or move either
+the physical robot or the `ros2_control` simulator.
+
+The passive viewer now hides both MuJoCo sidebars by default. Press `Tab` for the
+left panel or `Shift+Tab` for the right panel, or launch with
+`show_left_ui:=true` and/or `show_right_ui:=true`. Camera navigation remains
+available with the mouse while the panels are hidden.
+
+The current `mujoco_ros2_control` window opened by `sim.launch.py` has no slider
+panel either; setting a command interface to `none` merely leaves those joints
+unclaimed. Set a passive-viewer pose by publishing a `JointState` or
+`JointTrajectory`, and drive the full simulation through the ROS trajectory or
+forward-command controllers documented in `src/inspire_franka_sim/README.md`.
 
 If a previous simulation or hardware launch was not fully stopped, its
 `/controller_manager` can capture controller requests from the next launch. Stop
@@ -206,7 +260,9 @@ ros2 bag record -o d415_check \
 If a D415 falls back to USB 2, use a USB 3 cable/port rather than expecting
 reliable synchronized 30 FPS color and depth. The extended calibration and
 camera troubleshooting guide is in
-[apps/camera_calibration/README.md](apps/camera_calibration/README.md).
+[apps/camera_calibration/README.md](apps/camera_calibration/README.md) -
+including why the automated run exists, what the first hand-guided run on real
+hardware got wrong, and how to read the measured camera-to-robot clock delay.
 
 After a camera crash or `Depth stream start failure`, stop the existing camera
 node before starting another one. A one-time device reset is available from
@@ -233,15 +289,14 @@ inside the arm's 1 kHz `read()`/`write()` and you stall the FCI loop, which ends
 the connection. Keeping the hand as its own node means its worst case costs the
 arm nothing.
 
-So "control both together" on hardware means publishing to both — which is all
-it *can* mean for two mechanically independent devices bolted to the same bench.
-There is no combined trajectory action and no shared clock. In simulation, where
-there is no serial link, they share a controller_manager and you get exactly
-that.
+The hand is physically bolted to the flange, but "control both together" on
+hardware still means publishing to both independent drivers. There is no
+combined trajectory action and no shared clock. In simulation, where there is no
+serial link, they share a controller_manager.
 
-If you later bolt the hand to the flange and want coordinated *planning* rather
-than coordinated commanding, the missing piece is a MoveIt config over the
-combined description — the description already supports `hand_mount:=flange`.
+Coordinated *planning* still needs a MoveIt config over the combined
+description. Whenever both assets are enabled, that description attaches the
+hand to the flange automatically.
 
 ### What that means on the ROS graph
 
@@ -330,8 +385,8 @@ Everything that can be checked without hardware or a simulator is a test, and
 | `inspire_hand_driver` | Modbus/legacy framing and CRCs, open-ratio conversions, the channel↔joint mapping and its coupling |
 | `inspire_hand_description` | the shipped URDF's `<mimic>` values still match the driver's table |
 | `inspire_franka_description` | every launch variant expands to one root link with no dangling joints; `ros2_control` names only joints that exist; followers expose no command interface; unsupported combinations fail loudly |
-| `inspire_franka_sim` | every MJCF scene compiles; joint sets per scene; actuators only on driven joints; couplings equal the URDF's; zero contacts at rest; the bench hand sits where the URDF puts it |
-| `camera_calibration` | synthetic eye-to-hand recovery, SE(3) conventions, outlier rejection and degenerate-motion detection |
+| `inspire_franka_sim` | every MJCF scene compiles; joint sets per scene; actuators only on driven joints; couplings equal the URDF's; zero contacts at rest; the flange hand matches the combined URDF |
+| `camera_calibration` | synthetic eye-to-hand recovery, SE(3) conventions, outlier rejection and degenerate-motion detection; AprilTag corner ordering; generated pose programs against joint limits, field of view and rotation spread; standstill detection; clock-offset recovery; and the whole automated run against a simulated arm and camera |
 
 The two that matter most are the cross-checks. `ros2_control` matches the
 description to the simulator **by joint name and nothing else**, so a joint that
@@ -352,7 +407,33 @@ no error at all — just a robot that quietly does the wrong thing.
   `camera_calibration`, whose package has no `test/` directory - its tests live
   in `apps/camera_calibration/tests/` - so pytest collects nothing there and
   colcon reports the package as failed with exit code 5. That is a stale
-  selection in `rg2test`, not a broken test.
+  selection in `rg2test`, not a broken test. Run those 53 directly:
+
+  ```bash
+  python3 -m pytest apps/camera_calibration/tests
+  ```
+- **Camera calibration — automated, not yet run on the arm.** The first
+  hand-guided run on real hardware solved to 85.0 mm / 20.47 deg with a
+  flange-to-tag offset of 1.39 m, which is meaningless: its samples were taken
+  while the arm moved, and the log shows the image stamps running ahead of the
+  newest joint state. `auto_calibrate.py` replaces that with generated poses the
+  arm drives itself, a standstill at every pose proved by the tag's corner
+  scatter, and a final moving pass that measures the camera-to-robot clock delay
+  instead of assuming it away. Against a simulated arm and camera the whole run
+  recovers a known camera pose to 0.2 mm and a known 40 ms delay to 0.1 ms
+  (`apps/camera_calibration/tests/test_auto_calibration.py`). **Still to do on
+  hardware:** teach the seed poses, run it, and confirm the residual and the
+  measured delay against the numbers above.
+- **Trajectory replay — simulation complete, hardware validation deferred to a
+  PREEMPT_RT workstation.** The retargeted `threading_5x_flange180` artifact and
+  the complete stock position-`JointTrajectoryController` path pass the 49.65 s
+  MuJoCo replay. On this generic `PREEMPT_DYNAMIC`/`powersave` host, the real FR3
+  accepts and begins the home action but stops on
+  `joint_motion_generator_acceleration_discontinuity`, including with
+  libfranka's position-rate limiter enabled. Do not keep repeating that hardware
+  test here. The RT-host checklist and the robot-time-paced position-adapter
+  fallback are recorded in
+  `src/inspire_franka_trajectory_replay/README.md`.
 - **Simulation — verified end to end.** MuJoCo runs headless with
   `MujocoSystemInterface` active at 1 kHz, all three controllers active, sim
   clock advancing. Arm and hand trajectories sent *simultaneously* both report
@@ -439,11 +520,12 @@ no error at all — just a robot that quietly does the wrong thing.
   is a major version newer than the v2.6.0 line used previously on this machine,
   so treat the first FCI connection as unproven. `fci_check` is the cheapest
   first step.
-- **Flange mounting.** The default is a bench hand, which is how the hardware
-  actually sits. `hand_mount:=flange` uses forgeUltra's franka-chi mounting
-  convention: zero flange-to-palm translation and quaternion
-  `(w, x, y, z) = (0.5, -0.5, -0.5, 0.5)`. The equivalent transforms in the
-  Xacro and MJCF wrapper must remain synchronized.
+- **Flange mounting.** When arm and hand are enabled together, both Xacro and
+  MuJoCo attach `hand_mount` to the flange with zero translation and a 180-degree
+  clocking angle. Their transforms must remain synchronized. On real hardware,
+  Franka Desk's active end-effector profile is
+  the sole source of hand mass, centre of mass, and inertia; ROS does not add a
+  runtime payload.
 
 ### A note on linters
 

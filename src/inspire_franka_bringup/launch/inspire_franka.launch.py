@@ -12,13 +12,15 @@
     ros2 launch inspire_franka_bringup inspire_franka.launch.py hand:=false robot_ip:=172.16.0.2
     ros2 launch inspire_franka_bringup inspire_franka.launch.py arm:=false
 
-This starts the two stacks side by side. They share a ROS graph and a TF tree
-and nothing else - there is no combined controller_manager, no shared clock, and
-no coordinated motion primitive. Commanding both at once means publishing to
-both, which is what "together" means for two mechanically independent devices
-sitting on the same bench.
+When both assets are enabled, the hand is always understood to be bolted to the
+arm's flange. The two hardware drivers still run side by side: there is no
+combined controller_manager, shared clock, or coordinated motion primitive.
+Commanding both means publishing to both.
 
-Why they are separate at all: the arm is a 1 kHz real-time FCI connection served
+Real-hardware mass, centre of mass, and inertia come exclusively from the active
+end-effector profile in Franka Desk. This launch never calls `setLoad`.
+
+Why the drivers are separate: the arm is a 1 kHz real-time FCI connection served
 by a ros2_control hardware component, and the hand is a ~50 Hz half-duplex
 Modbus link served by a plain rclpy node. Putting the hand's serial round-trip
 inside the arm's control loop would stall it. See the repo README.
@@ -41,13 +43,18 @@ RViz therefore needs two RobotModel displays, one per description topic. The
 config in this package already has them.
 """
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+import xacro
 
 # The hand's robot_state_publisher goes here rather than in the global
 # namespace: franka's own already owns /robot_description, and two latched
@@ -108,12 +115,10 @@ def launch_setup(context, *args, **kwargs):
         hand_arguments = {
             inner: LaunchConfiguration(outer) for outer, inner, _, _ in HAND_ARGS
         }
-        hand_arguments["publish_description"] = "true"
-        # Namespaced only when the arm is also running; on its own the hand may
-        # as well own the conventional topic.
-        hand_arguments["description_namespace"] = (
-            HAND_DESCRIPTION_NAMESPACE if with_arm else ""
-        )
+        # A standalone hand publishes its own world-root description. With the
+        # arm present, publish a rootless hand description here and connect it
+        # to the flange with one static transform.
+        hand_arguments["publish_description"] = "false" if with_arm else "true"
         actions.append(
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
@@ -124,6 +129,64 @@ def launch_setup(context, *args, **kwargs):
                 launch_arguments=hand_arguments.items(),
             )
         )
+
+        if with_arm:
+            side = LaunchConfiguration("hand_side").perform(context)
+            hand_prefix = LaunchConfiguration("hand_joint_prefix").perform(context)
+            arm_prefix = LaunchConfiguration("arm_prefix").perform(context)
+            robot_type = LaunchConfiguration("robot_type").perform(context)
+            hand_xacro = os.path.join(
+                get_package_share_directory("inspire_hand_description"),
+                "urdf",
+                "inspire_hand.urdf.xacro",
+            )
+            hand_description = xacro.process_file(
+                hand_xacro,
+                mappings={
+                    "side": side,
+                    "prefix": hand_prefix,
+                    "mount_to_world": "false",
+                    "ros2_control": "false",
+                },
+            ).toxml()
+            actions += [
+                Node(
+                    package="robot_state_publisher",
+                    executable="robot_state_publisher",
+                    namespace=HAND_DESCRIPTION_NAMESPACE,
+                    output="both",
+                    parameters=[
+                        {
+                            "robot_description": ParameterValue(
+                                hand_description, value_type=str
+                            )
+                        }
+                    ],
+                    remappings=[
+                        ("joint_states", "/inspire_hand/joint_states"),
+                        ("/tf", "/tf"),
+                        ("/tf_static", "/tf_static"),
+                    ],
+                ),
+                Node(
+                    package="tf2_ros",
+                    executable="static_transform_publisher",
+                    name="inspire_hand_flange_mount",
+                    arguments=[
+                        "--x", "0",
+                        "--y", "0",
+                        "--z", "0",
+                        "--roll", "0",
+                        "--pitch", "0",
+                        "--yaw", "3.141592653589793",
+                        "--frame-id",
+                        f"{arm_prefix + '_' if arm_prefix else ''}{robot_type}_link8",
+                        "--child-frame-id",
+                        f"{hand_prefix}hand_mount",
+                    ],
+                    output="screen",
+                ),
+            ]
 
     # One RViz for both, rather than letting each sub-launch start its own.
     actions.append(

@@ -24,6 +24,7 @@ setup(
         "console_scripts": [
             "inspire_hand_node = inspire_hand_driver.driver_node:main",
             "inspire_hand_probe = inspire_hand_driver.probe:main",
+            "inspire_hand_benchmark = inspire_hand_driver.benchmark:main",
         ],
     },
 )

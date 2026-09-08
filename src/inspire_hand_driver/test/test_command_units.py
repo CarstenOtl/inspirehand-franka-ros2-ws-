@@ -141,3 +141,28 @@ def test_unaddressed_dof_hold_their_previous_target(node):
     node._on_command(JointState(name=["thumb_proximal_yaw_joint"], position=[0.3]))
     assert node._last_command[PINKY] == before
     assert commanded_ratio(node, INDEX) == pytest.approx(0.25)
+
+
+def test_state_extras_divisor_holds_current_and_force_between_reads():
+    """RS485 is half-duplex, so a read the replay never uses is a command lost."""
+    from inspire_hand_driver.protocol import REG_ANGLE_ACT, REG_CURRENT, REG_FORCE_ACT
+
+    rclpy.init(args=[
+        "--ros-args", "-p", "mock:=true", "-p", "state_extras_divisor:=3",
+    ])
+    instance = InspireHandNode()
+    reads = []
+    original = instance._transport.read_registers
+    instance._transport.read_registers = lambda addr, count: (
+        reads.append(addr) or original(addr, count)
+    )
+    try:
+        for _ in range(6):
+            instance._on_timer()
+    finally:
+        instance.destroy_node()
+        rclpy.shutdown()
+
+    assert reads.count(REG_ANGLE_ACT) == 6, "angles are joint_states, every cycle"
+    assert reads.count(REG_CURRENT) == 2, "current rides the divisor"
+    assert reads.count(REG_FORCE_ACT) == 2, "and so does force"

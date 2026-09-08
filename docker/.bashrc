@@ -49,6 +49,7 @@ rg2test() {
     && colcon test --packages-select \
          inspire_hand_driver inspire_hand_description \
          inspire_franka_description inspire_franka_sim \
+         inspire_franka_trajectory_replay franka_trajectory_replay \
          camera_calibration \
     && colcon test-result --verbose )
 }

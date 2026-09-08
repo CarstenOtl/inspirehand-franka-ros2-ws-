@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "data_file": "replay_data.npz",
+  "generated_by": "apps/traj_replay/retarget_flange_mount.py",
+  "description": "Cycles 1-5 of the source capture, concatenated as recorded, followed by a quintic ramp onto the homing pose. One continuous run: no --cycle or --segment needed. Retargeted for the 180-degree link8-Z hand mount.",
+  "units": "radians",
+  "recording_frequency_hz": 15.000000000000053,
+  "sample_count": 451,
+  "arm_joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7"
+  ],
+  "hand_joint_names": [
+    "pinky_proximal_joint",
+    "ring_proximal_joint",
+    "middle_proximal_joint",
+    "index_proximal_joint",
+    "thumb_proximal_pitch_joint",
+    "thumb_proximal_yaw_joint"
+  ],
+  "cycles": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "cycle_samples": 421,
+  "ramp_samples": 30,
+  "rate_hz": 15.000000000000053,
+  "start_from_home": 4.4662475495726994e-08,
+  "recorded_end_from_home": 0.11069272618103021,
+  "final_from_home": 0.0,
+  "source": "/root/develop_ws/apps/traj_replay/demo_trajs/traj_1/replay_data.npz",
+  "home": "homing.yaml",
+  "environment": 0,
+  "retargeting": {
+    "joint": "fr3_joint7",
+    "offset_rad": 1.5707963267948966,
+    "offset_deg": 90.0,
+    "target_mount": "180-degree rotation around link8 Z",
+    "purpose": "preserve the recorded hand world pose",
+    "source_data": "../threading_5x/replay_data.npz",
+    "source_home": "../homing/threading.yaml",
+    "source_data_sha256": "c8ab0f551d3f4444dcdfe8d29daa43782d3b6a9a648ce4fb389b79b266c7ab1e",
+    "joint7_range_rad": [
+      -0.9519094665858407,
+      -0.22811965545150237
+    ],
+    "fr3_joint7_limits_rad": [
+      -3.0508,
+      3.0508
+    ]
+  }
+}

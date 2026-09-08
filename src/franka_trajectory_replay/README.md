@@ -167,7 +167,7 @@ impedance, with hand-picked damping) is a plausibility model, not an identified 
 ## On the arm
 
 ```
-ros2 run franka_trajectory_replay preflight.py --host 10.7.7.7   # mode, brakes, FCI, user stop
+ros2 run franka_trajectory_replay preflight.py --host 172.16.0.2  # mode, brakes, FCI, user stop
 
 ros2 launch franka_trajectory_replay replay.launch.py \
     robot_config_file:=/ros2_ws/src/franka_bringup/config/tekken.config.yaml

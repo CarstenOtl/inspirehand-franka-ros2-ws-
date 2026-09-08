@@ -20,10 +20,14 @@
        so that "can I reach the FCI" is answerable without a working workspace. -->
   <depend>libfranka</depend>
 
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>franka_bringup</exec_depend>
   <exec_depend>inspire_hand_driver</exec_depend>
   <exec_depend>inspire_hand_description</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>rviz2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>xacro</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

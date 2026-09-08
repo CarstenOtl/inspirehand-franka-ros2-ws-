@@ -39,6 +39,7 @@ def generate_launch_description():
                 ]
             ),
             "robot_ips": LaunchConfiguration("robot_ip"),
+            "controllers_yaml": LaunchConfiguration("controllers_yaml"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("arm")),
     )
@@ -55,16 +56,43 @@ def generate_launch_description():
             "mock": LaunchConfiguration("hand_mock"),
             "publish_description": "true",
             "description_namespace": LaunchConfiguration("description_namespace"),
+            "state_extras_divisor": LaunchConfiguration("hand_state_extras_divisor"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("hand")),
     )
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_ip", default_value="172.16.0.2"),
+            # Stock JointTrajectoryController over position interfaces. This
+            # makes franka_hardware use the FR3's internal joint-impedance
+            # controller; no custom torque/impedance law is in the replay path.
+            DeclareLaunchArgument(
+                "controllers_yaml",
+                default_value=PathJoinSubstitution(
+                    [
+                        FindPackageShare("inspire_franka_trajectory_replay"),
+                        "config",
+                        "controllers_internal_impedance.yaml",
+                    ]
+                ),
+                description="Controller manager configuration for the stock position "
+                "trajectory controller and robot-internal joint impedance.",
+            ),
             DeclareLaunchArgument("hand_port", default_value="/dev/ttyUSB0"),
             DeclareLaunchArgument("hand_id", default_value="1"),
             DeclareLaunchArgument("hand_protocol", default_value="modbus"),
             DeclareLaunchArgument("hand_mock", default_value="false"),
+            # Replay is the one session that streams targets, and RS485 is
+            # half-duplex, so the driver's per-publish current and force reads
+            # are bandwidth taken from the command stream. Nothing in the
+            # replay path reads either, so they drop to 10 Hz here while
+            # joint_states stays at the full publish rate. Ordinary bringup
+            # leaves the driver's own default of 1 alone.
+            DeclareLaunchArgument(
+                "hand_state_extras_divisor",
+                default_value="5",
+                description="Read the hand's current and force once per N state publishes.",
+            ),
             DeclareLaunchArgument(
                 "arm", default_value="true", description="Bring up the FR3 replay controller."
             ),

@@ -57,6 +57,17 @@ stay in radians, because those files also carry the FR3's seven joints.
 Why the driven/follower split is visible in the interface: only six things can
 be commanded, but twelve have to be published or TF breaks. Commands therefore
 accept only driven names, while state carries all twelve.
+
+Sharing the bus with a command stream
+-------------------------------------
+RS485 is half-duplex, so every register read is time the line cannot be
+carrying a target. Publishing costs three reads -- angles, current, force -- and
+at the default 50 Hz that is a third of the bus at best. Only the angles are
+needed to publish joint states, so ``state_extras_divisor`` fetches the other
+two once per N publishes and holds them in between; ``1`` reads everything
+every cycle and is the default, while a replay streaming targets wants 5 or
+more. ``inspire_hand_driver.benchmark`` models and measures what the bus
+actually costs.
 """
 
 from __future__ import annotations
@@ -134,12 +145,27 @@ class InspireHandNode(Node):
         # Consecutive read failures tolerated before the node reports the hand
         # as lost. RS485 drops the odd frame under EMI; one miss is not a fault.
         self.declare_parameter("max_read_failures", 5)
+        # Publishing costs three read transactions -- angles, current, force --
+        # and RS485 is half-duplex, so those three are time the bus cannot be
+        # carrying commands. Only the angles are needed to publish joint states;
+        # this divides how often the other two are fetched, holding their last
+        # value in between. 1 reads everything every cycle, which is what the
+        # driver has always done and stays the default; a replay streaming
+        # targets at 50 Hz wants 5 or more. See inspire_hand_driver.benchmark
+        # for what the bus actually costs.
+        self.declare_parameter("state_extras_divisor", 1)
 
         self._mock = bool(self.get_parameter("mock").value)
         self._prefix = str(self.get_parameter("joint_prefix").value)
         self._max_failures = int(self.get_parameter("max_read_failures").value)
         self._failures = 0
         self._last_command: Optional[List[int]] = None
+        self._extras_divisor = max(1, int(self.get_parameter("state_extras_divisor").value))
+        self._ticks = 0
+        # Held between fetches when the divisor is above 1, and on the very
+        # first tick before either has been read once.
+        self._currents: List[int] = [0] * 6
+        self._forces: List[int] = [0] * 6
 
         self._joint_names = [self._prefix + j for j in kin.ALL_JOINTS]
         self._driven_names = [self._prefix + j for j in kin.DRIVEN_JOINTS]
@@ -166,7 +192,7 @@ class InspireHandNode(Node):
             f"inspire_hand_driver up: "
             f"transport={'mock' if self._mock else self._transport.port} "
             f"protocol={self._transport.protocol} id={self._transport.hand_id} "
-            f"rate={rate:.0f}Hz prefix={self._prefix!r}"
+            f"rate={rate:.0f}Hz extras=1/{self._extras_divisor} prefix={self._prefix!r}"
         )
 
     # -- setup -------------------------------------------------------------
@@ -208,10 +234,16 @@ class InspireHandNode(Node):
 
     # -- state publishing --------------------------------------------------
     def _on_timer(self) -> None:
+        # The angles are read every cycle because they are what joint_states
+        # is; current and force ride the divisor.
+        extras = self._ticks % self._extras_divisor == 0
+        self._ticks += 1
         try:
             angles = self._transport.read_angles()
-            currents = self._transport.read_registers(REG_CURRENT, 6)
-            forces = self._transport.read_forces()
+            if extras:
+                self._currents = self._transport.read_registers(REG_CURRENT, 6)
+                self._forces = self._transport.read_forces()
+            currents, forces = self._currents, self._forces
         except HandCommunicationError as exc:
             self._failures += 1
             if self._failures == self._max_failures:
