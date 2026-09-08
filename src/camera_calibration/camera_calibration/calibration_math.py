@@ -270,3 +270,92 @@ def calibrate_eye_to_hand(
     else:
         retained[:] = True
     return result, retained
+
+
+def calibrate_fixed_tag_eye_to_hand(
+    world_to_hand: Sequence[np.ndarray],
+    camera_to_tag: Sequence[np.ndarray],
+    hand_to_tag: np.ndarray,
+    minimum_samples: int = 8,
+    reject_outliers: bool = True,
+) -> tuple[CalibrationResult, np.ndarray]:
+    """Calibrate a fixed camera using a measured hand-to-tag transform.
+
+    Each synchronized RGB/FK pair independently gives
+
+        T_world_camera[i] = T_world_hand[i] T_hand_tag inv(T_camera_tag[i]).
+
+    The returned pose is the robust SE(3) average.  Unlike generic hand-eye
+    calibration, this formulation does not estimate the rigid tag mount and
+    therefore does not require rotational excitation to make that mount
+    observable.
+    """
+    if len(world_to_hand) != len(camera_to_tag):
+        raise CalibrationError("robot and camera sample counts differ")
+    if len(world_to_hand) < minimum_samples:
+        raise CalibrationError(
+            f"need at least {minimum_samples} samples, have {len(world_to_hand)}"
+        )
+
+    fixed_hand_to_tag = np.asarray(hand_to_tag, dtype=float)
+    transforms = list(world_to_hand) + list(camera_to_tag) + [fixed_hand_to_tag]
+    for transform in transforms:
+        if np.asarray(transform).shape != (4, 4) or not np.all(np.isfinite(transform)):
+            raise CalibrationError("every transform must be a finite 4x4 matrix")
+
+    candidates = [
+        np.asarray(world_hand, dtype=float)
+        @ fixed_hand_to_tag
+        @ invert_transform(camera_tag)
+        for world_hand, camera_tag in zip(world_to_hand, camera_to_tag)
+    ]
+
+    def solve(mask: np.ndarray) -> CalibrationResult:
+        selected = [candidate for candidate, keep in zip(candidates, mask) if keep]
+        world_to_camera = make_transform(
+            _average_rotations([candidate[:3, :3] for candidate in selected]),
+            np.mean([candidate[:3, 3] for candidate in selected], axis=0),
+        )
+        translation_errors = []
+        rotation_errors = []
+        for candidate in candidates:
+            error = invert_transform(world_to_camera) @ candidate
+            translation_errors.append(np.linalg.norm(error[:3, 3]))
+            rotation_errors.append(rotation_angle_deg(error[:3, :3]))
+        translation_errors_array = np.asarray(translation_errors)
+        rotation_errors_array = np.asarray(rotation_errors)
+        return CalibrationResult(
+            world_to_camera=world_to_camera,
+            hand_to_tag=fixed_hand_to_tag.copy(),
+            translation_rmse_m=float(
+                np.sqrt(np.mean(translation_errors_array[mask] ** 2))
+            ),
+            rotation_rmse_deg=float(
+                np.sqrt(np.mean(rotation_errors_array[mask] ** 2))
+            ),
+            sample_translation_errors_m=translation_errors_array,
+            sample_rotation_errors_deg=rotation_errors_array,
+            translation_rank=3,
+        )
+
+    retained = np.ones(len(candidates), dtype=bool)
+    result = solve(retained)
+    if not reject_outliers or len(candidates) < minimum_samples + 3:
+        return result, retained
+
+    def robust_limit(values: np.ndarray, floor: float) -> float:
+        median = float(np.median(values))
+        mad = float(np.median(np.abs(values - median)))
+        return max(floor, median + 3.5 * 1.4826 * mad)
+
+    retained = np.logical_and(
+        result.sample_translation_errors_m
+        <= robust_limit(result.sample_translation_errors_m, 0.008),
+        result.sample_rotation_errors_deg
+        <= robust_limit(result.sample_rotation_errors_deg, 1.5),
+    )
+    if int(np.count_nonzero(retained)) >= minimum_samples and not np.all(retained):
+        result = solve(retained)
+    else:
+        retained[:] = True
+    return result, retained

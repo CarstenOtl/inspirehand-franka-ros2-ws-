@@ -22,7 +22,6 @@ setup(
     entry_points={
         "console_scripts": [
             "calibrate = camera_calibration.calibration_node:main",
-            "auto_calibrate = camera_calibration.auto_calibration:main",
         ],
     },
 )
