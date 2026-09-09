@@ -1,4 +1,4 @@
-"""Start the D435 RGB stream and collect hand-guided calibration samples."""
+"""Start the D415 RGB stream and collect hand-guided calibration samples."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -46,7 +46,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "start_camera",
                 default_value="true",
-                description="Also launch the RealSense D435 RGB driver.",
+                description="Also launch the RealSense D415 RGB driver.",
             ),
             *[
                 DeclareLaunchArgument(name, default_value=default, description=description)
@@ -59,7 +59,7 @@ def generate_launch_description() -> LaunchDescription:
                     )
                 ),
                 launch_arguments={
-                    "device_type": "d435",
+                    "device_type": "d415",
                     "enable_color": "true",
                     "enable_depth": "false",
                     "rgb_camera.color_profile": "1920x1080x30",

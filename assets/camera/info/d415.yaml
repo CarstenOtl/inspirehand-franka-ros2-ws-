@@ -1,0 +1,44 @@
+schema_version: 1
+
+camera:
+  model: Intel RealSense D415
+  serial_number: null  # The calibration log did not record the device serial.
+  mount_frame: camera_link
+
+color_stream:
+  frame_id: camera_color_optical_frame
+  width: 1920
+  height: 1080
+  camera_matrix:
+    - [1354.6162109375, 0.0, 932.94482421875]
+    - [0.0, 1351.5601806640625, 535.3372802734375]
+    - [0.0, 0.0, 1.0]
+  # The result stored five coefficients but did not retain the CameraInfo
+  # distortion-model string.
+  distortion_model: unspecified
+  distortion_coefficients: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+camera_mount_to_color_optical:
+  parent_frame: camera_link
+  child_frame: camera_color_optical_frame
+  translation_m:
+    [0.00028594376635737717, 0.015048524364829063, 0.000058782363339560106]
+  rotation_xyzw:
+    [-0.5001186870518258, 0.5004700602163779, -0.5005348358551451,
+     0.49887462932487986]
+  matrix_4x4:
+    - [-0.0020108061550438983, -0.0011805974454759949,
+       0.9999972814204442, 0.00028594376635737717]
+    - [-0.9999971202511764, -0.0013076460859582362,
+       -0.002012349638788158, 0.015048524364829063]
+    - [0.0013100183058610826, -0.9999984481244889,
+       -0.0011779646228537999, 0.000058782363339560106]
+    - [0.0, 0.0, 0.0, 1.0]
+
+provenance:
+  source_result: apps/camera_calibration/logs/20260909T175352_443744Z/calibration_result.json
+  source_result_sha256: b57a56f358664989457e5fc555af15d3d975277eb617687ebe8b7cbf43f49c5e
+  source_run_timestamp_utc: "2026-09-09T17:53:52.443744Z"
+  extracted_fields:
+    - camera_intrinsics
+    - camera_mount_to_optical

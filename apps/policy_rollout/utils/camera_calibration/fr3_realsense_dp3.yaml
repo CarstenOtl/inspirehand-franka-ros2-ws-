@@ -1,0 +1,66 @@
+schema_version: 1
+
+# Everything about the policy camera lives in this file.  The training values
+# below are copied from forgeUltra franka-chi at commit 3fa5a545.  The physical
+# camera section is deliberately incomplete until this workcell is measured.
+training_camera:
+  model: Intel RealSense D415
+  mount: fixed_world
+  projection: pinhole
+  frame_id: camera_color_optical_frame
+  color:
+    width: 1280
+    height: 720
+    camera_matrix: [695.481201171875, 0.0, 640.0692749023438,
+                    0.0, 695.4866943359375, 363.686279296875,
+                    0.0, 0.0, 1.0]
+    distortion_model: plumb_bob
+    distortion_coefficients: [0.008815303444862366, -0.05728045478463173,
+      -0.00040698592783883214, 0.00014246364298742265,
+      0.038177620619535446, 0.0, 0.0, 0.0]
+  policy_input:
+    width: 320
+    height: 180
+    snapshot_rate_hz: 15.0
+    camera_matrix: [173.87030029296875, 0.0, 160.01731872558594,
+                    0.0, 173.87167358398438, 90.92156982421875,
+                    0.0, 0.0, 1.0]
+    rgb_layout: CHW
+    rgb_dtype: float32
+    rgb_range: [0.0, 1.0]
+    depth_layout: CHW
+    depth_dtype: float32
+    depth_units: metres
+    aligned_depth_to: color
+  world_pose:
+    parent_frame_id: world
+    child_frame_id: camera_color_optical_frame
+    translation_m: [0.9, 0.0, 0.4]
+    rotation_wxyz: [0.270598050073, -0.653281482438,
+                    -0.653281482438, 0.270598050073]
+  dp3_point_cloud:
+    num_points: 4096
+    depth_min_m: 0.10
+    depth_max_m: 2.0
+    crop_min_m: [-0.20, -0.33, 0.19]
+    crop_max_m: [0.20, 0.13, 0.65]
+    xyz_center_m: [0.0, -0.10, 0.42]
+    xyz_scale_m: [0.20, 0.23, 0.23]
+
+physical_camera:
+  # The camera family is known; its serial number and measured workcell pose
+  # must still be recorded and validated before physical rollout.
+  model: Intel RealSense D415
+  serial_number: PLACEHOLDER
+  color_topic: /camera/camera/color/image_raw
+  depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+  camera_info_topic: /camera/camera/color/camera_info
+  measured_world_pose:
+    status: PLACEHOLDER
+    parent_frame_id: world
+    child_frame_id: camera_color_optical_frame
+    translation_m: null
+    rotation_wxyz: null
+  maximum_training_pose_error:
+    translation_m: 0.01
+    rotation_deg: 2.0

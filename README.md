@@ -15,6 +15,7 @@ docker/                          dev image, compose, entrypoint
 docs/hand.md                     RS485 wiring, bring-up, and the driver's interface
 docs/network.md                  network layout and FCI access
 apps/camera_calibration/         calibration entry script, utilities, and hardware tests
+apps/policy_rollout/             portable DP3 + distilled flow-policy inference
 .gitmodules                     external ROS repositories
 src/
   inspire_hand_msgs/             service definitions for the hand
