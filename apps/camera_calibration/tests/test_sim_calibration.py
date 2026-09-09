@@ -57,6 +57,10 @@ from camera_calibration.calibration_math import (  # noqa: E402
     rotation_angle_deg,
 )
 from camera_calibration.auto_waypoints import AUTO_WAYPOINTS  # noqa: E402
+from camera_calibration.model_geometry import (  # noqa: E402
+    TAG_BODY_TO_PRINTED_TAG_QUATERNION_XYZW,
+    TAG_BODY_TO_PRINTED_TAG_XYZ,
+)
 
 
 CAMERA_NAME = "rs435_rgb"
@@ -390,8 +394,8 @@ def _world_to_printed_tag_from_fk(data: Any, tag_body_id: int) -> np.ndarray:
     # The in-memory planar mesh is 2 mm above the tag body.  Its UV mapping
     # rotates the printed AprilTag axes +90 degrees around the body's +Z.
     body_to_printed_tag = make_transform(
-        np.asarray([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
-        np.asarray([0.0, 0.0, 0.002]),
+        quaternion_xyzw_to_matrix(TAG_BODY_TO_PRINTED_TAG_QUATERNION_XYZW),
+        TAG_BODY_TO_PRINTED_TAG_XYZ,
     )
     return world_to_tag_body @ body_to_printed_tag
 

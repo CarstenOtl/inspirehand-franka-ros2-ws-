@@ -10,6 +10,7 @@ from action_msgs.msg import GoalStatus
 from control_msgs.action import FollowJointTrajectory
 from cv_bridge import CvBridge
 from rclpy.action import ActionClient
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -27,31 +28,22 @@ from .calibration_math import (
     calibrate_fixed_tag_eye_to_hand,
     invert_transform,
     make_transform,
-    matrix_to_quaternion_xyzw,
     quaternion_xyzw_to_matrix,
     rotation_angle_deg,
+)
+from .model_geometry import (
+    DEFAULT_HAND_TO_TAG_QUATERNION_XYZW,
+    DEFAULT_HAND_TO_TAG_XYZ,
+)
+from .run_logging import (
+    create_run_directory,
+    transform_record,
+    write_json,
+    write_sample_snapshot,
 )
 
 
 APRILTAG_FAMILIES = ("tag16h5", "tag25h9", "tag36h10", "tag36h11")
-
-# Measured T_fr3_link8_apriltag_0 from the current physical/MuJoCo asset.
-# The source poses are T_fr3_link8_hand_base_link =
-# (xyz 0 0 0, q_wxyz 0.707106781187 0 0 -0.707106781187) and the measured
-# apriltag_0 pose in assets/fr3_inspirehand/fr3_inspirehand.xml.  The final
-# +90-degree in-plane rotation and 2 mm surface offset match the printed-tag
-# frame used by the simulator and OpenCV solvePnP (origin at tag centre).
-DEFAULT_HAND_TO_TAG_XYZ = (
-    -0.000541679480601,
-    0.0187392994594,
-    0.0920099800138,
-)
-DEFAULT_HAND_TO_TAG_QUATERNION_XYZW = (
-    -0.705293467481,
-    0.000745455459180,
-    -0.000749282864928,
-    0.708914668772,
-)
 
 
 def _clean_frame(frame: str) -> str:
@@ -73,10 +65,11 @@ class CameraCalibrationNode(Node):
 
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("camera_info_topic", "/camera/camera/color/camera_info")
-        self.declare_parameter("world_frame", "world")
+        self.declare_parameter("world_frame", "fr3_link0")
         self.declare_parameter("hand_frame", "fr3_link8")
         self.declare_parameter("camera_mount_frame", "camera_link")
         self.declare_parameter("camera_optical_frame", "")
+        self.declare_parameter("output_root", "logs")
         self.declare_parameter("tag_family", "tag36h11")
         self.declare_parameter("tag_id", 0)
         self.declare_parameter("tag_size_m", 0.040)
@@ -104,6 +97,7 @@ class CameraCalibrationNode(Node):
         self._world_frame = _clean_frame(self._string_parameter("world_frame"))
         self._hand_frame = _clean_frame(self._string_parameter("hand_frame"))
         self._camera_mount_frame = _clean_frame(self._string_parameter("camera_mount_frame"))
+        self._output_root = self._string_parameter("output_root")
         configured_optical = self._string_parameter("camera_optical_frame")
         self._camera_optical_frame = _clean_frame(configured_optical) if configured_optical else ""
         self._tag_id = int(self.get_parameter("tag_id").value)
@@ -150,8 +144,12 @@ class CameraCalibrationNode(Node):
             raise ValueError("tag_size_m must be positive")
         if self._minimum_samples < 4:
             raise ValueError("minimum_samples must be at least 4")
-        if not self._world_frame or not self._hand_frame or not self._camera_mount_frame:
-            raise ValueError("world_frame, hand_frame, and camera_mount_frame cannot be empty")
+        if not all(
+            (self._world_frame, self._hand_frame, self._camera_mount_frame, self._output_root)
+        ):
+            raise ValueError(
+                "world_frame, hand_frame, camera_mount_frame, and output_root cannot be empty"
+            )
         if self._capture_mode not in ("manual", "auto", "triggered"):
             raise ValueError("capture_mode must be 'manual', 'auto', or 'triggered'")
         if self._capture_mode == "auto" and self._minimum_samples != len(AUTO_WAYPOINTS):
@@ -177,6 +175,7 @@ class CameraCalibrationNode(Node):
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._camera_matrix = None
         self._distortion = None
+        self._camera_image_size = None
         self._world_to_hand_samples: list[np.ndarray] = []
         self._camera_to_tag_samples: list[np.ndarray] = []
         self._sample_stamps_ns: list[int] = []
@@ -189,14 +188,24 @@ class CameraCalibrationNode(Node):
         self._auto_waypoint_index = 0
         self._auto_sample_deadline_ns = 0
         self._auto_goal_handle = None
+        self._run_directory = create_run_directory(self._output_root)
 
         image_topic = self._string_parameter("image_topic")
         camera_info_topic = self._string_parameter("camera_info_topic")
+        # Full-resolution AprilTag detection can keep the default callback group
+        # continuously busy.  Give the latency-sensitive capture trigger its own
+        # mutually-exclusive group so it can run on the executor's second thread.
+        self._capture_service_group = MutuallyExclusiveCallbackGroup()
         self.create_subscription(
             CameraInfo, camera_info_topic, self._camera_info_callback, qos_profile_sensor_data
         )
         self.create_subscription(Image, image_topic, self._image_callback, qos_profile_sensor_data)
-        self.create_service(Trigger, "~/capture", self._capture_callback)
+        self.create_service(
+            Trigger,
+            "~/capture",
+            self._capture_callback,
+            callback_group=self._capture_service_group,
+        )
         self.create_service(Trigger, "~/solve", self._solve_callback)
         self.create_service(Trigger, "~/reset", self._reset_callback)
 
@@ -219,6 +228,10 @@ class CameraCalibrationNode(Node):
         self.get_logger().info(
             f"Watching tag {self._tag_id} ({family}, {self._tag_size:.4f} m) on "
             f"{image_topic}; sampling is {mode}."
+        )
+        self.get_logger().info(
+            f"Writing calibration snapshots, transforms, and result to "
+            f"{self._run_directory}."
         )
         self.get_logger().info(
             "Passive recording is active; this node sends no motion commands. "
@@ -353,6 +366,7 @@ class CameraCalibrationNode(Node):
             return
         self._camera_matrix = np.asarray(message.k, dtype=float).reshape(3, 3)
         self._distortion = np.asarray(message.d, dtype=float)
+        self._camera_image_size = (int(message.width), int(message.height))
         if not self._camera_optical_frame:
             self._camera_optical_frame = _clean_frame(message.header.frame_id)
 
@@ -397,6 +411,11 @@ class CameraCalibrationNode(Node):
         return make_transform(rotation, translation_vector.reshape(3)), reprojection_error
 
     def _image_callback(self, message: Image) -> None:
+        # In triggered mode there is nothing useful to calculate until the
+        # operator asks for a sample.  Besides saving CPU, this prevents a 30 Hz
+        # full-resolution stream from flooding the executor while it is idle.
+        if self._capture_mode == "triggered" and not self._capture_requested:
+            return
         if self._camera_matrix is None:
             self._notice("intrinsics", "Waiting for CameraInfo before detecting the tag.")
             return
@@ -432,15 +451,26 @@ class CameraCalibrationNode(Node):
         if reprojection_error > self._max_reprojection_error:
             self._notice(
                 "reprojection",
-                f"Tag pose rejected: {reprojection_error:.2f} px reprojection error "
-                f"exceeds {self._max_reprojection_error:.2f} px.",
+                f"Tag pose rejected: {reprojection_error:.3f} px reprojection error "
+                f"exceeds {self._max_reprojection_error:.3f} px.",
                 period_s=2.0,
             )
             return
-        self._try_capture(message, camera_to_tag, reprojection_error)
+        self._try_capture(
+            message,
+            color_image,
+            image_corners,
+            camera_to_tag,
+            reprojection_error,
+        )
 
     def _try_capture(
-        self, image_message: Image, camera_to_tag: np.ndarray, reprojection_error: float
+        self,
+        image_message: Image,
+        color_image: np.ndarray,
+        image_corners: np.ndarray,
+        camera_to_tag: np.ndarray,
+        reprojection_error: float,
     ) -> None:
         if self._calibration_complete:
             return
@@ -475,16 +505,83 @@ class CameraCalibrationNode(Node):
                 )
                 return
 
+        count = len(self._world_to_hand_samples) + 1
+        snapshot_name = f"sample_{count:03d}.png"
+        record_name = f"sample_{count:03d}.json"
+        candidate_world_to_camera = (
+            world_to_hand @ self._hand_to_tag @ invert_transform(camera_to_tag)
+        )
+        sample_record = {
+            "schema_version": 1,
+            "sample_index": count,
+            "snapshot": snapshot_name,
+            "image": {
+                "frame_id": _clean_frame(image_message.header.frame_id),
+                "stamp": {
+                    "sec": int(image_message.header.stamp.sec),
+                    "nanosec": int(image_message.header.stamp.nanosec),
+                    "nanoseconds": stamp_ns,
+                },
+                "width": int(color_image.shape[1]),
+                "height": int(color_image.shape[0]),
+            },
+            "tag": {"id": self._tag_id, "size_m": self._tag_size},
+            "reprojection_error_px": float(reprojection_error),
+            "world_to_hand": {
+                "parent_frame": self._world_frame,
+                "child_frame": self._hand_frame,
+                **transform_record(world_to_hand),
+            },
+            "camera_to_tag": {
+                "parent_frame": self._camera_optical_frame,
+                "child_frame": f"apriltag_{self._tag_id}",
+                **transform_record(camera_to_tag),
+            },
+            "candidate_world_to_camera_optical": {
+                "parent_frame": self._world_frame,
+                "child_frame": self._camera_optical_frame,
+                **transform_record(candidate_world_to_camera),
+            },
+            "fixed_hand_to_tag": {
+                "parent_frame": self._hand_frame,
+                "child_frame": f"apriltag_{self._tag_id}",
+                **transform_record(self._hand_to_tag),
+            },
+            "camera_intrinsics": {
+                "matrix_3x3": self._camera_matrix.tolist(),
+                "distortion": self._distortion.tolist(),
+            },
+        }
+        try:
+            write_sample_snapshot(
+                self._run_directory / snapshot_name,
+                color_image,
+                image_corners,
+                camera_to_tag,
+                self._camera_matrix,
+                self._distortion,
+                self._tag_size,
+                count,
+                reprojection_error,
+            )
+            write_json(self._run_directory / record_name, sample_record)
+        except (OSError, ValueError, cv2.error) as error:
+            self.get_logger().error(
+                f"Could not persist calibration sample {count}: {error}. "
+                "The capture remains armed; fix the output path and retry."
+            )
+            return
+
         self._world_to_hand_samples.append(world_to_hand)
         self._camera_to_tag_samples.append(camera_to_tag)
         self._sample_stamps_ns.append(stamp_ns)
         self._last_sample_hand = world_to_hand
         self._capture_requested = False
-        count = len(self._world_to_hand_samples)
         self.get_logger().info(
             f"Accepted valid sample {count}/{self._minimum_samples} from timestamped "
             f"{self._world_frame} -> {self._hand_frame} FK "
-            f"(tag reprojection error {reprojection_error:.2f} px)."
+            f"(tag reprojection error {reprojection_error:.2f} px); wrote "
+            f"{snapshot_name} and {record_name}."
         )
         if self._capture_mode == "auto":
             self._auto_waypoint_index += 1
@@ -501,15 +598,28 @@ class CameraCalibrationNode(Node):
             if solve_response.success:
                 self._calibration_complete = True
                 self.get_logger().info(
-                    "Automatic calibration is complete. Call /camera_calibration/reset "
+                    "Calibration is complete. Call /camera_calibration/reset "
                     "to collect a new calibration."
                 )
 
     def _capture_callback(self, request, response):
         del request
+        if self._calibration_complete:
+            response.success = False
+            response.message = (
+                "Calibration is already complete; call /camera_calibration/reset first."
+            )
+            return response
         if self._capture_mode == "auto":
             response.success = False
             response.message = "Capture is sequenced automatically in auto mode."
+            return response
+        if self._capture_requested:
+            response.success = False
+            response.message = (
+                "A capture is already armed; hold the current pose and wait for an "
+                "'Accepted valid sample' message."
+            )
             return response
         self._capture_requested = True
         response.success = True
@@ -532,6 +642,8 @@ class CameraCalibrationNode(Node):
         self._last_sample_hand = None
         self._capture_requested = False
         self._calibration_complete = False
+        self._run_directory = create_run_directory(self._output_root)
+        self.get_logger().info(f"New calibration run directory: {self._run_directory}")
         if self._capture_mode == "auto":
             self._auto_waypoint_index = 0
             self._auto_state = "waiting_controller"
@@ -543,11 +655,17 @@ class CameraCalibrationNode(Node):
     def _solve_callback(self, request, response):
         del request
         try:
+            # Collection requires the configured sample count, but leave room
+            # for the robust solver to discard up to three bad observations.
+            # Passing the collection count here made outlier rejection
+            # impossible when the node solved immediately at exactly that
+            # count.
+            minimum_retained_samples = max(4, self._minimum_samples - 3)
             result, retained = calibrate_fixed_tag_eye_to_hand(
                 self._world_to_hand_samples,
                 self._camera_to_tag_samples,
                 self._hand_to_tag,
-                minimum_samples=self._minimum_samples,
+                minimum_samples=minimum_retained_samples,
             )
             if self._camera_mount_frame == self._camera_optical_frame:
                 mount_to_optical = np.eye(4)
@@ -570,8 +688,14 @@ class CameraCalibrationNode(Node):
 
             world_to_mount = result.world_to_camera @ invert_transform(mount_to_optical)
             retained_count = int(np.count_nonzero(retained))
-            calibration = self._calibration_log(result, world_to_mount, retained_count)
-        except (CalibrationError, ValueError) as error:
+            calibration = self._calibration_log(
+                result,
+                world_to_mount,
+                mount_to_optical,
+                retained_count,
+            )
+            write_json(self._run_directory / "calibration_result.json", calibration)
+        except (CalibrationError, ValueError, OSError) as error:
             response.success = False
             response.message = str(error)
             self.get_logger().error(f"Calibration failed: {error}")
@@ -583,7 +707,8 @@ class CameraCalibrationNode(Node):
             f"Calibrated {self._world_frame} -> {self._camera_mount_frame}; "
             f"{int(np.count_nonzero(retained))} samples used, {rejected} rejected, "
             f"RMSE {result.translation_rmse_m * 1000.0:.1f} mm / "
-            f"{result.rotation_rmse_deg:.2f} deg. Result written to the node log."
+            f"{result.rotation_rmse_deg:.2f} deg. Result written to "
+            f"{self._run_directory / 'calibration_result.json'}."
         )
         self.get_logger().info(response.message)
         self.get_logger().info(
@@ -592,39 +717,43 @@ class CameraCalibrationNode(Node):
         return response
 
     def _calibration_log(
-        self, result, world_to_mount: np.ndarray, retained_count: int
+        self,
+        result,
+        world_to_mount: np.ndarray,
+        mount_to_optical: np.ndarray,
+        retained_count: int,
     ) -> dict:
-        def transform_dict(transform: np.ndarray) -> dict:
-            quaternion = matrix_to_quaternion_xyzw(transform[:3, :3])
-            return {
-                "translation": {
-                    "x": float(transform[0, 3]),
-                    "y": float(transform[1, 3]),
-                    "z": float(transform[2, 3]),
-                },
-                "rotation_xyzw": {
-                    "x": float(quaternion[0]),
-                    "y": float(quaternion[1]),
-                    "z": float(quaternion[2]),
-                    "w": float(quaternion[3]),
-                },
-                "matrix_4x4": transform.tolist(),
-            }
-
         return {
             "schema_version": 1,
+            "run_directory": str(self._run_directory),
             "parent_frame": self._world_frame,
             "child_frame": self._camera_mount_frame,
             "camera_optical_frame": self._camera_optical_frame,
             "camera_intrinsics": {
                 "matrix_3x3": self._camera_matrix.tolist(),
                 "distortion": self._distortion.tolist(),
+                "width": self._camera_image_size[0],
+                "height": self._camera_image_size[1],
             },
-            "transform": transform_dict(world_to_mount),
+            "transform": transform_record(world_to_mount),
+            # The mount transform remains the primary result.  These two
+            # additional transforms preserve the exact optical pose used by
+            # solvePnP so downstream renderers do not have to guess the
+            # RealSense model's internal frame offsets or REP-103 rotation.
+            "camera_mount_to_optical": {
+                "parent_frame": self._camera_mount_frame,
+                "child_frame": self._camera_optical_frame,
+                **transform_record(mount_to_optical),
+            },
+            "world_to_camera_optical": {
+                "parent_frame": self._world_frame,
+                "child_frame": self._camera_optical_frame,
+                **transform_record(result.world_to_camera),
+            },
             "fixed_carrier_to_tag": {
                 "parent_frame": self._hand_frame,
                 "child_frame": f"apriltag_{self._tag_id}",
-                **transform_dict(result.hand_to_tag),
+                **transform_record(result.hand_to_tag),
             },
             "quality": {
                 "samples_collected": len(self._world_to_hand_samples),

@@ -269,6 +269,55 @@ node before starting another one. A one-time device reset is available from
 either viewer with `--initial-reset`; do not use it while another process owns
 the D415.
 
+### Manual eye-to-hand camera calibration
+
+Build and source the calibration package after changing it:
+
+```bash
+colcon build --symlink-install --packages-select camera_calibration
+source install/setup.bash
+```
+
+Start the FR3 in gravity-compensation mode in one sourced shell so the
+timestamped `fr3_link0 -> fr3_link8` transform remains available while the arm
+is moved by hand:
+
+```bash
+ros2 launch inspire_franka_bringup inspire_franka.launch.py \
+  gravity_compensation:=true
+```
+
+In a second sourced shell, start manual calibration. By default this command
+starts the D415 itself; add `--no-camera` only when one camera node is already
+publishing `/camera/camera/color/image_raw` and `camera_info`.
+
+```bash
+./apps/camera_calibration/calibrate.py --manual \
+  --tag-family tag36h11 --tag-id 0 --tag-size-m 0.040
+```
+
+At each pose, hold the arm completely still with the whole tag sharp and
+visible, then press Enter once. Wait for `Accepted valid sample` before moving.
+Use varied image positions, distances, roll, pitch, and yaw. The solver runs
+after 12 accepted samples and writes the annotated captures plus
+`calibration_result.json` under `logs/<UTC timestamp>/`.
+
+Lower final translation/rotation RMSE is better; also check how many samples
+were rejected. A small tag reprojection error only confirms image detection,
+so it does not replace the final cross-pose RMSE or a visual check. Inspect the
+result in MuJoCo from inside the development container:
+
+```bash
+./apps/camera_calibration/tests/visualize_calibrated_camera.py \
+  /root/develop_ws/logs/<UTC timestamp>/calibration_result.json
+```
+
+Press `C` or `2` for the calibrated RGB point of view and `F` or `1` for the
+external overview. Confirm that the virtual housing is where the physical
+camera is mounted and that its viewing direction matches the saved sample
+images. The complete calibration and troubleshooting guide is in
+[apps/camera_calibration/README.md](apps/camera_calibration/README.md).
+
 ## The one structural thing to understand
 
 **On real hardware the arm and the hand are two independent stacks. In

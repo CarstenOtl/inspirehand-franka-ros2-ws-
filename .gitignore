@@ -2,6 +2,7 @@
 /build
 /install
 /log
+/logs/
 
 # Local camera-calibration captures/results.
 /calibration_run*.log

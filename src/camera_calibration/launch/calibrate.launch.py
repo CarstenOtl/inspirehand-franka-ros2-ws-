@@ -1,4 +1,4 @@
-"""Start the D435 RGB stream and collect hand-guided calibration samples."""
+"""Start the D415 full-resolution RGB stream and collect calibration samples."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -13,10 +13,11 @@ ARGS = (
     ("tag_id", "0", "Numeric ID printed on the AprilTag."),
     ("tag_size_m", "0.040", "Black-square edge length in metres; measure it accurately."),
     ("tag_family", "tag36h11", "AprilTag family: tag16h5, tag25h9, tag36h10, or tag36h11."),
-    ("world_frame", "world", "Fixed frame at the Franka base."),
+    ("world_frame", "fr3_link0", "Fixed frame at the Franka base."),
     ("hand_frame", "fr3_link8", "Moving TF frame rigidly carrying the hand and tag."),
     ("camera_mount_frame", "camera_link", "Camera frame that will become a child of world."),
     ("camera_optical_frame", "", "Optical frame; empty takes it from CameraInfo."),
+    ("output_root", "logs", "Parent directory for timestamped sample/result folders."),
     ("image_topic", "/camera/camera/color/image_raw", "Rectified or raw color image."),
     ("camera_info_topic", "/camera/camera/color/camera_info", "Matching color intrinsics."),
     (
@@ -46,7 +47,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "start_camera",
                 default_value="true",
-                description="Also launch the RealSense D435 RGB driver.",
+                description="Also launch the RealSense D415 RGB driver.",
             ),
             *[
                 DeclareLaunchArgument(name, default_value=default, description=description)
@@ -59,7 +60,7 @@ def generate_launch_description() -> LaunchDescription:
                     )
                 ),
                 launch_arguments={
-                    "device_type": "d435",
+                    "device_type": "d415",
                     "enable_color": "true",
                     "enable_depth": "false",
                     "rgb_camera.color_profile": "1920x1080x30",

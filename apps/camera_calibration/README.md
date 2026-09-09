@@ -1,9 +1,9 @@
-# RealSense D435 RGB eye-to-hand calibration
+# RealSense D415 RGB eye-to-hand calibration
 
 This app estimates a fixed table camera's pose in the Franka `world` frame.
 An AprilTag is stuck rigidly to the back of the Inspire Hand. Its placement
 is the measured fixed pose represented by the current robot asset. The solver
-uses that known mount and estimates only `world -> camera`.
+uses that known mount and estimates only `fr3_link0 -> camera`.
 
 The entry point is a passive recorder. It starts the camera and calibration
 node, but never starts a controller or sends a robot/hand command. Start the
@@ -16,16 +16,16 @@ while keeping the complete tag visible.
    attach it to the back of the palm—not to a moving finger.
 2. Measure the outer edge of the black square, excluding the white paper, in
    metres. Pose scale depends directly on this value.
-3. Start the combined robot bringup so `world -> fr3_link8` is available.
+3. Start the combined robot bringup so `fr3_link0 -> fr3_link8` is available.
    The camera and robot timestamps must use the same clock.
 4. Build and source the workspace (`rg2` in this workspace).
 
 ## Camera connection, ROS graph, and live views
 
-The D435 is a USB 3 camera. Connect it directly to a USB 3 (or faster) host
+The D415 is a USB 3 camera. Connect it directly to a USB 3 (or faster) host
 port with a USB 3 cable; avoid hubs while bringing it up. On the host,
 `lsusb -t` should show its link at `5000M` or higher. `480M` means USB 2,
-which cannot reliably carry full-resolution RGB at 30 FPS. Confirm the D435
+which cannot reliably carry full-resolution RGB at 30 FPS. Confirm the D415
 serial number with `rs-enumerate-devices` rather than selecting a generic UVC
 webcam.
 
@@ -43,16 +43,16 @@ workspace itself is bind-mounted: the host checkout is
 - `/root/develop_ws/apps/camera_calibration/tests/test_april_tag.py`: annotated
   RGB and aligned-depth AprilTag viewer.
 
-One `realsense2_camera` node must be the sole owner of the physical D435. The
+One `realsense2_camera` node must be the sole owner of the physical D415. The
 calibration launch enables only the RGB channel and publishes it under
 `/camera/camera/color`. The camera never writes footage by itself; ROS topics
 are live in memory.
 
-Start one camera producer (the full-resolution RGB calibration profile):
+Start one camera producer (the D415 full-resolution RGB calibration profile):
 
 ```bash
 ros2 launch realsense2_camera rs_launch.py \
-  device_type:=d435 \
+  device_type:=d415 \
   camera_namespace:=camera camera_name:=camera \
   enable_color:=true enable_depth:=false \
   rgb_camera.color_profile:=1920x1080x30
@@ -73,7 +73,7 @@ the Python viewers are diagnostic tools and may render more slowly than the
 incoming ROS stream. To save actual footage for later replay, record a rosbag:
 
 ```bash
-ros2 bag record -o d435_rgb_check \
+ros2 bag record -o d415_rgb_check \
   /camera/camera/color/image_raw \
   /camera/camera/color/camera_info
 ```
@@ -85,7 +85,7 @@ device and causes `Device or resource busy` / depth-stream failures. The
 viewers now detect the usual `/camera/camera` collision and ask you to use
 `--no-launch`.
 
-If the D435 reports a stream-start failure after a crash, stop the active
+If the D415 reports a stream-start failure after a crash, stop the active
 camera node and retry one viewer with `--initial-reset`. This resets the
 physical camera, so it must not be used while another process owns the device.
 
@@ -107,7 +107,6 @@ controller, then run the recording entry point:
 
 ```bash
 ros2 launch inspire_franka_bringup inspire_franka.launch.py \
-  robot_ip:=10.7.7.7 hand_port:=/dev/ttyUSB0 \
   gravity_compensation:=true
 
 ./apps/camera_calibration/calibrate.py \
@@ -122,20 +121,36 @@ Defaults:
 
 - image: `/camera/camera/color/image_raw`
 - intrinsics: `/camera/camera/color/camera_info`
-- moving pose: `world -> fr3_link8`
-- calibrated pose: `world -> camera_link`
+- moving pose: `fr3_link0 -> fr3_link8`
+- calibrated pose: `fr3_link0 -> camera_link`
 
 The tag is physically fixed on the Inspire Hand. The recorder uses timestamped
-`world -> fr3_link8` FK generated from the arm's `/joint_states`, then applies
+`fr3_link0 -> fr3_link8` FK generated from the arm's `/joint_states`, then applies
 the measured fixed `fr3_link8 -> apriltag_0` transform from the current physical
-asset. The tag mount is not estimated; only the fixed camera pose is calibrated.
+asset, `assets/fr3_inspirehand/fr3_inspirehand.xml`. That transform includes the
+180-degree Z clocking and 10 mm adapter between the flange and palm. The tag
+mount is not estimated; only the fixed camera pose is calibrated.
 
 `--manual` means hand-guided collection: move the hand across the image, vary
-its distance and orientation, and keep the complete tag visible. Every valid,
-sufficiently different OpenCV tag-pose/FK pair is accepted automatically and
-reported in the terminal. Aim for 20–40 distinct poses. Use
+its distance and orientation, and keep the complete tag visible. At each pose,
+hold the robot still and press Enter; the next valid OpenCV tag-pose/FK pair is
+accepted and reported in the terminal. Wait for the `Accepted valid sample`
+message before moving to the next pose. While waiting for Enter, the calibration
+node leaves the image stream idle; pressing Enter arms detection and receives an
+immediate service acknowledgement even if a camera frame is being processed.
+Pressing Enter again while that capture is still armed cannot queue an extra
+sample. The wrapper establishes one persistent ROS service connection before
+showing the first pose prompt and reuses it for the entire run, so Enter does not
+incur repeated DDS discovery. Aim for 20–40 distinct poses. Use
 `tests/test_april_tag.py` for an annotated view; the calibration node itself
 publishes no images or transforms.
+
+Each run creates `logs/<UTC timestamp>/`. Every accepted sample writes an
+annotated `sample_NNN.png` and a matching `sample_NNN.json` containing the
+image timestamp, camera-to-tag pose, timestamped world-to-hand TF, fixed
+hand-to-tag transform, and that sample's camera-pose candidate. The completed
+solve is written to `calibration_result.json` in the same directory. Use
+`--output-root PATH` to choose a different parent directory.
 
 ### Automatic 12-waypoint mode
 
@@ -145,14 +160,14 @@ the same arm):
 
 ```bash
 ros2 launch franka_fr3_moveit_config moveit.launch.py \
-  robot_ip:=10.7.7.7 load_gripper:=false ee_id:=none use_rviz:=false
+  robot_ip:=172.16.0.2 load_gripper:=false ee_id:=none use_rviz:=false
 
 ./apps/camera_calibration/calibrate.py --auto
 ```
 
 The app displays a physical-motion warning and sends no command until Enter is
 pressed. It then visits 12 slow, joint-limited poses that keep the complete tag
-inside the simulated D435 view, waits for each trajectory goal to succeed, and
+inside the simulated camera view, waits for each trajectory goal to succeed, and
 accepts exactly one settled RGB/FK sample at each pose. Keep the real workcell
 clear and remain at the emergency stop: the programmed joint trajectory cannot
 model untracked objects in the real workspace. Calibration solves automatically
@@ -168,9 +183,42 @@ ros2 service call /camera_calibration/solve std_srvs/srv/Trigger '{}'
 ```
 
 On success the node writes a machine-readable `CALIBRATION_RESULT` JSON object
-to its ROS log. It contains the `world -> camera_link` transform, the fixed
-carrier-to-tag transform, full 4x4 matrices, and translation and
-rotation RMSE. Nothing is published or saved.
+to its ROS log. It contains the `fr3_link0 -> camera_link` mount transform, the
+exact `fr3_link0 -> camera_color_optical_frame` pose used by the image solver, the
+camera intrinsics/image size, the fixed carrier-to-tag transform, full 4x4
+matrices, and translation and rotation RMSE. The same object is saved as
+`calibration_result.json`; the transform is not automatically published.
+
+### Confirm the calibrated camera in MuJoCo
+
+Capture the calibration output with `tee` (or copy just the JSON object after
+`CALIBRATION_RESULT` into a file), then open the read-only test viewer:
+
+```bash
+./apps/camera_calibration/calibrate.py --manual 2>&1 | tee calibration.log
+
+./apps/camera_calibration/tests/visualize_calibrated_camera.py calibration.log
+```
+
+The test uses the same combined FR3/Inspire MJCF as the calibration simulation.
+It adds a non-colliding camera housing, RGB optical axes, and a cyan view
+frustum at the calibrated pose. The MuJoCo window is a passive viewer: it does
+not start ROS, publish commands, or step physics.
+
+- Press `C` or `2` for the calibrated RGB point of view.
+- Press `F` or `1` to return to the free overview and inspect the camera's
+  location and viewing direction.
+- Use `--start-in-pov` to open directly in the RGB view.
+- Use `--headless` to validate that the result and decorated MJCF compile
+  without opening a window.
+
+The POV uses the camera's vertical focal length and image height; keep the
+MuJoCo window at the printed RGB aspect ratio for matching horizontal coverage.
+The passive interactive viewport does not reproduce lens distortion or a small
+off-centre principal point, so compare scene coverage and orientation rather
+than distorted edge pixels. Calibration files created before the optical
+transform was added must be regenerated; the mount pose alone is insufficient
+to reconstruct the exact RGB viewpoint.
 
 To clear the samples and try again:
 
@@ -187,10 +235,10 @@ ros2 service call /camera_calibration/capture std_srvs/srv/Trigger '{}'
 
 ## Common failure modes
 
-- `No world -> fr3_link8 TF`: the FR3's
+- `No fr3_link0 -> fr3_link8 TF`: the FR3's
   `robot_state_publisher` is not running, its prefix differs, or the camera and
   robot clocks disagree.
 - `cannot look up camera-internal TF`: override `camera_mount_frame` or
-  `camera_optical_frame` to match the D435's actual frame names.
+  `camera_optical_frame` to match the D415's actual frame names.
 - Large error: confirm the exact black-square size, avoid motion blur, keep the
   complete border visible, use more of the image, and keep the sticker flat.

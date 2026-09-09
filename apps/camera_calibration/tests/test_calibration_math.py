@@ -107,6 +107,23 @@ def test_fixed_tag_calibration_rejects_bad_rgb_observation():
     np.testing.assert_allclose(result.world_to_camera, expected_camera, atol=1e-10)
 
 
+def test_fixed_tag_calibration_can_reject_outliers_from_twelve_captures():
+    expected_camera, known_tag, robot, observations = synthetic_samples(12)
+    observations[3] = observations[3].copy()
+    observations[3][:3, 3] += [0.10, -0.08, 0.05]
+    observations[7] = observations[7].copy()
+    observations[7][:3, 3] += [-0.07, 0.09, -0.04]
+
+    result, retained = calibrate_fixed_tag_eye_to_hand(
+        robot, observations, known_tag, minimum_samples=9
+    )
+
+    assert retained.sum() == 10
+    assert not retained[3]
+    assert not retained[7]
+    np.testing.assert_allclose(result.world_to_camera, expected_camera, atol=1e-10)
+
+
 def test_fixed_tag_calibration_allows_translation_only_motion():
     world_to_camera = make_transform(axis_angle([0.2, -0.4, 0.7], 0.6), [0.8, 0.1, 0.7])
     known_tag = make_transform(axis_angle([0.1, 0.9, -0.2], -0.4), [0.0, 0.02, 0.092])

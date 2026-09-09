@@ -4,8 +4,9 @@
        All mesh paths are relative to this file and stay inside this asset
        bundle. fr3_link8 is the flange frame, 107 mm beyond fr3_link7. The
        hand link transforms, inertias, joint limits and mimic ratios come from
-       Open-X-Humanoid's official TienKung 2 Pro URDF. The -pi/2 flange adapter
-       keeps that hand oriented like the physical FR3 installation. -->
+       Open-X-Humanoid's official TienKung 2 Pro URDF. The pi-yaw flange adapter
+       flips the hand from its zero-yaw pose and matches the physical FR3
+       installation, 90 degrees from the legacy adapter. -->
 
   <compiler angle="radian" meshdir="./"/>
 
@@ -58,10 +59,10 @@
     <material name="button_green" rgba="0.102241 0.571125 0.102242 1"/>
     <material name="button_red" rgba="0.520996 0.008023 0.013702 1"/>
     <material name="button_blue" rgba="0.024157 0.445201 0.737911 1"/>
-    <!-- Appearance sampled from the physical Inspire hand: warm molded shell
-         and low-gloss charcoal rubber. -->
+    <!-- Warm molded shell with low-gloss charcoal retained only on the thumb. -->
     <material name="hand_shell" rgba="0.94 0.93 0.90 1" specular="0.12" shininess="0.18"/>
     <material name="hand_rubber" rgba="0.035 0.040 0.040 1" specular="0.04" shininess="0.08"/>
+    <material name="flange_black" rgba="0.025 0.025 0.025 1" specular="0.15" shininess="0.2"/>
     <material name="groundplane" texture="groundplane" texrepeat="5 5" texuniform="true" reflectance="0.2"/>
     <material name="apriltag_36h11_id0" texture="apriltag_36h11_id0_texture"
       rgba="1 1 1 1" texuniform="false" reflectance="0" specular="0" shininess="0"/>
@@ -116,6 +117,7 @@
     <mesh name="hand_right_ring_2" content_type="model/stl" file="hand/right_ring_2.STL"/>
     <mesh name="hand_right_little_1" content_type="model/stl" file="hand/right_little_1.STL"/>
     <mesh name="hand_right_little_2" content_type="model/stl" file="hand/right_little_2.STL"/>
+    <mesh name="hand_adapter_flange_mesh" content_type="model/stl" file="hand/adapter_flange.stl"/>
     <mesh name="hand_apriltag_36h11_id0_dorsal" content_type="model/obj" file="hand/apriltag_36h11_id0_dorsal.obj"/>
   </asset>
 
@@ -184,13 +186,14 @@
                       <site name="attachment_site" pos="0 0 0.107"/>
                       <frame childclass="fr3">
                         <body name="fr3_link8" pos="0 0 0.107">
-                          <body name="hand_base_link" quat="0.707106781187 0 0 -0.707106781187" childclass="official_hand">
+                          <!-- 10 mm physical adapter, 76 mm diameter: slightly
+                               larger than the hand's approximately 68 mm wrist. -->
+                          <geom name="hand_adapter_flange" class="hand_visual" type="mesh"
+                            mesh="hand_adapter_flange_mesh" pos="0 0 0.005" material="flange_black"/>
+                          <body name="hand_base_link" pos="0 0 0.010" quat="0 0 0 1" childclass="official_hand">
                             <inertial pos="0.00252515168164585 -0.001960054926157 0.0660467739648412" mass="0.38756" fullinertia="0.00059831308 0.00050077156 0.00018467082 5.60829e-06 2.87014e-06 3.4831e-06"/>
                             <geom class="hand_visual" mesh="hand_R_base_link"/>
                             <geom class="hand_collision" mesh="hand_R_base_link"/>
-                            <!-- Cosmetic-only wrist ring and finger rubber. These
-                                 preserve the official meshes and collision model. -->
-                            <geom class="hand_visual" type="cylinder" size="0.034 0.006" pos="0 0 -0.003" material="hand_rubber"/>
                             <!-- Surface-following 36h11 id 0 AprilTag. The upper-left black
                                  pixel of its 40 mm black square is 20 mm from the
                                  little-finger rim and 72 mm from the z=0 flange datum. -->

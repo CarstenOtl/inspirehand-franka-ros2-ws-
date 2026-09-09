@@ -29,11 +29,14 @@ class AprilTagDetector:
         return tuple(
             AprilTagDetection(
                 identifier=int(detection["id"]),
-                # Native AprilTag returns its corners in the same canonical
-                # (-x,+y), (+x,+y), (+x,-y), (-x,-y) order used by solvePnP.
+                # Native AprilTag exposes lower-left first (lb, rb, rt, lt),
+                # while OpenCV IPPE_SQUARE requires top-left first for our
+                # object points (lt, rt, rb, lb).  Reversing the native order
+                # also makes the solved tag +Z axis point out of its printed
+                # face, matching the MuJoCo tag frame.
                 corners=np.asarray(
                     detection["lb-rb-rt-lt"], dtype=np.float64
-                ).reshape(4, 2),
+                ).reshape(4, 2)[[3, 2, 1, 0]],
             )
             for detection in self._detector.detect(image)
         )
