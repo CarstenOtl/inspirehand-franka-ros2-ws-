@@ -151,6 +151,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-cv-bridge \
         ros-${ROS_DISTRO}-diagnostic-updater \
         ros-${ROS_DISTRO}-image-transport \
+        ros-${ROS_DISTRO}-rqt-gui-py \
         ros-${ROS_DISTRO}-rqt-image-view \
         ros-${ROS_DISTRO}-apriltag \
         python3-matplotlib \

@@ -235,6 +235,8 @@ From a second sourced shell, inspect the stream and its actual rate:
 ros2 topic hz /camera/camera/color/image_raw
 ros2 topic hz /camera/camera/depth/image_rect_raw
 ros2 run rqt_image_view rqt_image_view
+# Side-by-side RGB + metric depth; topics are selected automatically:
+ros2 run camera_calibration rgbd_view
 ```
 
 In `rqt_image_view`, select either image topic above. The calibration viewers

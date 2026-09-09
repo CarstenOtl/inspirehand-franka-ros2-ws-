@@ -70,7 +70,20 @@ ros2 run rqt_image_view rqt_image_view
 In `rqt_image_view`, select `/camera/camera/color/image_raw`. This is the best
 basic live-image check;
 the Python viewers are diagnostic tools and may render more slowly than the
-incoming ROS stream. To save actual footage for later replay, record a rosbag:
+incoming ROS stream.
+
+For an automatic side-by-side RGB and metric-depth view, use the workspace's
+rqt plugin. It subscribes to both standard D415 topics without a dropdown:
+
+```bash
+ros2 run camera_calibration rgbd_view
+```
+
+Use `--camera-namespace`, `--camera-name`, or `--depth-max` when the camera does
+not use the defaults. The same plugin is available from rqt's
+**Visualization > RealSense RGB + Depth** menu.
+
+To save actual footage for later replay, record a rosbag:
 
 ```bash
 ros2 bag record -o d415_rgb_check \
