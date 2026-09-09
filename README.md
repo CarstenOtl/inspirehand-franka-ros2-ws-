@@ -311,13 +311,15 @@ result in MuJoCo from inside the development container:
 
 ```bash
 ./apps/camera_calibration/tests/visualize_calibrated_camera.py \
-  /root/develop_ws/logs/<UTC timestamp>/calibration_result.json
+  /root/develop_ws/logs/<UTC timestamp>/calibration_result.json --live
 ```
 
-Press `C` or `2` for the calibrated RGB point of view and `F` or `1` for the
-external overview. Confirm that the virtual housing is where the physical
-camera is mounted and that its viewing direction matches the saved sample
-images. The complete calibration and troubleshooting guide is in
+With the robot bringup and one RGB camera producer still running, this opens a
+side-by-side real/MuJoCo comparison driven by the FR3 angles on
+`/joint_states`. Confirm that the camera viewpoints agree across several arm
+poses. Omit `--live` for the offline passive viewer, where `C` or `2` selects
+the calibrated RGB point of view and `F` or `1` selects the external overview.
+The complete calibration and troubleshooting guide is in
 [apps/camera_calibration/README.md](apps/camera_calibration/README.md).
 
 ## The one structural thing to understand

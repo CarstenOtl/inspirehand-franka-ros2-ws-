@@ -91,6 +91,52 @@ def test_decorated_scene_contains_noncolliding_housing_camera_and_frustum():
     assert all(geom.get("group") == "5" for geom in capsules)
 
 
+def test_extracts_arm_joint_positions_by_name_from_mixed_order_message():
+    names = ["finger_joint", "fr3_joint3", "fr3_joint1", "fr3_joint7"] + [
+        f"fr3_joint{index}" for index in (2, 6, 4, 5)
+    ]
+    positions = [99.0, 0.3, 0.1, 0.7, 0.2, 0.6, 0.4, 0.5]
+    np.testing.assert_allclose(
+        MODULE.ordered_arm_joint_positions(names, positions),
+        np.arange(0.1, 0.8, 0.1),
+    )
+
+
+def test_rejects_incomplete_or_invalid_live_joint_states():
+    with pytest.raises(ValueError, match="missing fr3_joint7"):
+        MODULE.ordered_arm_joint_positions(
+            MODULE.ARM_JOINT_NAMES[:-1], np.zeros(6)
+        )
+    with pytest.raises(ValueError, match="non-finite"):
+        MODULE.ordered_arm_joint_positions(
+            MODULE.ARM_JOINT_NAMES, [0.0] * 6 + [np.nan]
+        )
+    with pytest.raises(ValueError, match="7 names but 6 positions"):
+        MODULE.ordered_arm_joint_positions(MODULE.ARM_JOINT_NAMES, [0.0] * 6)
+    with pytest.raises(ValueError, match="duplicate"):
+        MODULE.ordered_arm_joint_positions(
+            MODULE.ARM_JOINT_NAMES + ("fr3_joint7",), [0.0] * 8
+        )
+
+
+def test_live_comparison_frame_has_two_labelled_panels():
+    pytest.importorskip("cv2")
+    simulated = np.full((90, 160, 3), 80, dtype=np.uint8)
+    real = np.full((180, 320, 3), 160, dtype=np.uint8)
+    comparison = MODULE.comparison_frame(
+        real, simulated, 160, 90, "real status", "sim status"
+    )
+    assert comparison.shape == (144, 320, 3)
+    assert comparison.dtype == np.uint8
+
+
+def test_live_and_headless_modes_are_mutually_exclusive(tmp_path):
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps(calibration_result()), encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot be used together"):
+        MODULE.run([str(calibration), "--live", "--headless"])
+
+
 @pytest.mark.parametrize(
     "rotation",
     [

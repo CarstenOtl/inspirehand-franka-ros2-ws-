@@ -210,13 +210,15 @@ Capture the calibration output with `tee` (or copy just the JSON object after
 ```bash
 ./apps/camera_calibration/calibrate.py --manual 2>&1 | tee calibration.log
 
-./apps/camera_calibration/tests/visualize_calibrated_camera.py calibration.log
+./apps/camera_calibration/tests/visualize_calibrated_camera.py calibration.log --live
 ```
 
 The test uses the same combined FR3/Inspire MJCF as the calibration simulation.
 It adds a non-colliding camera housing, RGB optical axes, and a cyan view
-frustum at the calibrated pose. The MuJoCo window is a passive viewer: it does
-not start ROS, publish commands, or step physics.
+frustum at the calibrated pose. With the robot bringup and one RealSense RGB
+producer still running, the live view compares the real image with the MuJoCo
+camera while updating the simulated arm from `/joint_states`. It subscribes
+only: it does not publish commands or step physics.
 
 - Press `C` or `2` for the calibrated RGB point of view.
 - Press `F` or `1` to return to the free overview and inspect the camera's
@@ -224,6 +226,24 @@ not start ROS, publish commands, or step physics.
 - Use `--start-in-pov` to open directly in the RGB view.
 - Use `--headless` to validate that the result and decorated MJCF compile
   without opening a window.
+
+This opens one side-by-side view: the latest real RGB frame on the left and a
+MuJoCo render through the calibrated camera on the right. The MuJoCo arm is
+updated from `fr3_joint1` through `fr3_joint7` on `/joint_states`; it is purely
+kinematic, creates no application publisher, and never sends robot commands.
+The viewer only subscribes to the existing camera producer, so it cannot
+contend for the D415 USB device. Use `--joint-state-topic` or `--image-topic`
+for non-default ROS names, and `--render-width` or `--max-fps` to tune display
+cost. Press `Q` or Esc to close it.
+
+The two panels use the most recently received image and joint state rather than
+hardware-triggered synchronization. Their title bars show message age so stale
+input is visible. The simulated view intentionally contains only geometry from
+the MuJoCo scene; unmodelled real workcell objects will appear only on the left.
+
+Omit `--live` to use the offline passive MuJoCo viewer instead. That mode does
+not start ROS; press `C` or `2` for the calibrated camera and `F` or `1` for the
+external overview.
 
 The POV uses the camera's vertical focal length and image height; keep the
 MuJoCo window at the printed RGB aspect ratio for matching horizontal coverage.
