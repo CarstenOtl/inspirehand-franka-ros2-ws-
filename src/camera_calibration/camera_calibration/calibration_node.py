@@ -37,20 +37,20 @@ APRILTAG_FAMILIES = ("tag16h5", "tag25h9", "tag36h10", "tag36h11")
 
 # Measured T_fr3_link8_apriltag_0 from the current physical/MuJoCo asset.
 # The source poses are T_fr3_link8_hand_base_link =
-# (xyz 0 0 0, q_wxyz 0.707106781187 0 0 -0.707106781187) and the measured
+# (xyz 0 0 0.010, q_wxyz 0 0 0 1) and the measured
 # apriltag_0 pose in assets/fr3_inspirehand/fr3_inspirehand.xml.  The final
 # +90-degree in-plane rotation and 2 mm surface offset match the printed-tag
 # frame used by the simulator and OpenCV solvePnP (origin at tag centre).
 DEFAULT_HAND_TO_TAG_XYZ = (
-    -0.000541679480601,
     0.0187392994594,
-    0.0920099800138,
+    0.000541679480601,
+    0.1020099800138,
 )
 DEFAULT_HAND_TO_TAG_QUATERNION_XYZW = (
-    -0.705293467481,
-    0.000745455459180,
-    -0.000749282864928,
-    0.708914668772,
+    0.498190676972130,
+    -0.499244910192648,
+    0.501808192566114,
+    -0.500748546576479,
 )
 
 

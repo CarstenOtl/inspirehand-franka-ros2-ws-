@@ -4,12 +4,12 @@
 
   By default they are two separate objects sharing a world: the arm at the
   origin, the hand standing on the bench beside it. That is the "bench hand"
-  arrangement - the two are independent assets that happen to be in the same
-  workspace, which is exactly how the real setup is wired (one FCI connection,
-  one USB-RS485 adapter, no mechanical coupling).
+  arrangement, useful when bringing up either device independently. The real
+  installation uses the flange mount below while retaining separate FCI and
+  USB-RS485 control connections.
 
-  `hand_mount:=flange` bolts the hand to the arm's flange instead, using the
-  same fr3_link8-to-palm transform as forgeUltra's franka-chi asset.
+  `hand_mount:=flange` bolts the hand to the arm's flange instead, matching the
+  90-degree clocking of the hand from the legacy physical installation.
 
       xacro inspire_franka.urdf.xacro                          # arm + bench hand
       xacro inspire_franka.urdf.xacro hand:=false              # bare arm
@@ -129,16 +129,15 @@
     <xacro:property name="hand_bench_rpy" value="0 0 0"/>
 
     <!--
-      Match forgeUltra's franka-chi asset, which welds fr3_link8 directly to
-      palm at zero translation with q_wxyz=(0.5, -0.5, -0.5, 0.5).
-
       This description has an intermediate hand_mount frame. Its fixed
-      base_joint contributes rpy=(-pi/2, 0, pi), so applying a -pi/2 yaw here
-      gives the same composed fr3_link8-to-hand_base_link (palm) transform.
+      base_joint contributes rpy=(-pi/2, 0, pi). The current physical hand is
+      flipped from the zero-yaw pose and is 90 degrees from the legacy
+      installation after angle wrapping, so the flange adapter uses a pi yaw.
+      The 10 mm z offset is the thickness of the black physical adapter flange.
       Keep these values synchronized with inspire_hand_on_flange.xml.
     -->
-    <xacro:property name="hand_flange_xyz" value="0 0 0"/>
-    <xacro:property name="hand_flange_rpy" value="0 0 -1.5707963267948966"/>
+    <xacro:property name="hand_flange_xyz" value="0 0 0.010"/>
+    <xacro:property name="hand_flange_rpy" value="0 0 3.141592653589793"/>
 
     <xacro:property name="hand_parent_resolved"
       value="${arm_link_prefix + 'link8' if mount == 'flange'
@@ -151,6 +150,27 @@
       value="${hand_flange_rpy if mount == 'flange'
               else hand_bench_rpy if mount == 'bench'
               else '$(arg hand_rpy)'}"/>
+
+    <!-- The mesh is centred on a frame 5 mm above link8, so its faces span
+         z=0..10 mm and meet both the wrist and the translated hand palm. -->
+    <xacro:if value="${mount == 'flange'}">
+      <link name="$(arg hand_prefix)hand_adapter_flange">
+        <visual>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="package://inspire_franka_description/meshes/adapter_flange.stl"/>
+          </geometry>
+          <material name="hand_adapter_flange_black">
+            <color rgba="0.025 0.025 0.025 1"/>
+          </material>
+        </visual>
+      </link>
+      <joint name="$(arg hand_prefix)hand_adapter_flange_joint" type="fixed">
+        <origin xyz="0 0 0.005" rpy="0 0 0"/>
+        <parent link="${arm_link_prefix}link8"/>
+        <child link="$(arg hand_prefix)hand_adapter_flange"/>
+      </joint>
+    </xacro:if>
 
     <xacro:inspire_hand
       side="$(arg hand_side)"

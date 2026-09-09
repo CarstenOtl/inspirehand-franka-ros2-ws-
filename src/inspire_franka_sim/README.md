@@ -105,11 +105,13 @@ physics, not a tuning failure.
 
 ## Known rough edges
 
-- **The flange mount follows forgeUltra's franka-chi convention.** Its composed
-  `fr3_link8`-to-palm transform is zero translation and quaternion
-  `(w, x, y, z) = (0.5, -0.5, -0.5, 0.5)`. The equivalent transforms in the
-  description Xacro and `mjcf/inspire_hand_on_flange.xml` must remain
-  synchronized.
+- **The flange mount follows the current physical installation.** The hand is
+  clocked 90 degrees from the legacy forgeUltra/franka-chi convention. A black,
+  10 mm-thick adapter flange offsets the palm along `fr3_link8`'s +z axis; the
+  composed rotation is approximately
+  `(w, x, y, z) = (0.7071, -0.7071, 0, 0)`. The equivalent
+  transforms in the description Xacro and `mjcf/inspire_hand_on_flange.xml`
+  must remain synchronized.
 - **The shipped scenes are right-handed.** `mjcf/inspire_hand_left.xml` is
   generated but no scene binds it; `sim.launch.py` refuses `hand_side:=left`
   under MuJoCo rather than silently simulating the wrong hand.

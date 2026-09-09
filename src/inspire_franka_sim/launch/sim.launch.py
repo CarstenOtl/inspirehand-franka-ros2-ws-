@@ -243,8 +243,9 @@ def generate_launch_description():
                 "hand_mount",
                 default_value="bench",
                 description="'bench' - the hand stands on the table beside the arm, "
-                "unattached (the default, matching the real setup). 'flange' - bolted "
-                "to the arm using forgeUltra's franka-chi flange-to-palm transform.",
+                "unattached (the default). 'flange' - bolted "
+                "to the arm with the current physical installation's 90-degree "
+                "clocking relative to the legacy mount.",
             ),
             DeclareLaunchArgument(
                 "hardware_type",

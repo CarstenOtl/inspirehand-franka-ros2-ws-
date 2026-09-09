@@ -3,8 +3,8 @@
 
        Differs from the bench scene only in binding fr3.xml's `end_effector`
        slot to the hand wrapper instead of the empty stub. The mount transform
-       lives in inspire_hand_on_flange.xml and matches forgeUltra's franka-chi
-       fr3_link8-to-palm transform.
+       lives in inspire_hand_on_flange.xml and matches the hand's 90-degree
+       clocking on the current physical installation.
 
        <attach> merges the hand's bodies, meshes, actuators, equality
        constraints and contact excludes into this model, and the hand keeps its

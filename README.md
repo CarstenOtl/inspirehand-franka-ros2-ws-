@@ -233,15 +233,15 @@ inside the arm's 1 kHz `read()`/`write()` and you stall the FCI loop, which ends
 the connection. Keeping the hand as its own node means its worst case costs the
 arm nothing.
 
-So "control both together" on hardware means publishing to both — which is all
-it *can* mean for two mechanically independent devices bolted to the same bench.
-There is no combined trajectory action and no shared clock. In simulation, where
-there is no serial link, they share a controller_manager and you get exactly
-that.
+So "control both together" on hardware means publishing to both independently.
+The hand is mechanically mounted to the arm, but its RS485 control remains
+separate from the FCI. There is no combined trajectory action and no shared
+clock. In simulation, where there is no serial link, they share a
+controller_manager and you get exactly that.
 
-If you later bolt the hand to the flange and want coordinated *planning* rather
-than coordinated commanding, the missing piece is a MoveIt config over the
-combined description — the description already supports `hand_mount:=flange`.
+For coordinated *planning* rather than coordinated commanding, the missing
+piece is a MoveIt config over the combined description — the description
+already supports the installed `hand_mount:=flange` arrangement.
 
 ### What that means on the ROS graph
 
@@ -439,10 +439,12 @@ no error at all — just a robot that quietly does the wrong thing.
   is a major version newer than the v2.6.0 line used previously on this machine,
   so treat the first FCI connection as unproven. `fci_check` is the cheapest
   first step.
-- **Flange mounting.** The default is a bench hand, which is how the hardware
-  actually sits. `hand_mount:=flange` uses forgeUltra's franka-chi mounting
-  convention: zero flange-to-palm translation and quaternion
-  `(w, x, y, z) = (0.5, -0.5, -0.5, 0.5)`. The equivalent transforms in the
+- **Flange mounting.** The default remains a bench hand. With
+  `hand_mount:=flange`, the current physical hand is clocked 90 degrees from
+  the legacy forgeUltra/franka-chi installation. A black, 10 mm-thick adapter
+  flange offsets the palm along `fr3_link8`'s +z axis. The flange-to-palm
+  quaternion is approximately
+  `(w, x, y, z) = (0.7071, -0.7071, 0, 0)`. The equivalent transforms in the
   Xacro and MJCF wrapper must remain synchronized.
 
 ### A note on linters

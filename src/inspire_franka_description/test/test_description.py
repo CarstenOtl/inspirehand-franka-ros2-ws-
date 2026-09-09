@@ -88,8 +88,10 @@ def test_the_bench_hand_hangs_off_the_world_not_the_arm():
 
 def test_the_flange_hand_hangs_off_the_arm():
     root = expand(hand_mount="flange")
-    _, parents = tree(root)
+    links, parents = tree(root)
     assert parents["hand_mount"] == "fr3_link8"
+    assert "hand_adapter_flange" in links
+    assert parents["hand_adapter_flange"] == "fr3_link8"
 
     mount = next(
         joint for joint in root.findall("joint")
@@ -97,10 +99,34 @@ def test_the_flange_hand_hangs_off_the_arm():
     )
     origin = mount.find("origin")
     assert [float(value) for value in origin.get("xyz").split()] == pytest.approx(
-        [0.0, 0.0, 0.0]
+        [0.0, 0.0, 0.010]
     )
     assert [float(value) for value in origin.get("rpy").split()] == pytest.approx(
-        [0.0, 0.0, -math.pi / 2]
+        [0.0, 0.0, math.pi]
+    )
+
+    adapter_joint = next(
+        joint for joint in root.findall("joint")
+        if joint.get("name") == "hand_adapter_flange_joint"
+    )
+    adapter_origin = adapter_joint.find("origin")
+    assert [float(value) for value in adapter_origin.get("xyz").split()] == pytest.approx(
+        [0.0, 0.0, 0.005]
+    )
+
+    adapter_link = next(
+        link for link in root.findall("link")
+        if link.get("name") == "hand_adapter_flange"
+    )
+    mesh = adapter_link.find("visual/geometry/mesh")
+    assert mesh is not None
+    assert mesh.get("filename") == (
+        "package://inspire_franka_description/meshes/adapter_flange.stl"
+    )
+    color = adapter_link.find("visual/material/color")
+    assert color is not None
+    assert [float(value) for value in color.get("rgba").split()] == pytest.approx(
+        [0.025, 0.025, 0.025, 1.0]
     )
 
 

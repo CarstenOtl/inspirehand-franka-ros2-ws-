@@ -1,6 +1,6 @@
 # TienKung 2 Pro right-hand meshes
 
-The 13 STL files in this directory are copied byte-for-byte from
+The 13 vendor STL files in this directory are copied byte-for-byte from
 `tiangong2pro_urdf/meshes` in Open-X-Humanoid's official `TienKung_URDF`
 repository:
 
@@ -12,6 +12,11 @@ adjacent MJCF scenes come from
 `tiangong2pro_urdf/urdf/tiangong2.0_complete_with_hands.xacro` at that commit.
 Only the FR3 flange adapter and the workcell AprilTag/tip markers are local
 integration details.
+
+`adapter_flange.stl` is the locally generated FR3-to-hand mounting spacer. Its
+compact binary STL is a closed 32-sided cylinder, 76 mm in diameter and 10 mm
+thick, centred on its mesh origin. The MJCF places that origin 5 mm above
+`fr3_link8`, making the part span the full 0--10 mm gap to the palm.
 
 `apriltag_36h11_id0_dorsal.obj` is not a replacement hand mesh. It is a local,
 surface-following visual sheet sampled from `R_base_link.STL`, with its back

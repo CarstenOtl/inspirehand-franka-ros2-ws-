@@ -22,9 +22,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import signal
+import struct
 import sys
 import time
 from typing import Any
+import xml.etree.ElementTree as ET
 
 import numpy as np
 
@@ -60,8 +62,9 @@ HAND_FOLLOWERS = (
     "thumb_distal_joint",
 )
 CONTROLLED_JOINTS = ARM_JOINTS + HAND_JOINTS
-# FR3 adapter for the official TienKung 2 Pro hand coordinate frame.
-TIENKUNG_FLANGE_TO_PALM_QUAT = np.array((2**-0.5, 0.0, 0.0, -(2**-0.5)))
+# Current physical FR3 adapter for the official TienKung 2 Pro hand coordinate
+# frame, clocked 90 degrees from the legacy installation.
+TIENKUNG_FLANGE_TO_PALM_QUAT = np.array((0.0, 0.0, 0.0, 1.0))
 PICKUP_INIT = dict(
     zip(
         CONTROLLED_JOINTS,
@@ -72,7 +75,7 @@ PICKUP_INIT = dict(
             -1.811251,
             0.592754,
             2.280553,
-            -2.620279,
+            0.0,
             1.0999,
             1.0999,
             1.0999,
@@ -276,7 +279,9 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
     flange_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, "fr3_link8")
     palm_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, "hand_base_link")
 
-    assert np.allclose(data.xpos[palm_id], data.xpos[flange_id], atol=1e-9)
+    flange_z = data.xmat[flange_id].reshape(3, 3)[:, 2]
+    expected_palm_position = data.xpos[flange_id] + 0.010 * flange_z
+    assert np.allclose(data.xpos[palm_id], expected_palm_position, atol=1e-9)
     flange_inverse = data.xquat[flange_id].copy()
     flange_inverse[1:] *= -1.0
     flange_to_palm = np.empty(4)
@@ -295,13 +300,29 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
                 hand_body_ids.add(body_id)
                 break
             ancestor = int(model.body_parentid[ancestor])
-    hand_geom_ids = [
+    hand_visual_geom_ids = [
         geom_id for geom_id in range(model.ngeom)
         if int(model.geom_bodyid[geom_id]) in hand_body_ids
+        and int(model.geom_group[geom_id]) == 1
     ]
-    assert hand_geom_ids
-    for geom_id in hand_geom_ids:
-        assert np.allclose(model.geom_rgba[geom_id], (1.0, 1.0, 1.0, 1.0))
+    assert hand_visual_geom_ids
+    for geom_id in hand_visual_geom_ids:
+        body_name = mujoco.mj_id2name(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            int(model.geom_bodyid[geom_id]),
+        )
+        material_name = mujoco.mj_id2name(
+            model,
+            mujoco.mjtObj.mjOBJ_MATERIAL,
+            int(model.geom_matid[geom_id]),
+        )
+        expected = (
+            "hand_rubber"
+            if body_name in {"thumb_proximal", "thumb_distal"}
+            else "hand_shell"
+        )
+        assert material_name == expected
 
     for joint_name in CONTROLLED_JOINTS:
         actuator_id = _named_id(
@@ -343,6 +364,67 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
         final_error = abs(float(data.qpos[qpos_address]) - target)
         assert final_error < initial_error[joint_name]
         assert final_error < 0.01
+
+
+def test_only_the_thumb_uses_the_rubber_material() -> None:
+    """Keep cosmetic finger coloring out of both distributed scenes."""
+    scenes = (DEFAULT_SCENE, ASSET_DIR / "fr3_inspirehand_replay.xml")
+    for scene in scenes:
+        root = ET.parse(scene).getroot()
+        colored_meshes = [
+            geom.get("mesh")
+            for geom in root.findall(".//geom[@material='hand_rubber']")
+        ]
+        assert colored_meshes == ["hand_right_thumb_2", "hand_right_thumb_4"]
+
+
+def test_dummy_scene_starts_joint7_at_zero() -> None:
+    root = ET.parse(DEFAULT_SCENE).getroot()
+    start = root.find(".//key[@name='start']")
+    assert start is not None
+    qpos = [float(value) for value in start.get("qpos").split()]
+    assert PICKUP_INIT["fr3_joint7"] == 0.0
+    assert qpos[ARM_JOINTS.index("fr3_joint7")] == 0.0
+
+
+def test_assets_have_the_black_ten_millimeter_adapter_flange() -> None:
+    stl_path = ASSET_DIR / "hand" / "adapter_flange.stl"
+    stl = stl_path.read_bytes()
+    face_count = struct.unpack_from("<I", stl, 80)[0]
+    assert face_count == 128
+    assert len(stl) == 84 + face_count * 50
+    vertices = []
+    for face in range(face_count):
+        values = struct.unpack_from("<12fH", stl, 84 + face * 50)
+        vertices.extend(
+            tuple(values[index:index + 3]) for index in (3, 6, 9)
+        )
+    assert vertices
+    assert np.isclose(min(vertex[2] for vertex in vertices), -0.005)
+    assert np.isclose(max(vertex[2] for vertex in vertices), 0.005)
+    assert np.isclose(
+        max(np.hypot(vertex[0], vertex[1]) for vertex in vertices), 0.038
+    )
+
+    scenes = (DEFAULT_SCENE, ASSET_DIR / "fr3_inspirehand_replay.xml")
+    for scene in scenes:
+        root = ET.parse(scene).getroot()
+        mesh = root.find(".//asset/mesh[@name='hand_adapter_flange_mesh']")
+        assert mesh is not None
+        assert mesh.get("file") == "hand/adapter_flange.stl"
+
+        flange = root.find(".//geom[@name='hand_adapter_flange']")
+        assert flange is not None
+        assert flange.get("type") == "mesh"
+        assert flange.get("mesh") == "hand_adapter_flange_mesh"
+        assert flange.get("pos") == "0 0 0.005"
+        assert flange.get("material") == "flange_black"
+
+        palm = root.find(".//body[@name='hand_base_link']")
+        if palm is None:
+            palm = root.find(".//body[@name='palm']")
+        assert palm is not None
+        assert palm.get("pos") == "0 0 0.010"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
