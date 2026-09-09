@@ -46,6 +46,7 @@ rg2() {
 # simulator. See the repo README.
 rg2test() {
   ( cd /root/develop_ws \
+    && python3 -m pytest -q apps/operations \
     && colcon test --packages-select \
          inspire_hand_driver inspire_hand_description \
          inspire_franka_description inspire_franka_sim \
