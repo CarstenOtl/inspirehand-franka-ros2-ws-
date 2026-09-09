@@ -72,3 +72,29 @@ def test_calibration_model_has_physical_flange_clocking_and_adapter():
     assert _numbers(hand.get("pos"), ()) == (0.0, 0.0, 0.010)
     # MuJoCo quaternion order is wxyz; (0, 0, 0, 1) is yaw=pi.
     assert _numbers(hand.get("quat"), ()) == (0.0, 0.0, 0.0, 1.0)
+
+
+def test_calibration_target_is_flat_2p3_mm_plate_at_measured_corner():
+    root = ET.parse(ROBOT_SCENE).getroot()
+    tag = root.find(".//body[@name='apriltag_0']")
+    assert tag is not None
+
+    # The first black pixel is the upper-left corner of the 40 mm black square
+    # in the plate body's UV orientation.
+    hand_to_first_black = _body_transform(tag) @ np.asarray(
+        (-0.020, -0.020, 0.0023, 1.0)
+    )
+    np.testing.assert_allclose(hand_to_first_black[1], -0.020545646, atol=1.0e-12)
+    np.testing.assert_allclose(hand_to_first_black[2], 0.080, atol=1.0e-12)
+
+    plate_path = ROBOT_SCENE.parent / "hand" / "apriltag_36h11_id0_dorsal.obj"
+    vertices = np.asarray(
+        [
+            tuple(float(value) for value in line.split()[1:])
+            for line in plate_path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("v ")
+        ]
+    )
+    assert vertices.shape == (8, 3)
+    np.testing.assert_allclose(vertices.min(axis=0), (-0.025, -0.025, 0.0))
+    np.testing.assert_allclose(vertices.max(axis=0), (0.025, 0.025, 0.0023))

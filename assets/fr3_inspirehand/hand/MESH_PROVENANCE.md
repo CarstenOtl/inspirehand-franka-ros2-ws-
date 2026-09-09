@@ -18,9 +18,9 @@ compact binary STL is a closed 32-sided cylinder, 76 mm in diameter and 10 mm
 thick, centred on its mesh origin. The MJCF places that origin 5 mm above
 `fr3_link8`, making the part span the full 0--10 mm gap to the palm.
 
-`apriltag_36h11_id0_dorsal.obj` is not a replacement hand mesh. It is a local,
-surface-following visual sheet sampled from `R_base_link.STL`, with its back
-0.05 mm outside the shell so the marker is visible without a floating gap. The
-36h11 id 0 black square is 40 mm; its one-cell quiet zone makes the complete
-textured sheet 50 mm square. Its print is rotated 180 degrees to match the
-physical workcell hand.
+`apriltag_36h11_id0_dorsal.obj` is not a replacement hand mesh. It is the local,
+flat 2.3 mm dorsal mounting plate used on the physical workcell hand. The 36h11
+id 0 black square is 40 mm; its one-cell quiet zone makes the complete textured
+face 50 mm square. The upper-left black corner is 20 mm from the little-finger
+rim and 80 mm from the palm's z=0 flange datum. Its print is rotated 180 degrees
+to match the physical workcell hand.

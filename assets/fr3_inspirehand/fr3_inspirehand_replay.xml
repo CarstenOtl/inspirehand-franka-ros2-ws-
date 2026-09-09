@@ -7,7 +7,8 @@
        All mesh paths are relative to this file and stay inside this asset
        bundle. fr3_link8 is the flange frame, 107 mm beyond fr3_link7. The hand
        geometry and physical settings come from Open-X-Humanoid's official
-       TienKung 2 Pro URDF; a -pi/2 adapter aligns it with the FR3 flange. -->
+       TienKung 2 Pro URDF; a pi-yaw adapter flips the hand from its zero-yaw
+       pose and places it 90 degrees from the legacy physical FR3 adapter. -->
 
   <compiler angle="radian" meshdir="./"/>
 
@@ -70,10 +71,10 @@
     <material name="forge_nut" rgba="0.84 0.84 0.88 1"/>
     <material name="recorded_tcp" rgba="0.1 1 0.2 0.85"/>
     <material name="replayed_tcp" rgba="1 0.1 0.8 0.85"/>
-    <!-- Appearance sampled from the physical Inspire hand: warm molded shell
-         and low-gloss charcoal rubber. -->
+    <!-- Warm molded shell with low-gloss charcoal retained only on the thumb. -->
     <material name="hand_shell" rgba="0.94 0.93 0.90 1" specular="0.12" shininess="0.18"/>
     <material name="hand_rubber" rgba="0.035 0.040 0.040 1" specular="0.04" shininess="0.08"/>
+    <material name="flange_black" rgba="0.025 0.025 0.025 1" specular="0.15" shininess="0.2"/>
     <material name="apriltag_36h11_id0" texture="apriltag_36h11_id0_texture"
       rgba="1 1 1 1" texuniform="false" reflectance="0" specular="0" shininess="0"/>
     <mesh name="forge_m24_nut" file="forge_nut_bolt/m24/m24_nut.stl"/>
@@ -93,6 +94,7 @@
     <mesh name="hand_right_ring_2" content_type="model/stl" file="hand/right_ring_2.STL"/>
     <mesh name="hand_right_little_1" content_type="model/stl" file="hand/right_little_1.STL"/>
     <mesh name="hand_right_little_2" content_type="model/stl" file="hand/right_little_2.STL"/>
+    <mesh name="hand_adapter_flange_mesh" content_type="model/stl" file="hand/adapter_flange.stl"/>
     <mesh name="hand_apriltag_36h11_id0_dorsal" content_type="model/obj" file="hand/apriltag_36h11_id0_dorsal.obj"/>
     <mesh name="link0_0" content_type="model/obj" file="fr3/mujoco_visual/link0_0.obj"/>
     <mesh name="link0_1" content_type="model/obj" file="fr3/mujoco_visual/link0_1.obj"/>
@@ -235,17 +237,19 @@
                       <site name="attachment_site" pos="0 0 0.107"/>
                       <frame childclass="fr3">
                         <body name="fr3_link8" pos="0 0 0.107">
-                          <body name="palm" quat="0.707106781187 0 0 -0.707106781187" childclass="official_hand">
+                          <!-- 10 mm physical adapter, 76 mm diameter: slightly
+                               larger than the hand's approximately 68 mm wrist. -->
+                          <geom name="hand_adapter_flange" class="hand_visual" type="mesh"
+                            mesh="hand_adapter_flange_mesh" pos="0 0 0.005" material="flange_black"/>
+                          <body name="palm" pos="0 0 0.010" quat="0 0 0 1" childclass="official_hand">
                             <inertial pos="0.00252515168164585 -0.001960054926157 0.0660467739648412" mass="0.38756" fullinertia="0.00059831308 0.00050077156 0.00018467082 5.60829e-06 2.87014e-06 3.4831e-06"/>
                             <geom class="hand_visual" mesh="hand_R_base_link"/>
                             <geom class="hand_collision" mesh="hand_R_base_link"/>
-                            <!-- Cosmetic-only wrist ring and finger rubber. These
-                                 preserve the official meshes and collision model. -->
-                            <geom class="hand_visual" type="cylinder" size="0.034 0.006" pos="0 0 -0.003" material="hand_rubber"/>
-                            <!-- Surface-following 36h11 id 0 AprilTag. The upper-left black
-                                 pixel of its 40 mm black square is 20 mm from the
-                                 little-finger rim and 72 mm from the z=0 flange datum. -->
-                            <body name="apriltag_0" pos="-0.0167393301541 -0.00054590719508 0.0919997377377" quat="0.708914668772 -0.00074545545918 -0.705293467481 -0.000749282864928">
+                            <!-- Planar 2.3 mm dorsal plate carrying 36h11 id 0. The
+                                 upper-left black pixel of its 40 mm black square is
+                                 20 mm from the little-finger rim and 80 mm from the
+                                 hand's z=0 flange datum. -->
+                            <body name="apriltag_0" pos="-0.0167393301541 -0.000550769066731 0.0999879591202" quat="0.708914668772 -0.00074545545918 -0.705293467481 -0.000749282864928">
                               <geom name="apriltag_36h11_id0" type="mesh" mesh="hand_apriltag_36h11_id0_dorsal" material="apriltag_36h11_id0" rgba="1 1 1 1" contype="0" conaffinity="0" group="2" density="0"/>
                               <site name="apriltag_0_frame" type="box" size="0.020 0.020 0.0006" rgba="0 0 0 0" group="4"/>
                             </body>
@@ -278,14 +282,11 @@
                               <inertial pos="0.000852715296526529 0.0119735955318245 -0.00599986563267159" mass="0.01229" fullinertia="1.93998e-06 5.6245e-07 2.05872e-06 -1.5035e-07 -4.1e-10 -3.49e-09"/>
                               <joint name="index_joint_0" axis="0 -0.069756 -0.997564" range="0 1.333"/>
                               <geom class="hand_visual" mesh="hand_right_index_1"/>
-                              <geom class="hand_visual" type="ellipsoid" size="0.0115 0.0055 0.0073" pos="0 -0.002 -0.006" material="hand_rubber"/>
                               <geom class="hand_collision" mesh="hand_right_index_1"/>
                               <body name="index_link_1" pos="0.008099 0.031095 -0.001">
                                 <inertial pos="0.00408342999190195 0.0192600939391442 -0.00500000380847467" mass="0.00633" fullinertia="9.4327e-07 2.897e-07 1.14024e-06 -3.8912e-07 -2e-11 -5e-11"/>
                                 <joint name="index_joint_1" axis="0 0 -1" range="0 1.527"/>
                                 <geom class="hand_visual" mesh="hand_right_index_2"/>
-                                <geom class="hand_visual" type="ellipsoid" size="0.0085 0.006 0.0065" pos="-0.0015 0 -0.005" material="hand_rubber"/>
-                                <geom class="hand_visual" type="ellipsoid" size="0.007 0.0065 0.0058" pos="0.011 0.038 -0.005" material="hand_rubber"/>
                                 <geom class="hand_collision" mesh="hand_right_index_2"/>
                                 <body name="index_tip" pos="0.004 0.043 -0.005"/>
                               </body>
@@ -294,14 +295,11 @@
                               <inertial pos="0.000852855866232599 0.011973606798452 -0.00399984588006246" mass="0.01229" fullinertia="1.94e-06 5.6248e-07 2.05872e-06 -1.5036e-07 -9.9e-10 -5.01e-09"/>
                               <joint name="middle_joint_0" axis="0 0 -1" range="0 1.333"/>
                               <geom class="hand_visual" mesh="hand_right_middle_1"/>
-                              <geom class="hand_visual" type="ellipsoid" size="0.0115 0.0055 0.0073" pos="0 -0.002 -0.004" material="hand_rubber"/>
                               <geom class="hand_collision" mesh="hand_right_middle_1"/>
                               <body name="middle_link_1" pos="0.0081 0.031095 0.001">
                                 <inertial pos="0.0047113458880482 0.0203465768773643 -0.00500003269708214" mass="0.00681" fullinertia="1.18348e-06 3.558e-07 1.43878e-06 -5.0397e-07 0 0"/>
                                 <joint name="middle_joint_1" axis="0 0 -1" range="0 1.527"/>
                                 <geom class="hand_visual" mesh="hand_right_middle_2"/>
-                                <geom class="hand_visual" type="ellipsoid" size="0.0085 0.006 0.0065" pos="-0.0015 0 -0.005" material="hand_rubber"/>
-                                <geom class="hand_visual" type="ellipsoid" size="0.007 0.0065 0.0058" pos="0.014 0.041 -0.005" material="hand_rubber"/>
                                 <geom class="hand_collision" mesh="hand_right_middle_2"/>
                               </body>
                             </body>
@@ -309,14 +307,11 @@
                               <inertial pos="0.00085245845917839 0.0119734648811593 -0.00599989251266642" mass="0.01229" fullinertia="1.93998e-06 5.6244e-07 2.05872e-06 -1.5033e-07 -5.1e-10 -3.52e-09"/>
                               <joint name="ring_joint_0" axis="0 0 -1" range="0 1.333"/>
                               <geom class="hand_visual" mesh="hand_right_ring_1"/>
-                              <geom class="hand_visual" type="ellipsoid" size="0.0115 0.0055 0.0073" pos="0 -0.002 -0.006" material="hand_rubber"/>
                               <geom class="hand_collision" mesh="hand_right_ring_1"/>
                               <body name="ring_link_1" pos="0.008099 0.031095 -0.001">
                                 <inertial pos="0.00408287363348225 0.0192599767415159 -0.00499998343104271" mass="0.00633" fullinertia="9.4329e-07 2.9615e-07 1.13377e-06 -3.8762e-07 -3.394e-08 -7.389e-08"/>
                                 <joint name="ring_joint_1" axis="0 0 -1" range="0 1.527"/>
                                 <geom class="hand_visual" mesh="hand_right_ring_2"/>
-                                <geom class="hand_visual" type="ellipsoid" size="0.0085 0.006 0.0065" pos="-0.0015 0 -0.005" material="hand_rubber"/>
-                                <geom class="hand_visual" type="ellipsoid" size="0.007 0.0065 0.0058" pos="0.011 0.038 -0.005" material="hand_rubber"/>
                                 <geom class="hand_collision" mesh="hand_right_ring_2"/>
                               </body>
                             </body>
@@ -324,14 +319,11 @@
                               <inertial pos="0.000851610973032574 0.0119735303202265 -0.00599989467442243" mass="0.01229" fullinertia="1.94e-06 5.6242e-07 2.05872e-06 -1.5023e-07 -3e-10 -3.18e-09"/>
                               <joint name="little_joint_0" axis="0 0 -1" range="0 1.333"/>
                               <geom class="hand_visual" mesh="hand_right_little_1"/>
-                              <geom class="hand_visual" type="ellipsoid" size="0.0115 0.0055 0.0073" pos="0 -0.002 -0.006" material="hand_rubber"/>
                               <geom class="hand_collision" mesh="hand_right_little_1"/>
                               <body name="little_link_1" pos="0.008097 0.031096 -0.001">
                                 <inertial pos="0.00273929963119374 0.0161600317264199 -0.00499667765900381" mass="0.00525" fullinertia="5.5787e-07 1.8624e-07 6.6906e-07 -2.175e-07 0 0"/>
                                 <joint name="little_joint_1" axis="0 0 -1" range="0 1.527"/>
                                 <geom class="hand_visual" mesh="hand_right_little_2"/>
-                                <geom class="hand_visual" type="ellipsoid" size="0.0085 0.006 0.0065" pos="-0.0015 0 -0.005" material="hand_rubber"/>
-                                <geom class="hand_visual" type="ellipsoid" size="0.007 0.0065 0.0058" pos="0.0073 0.031 -0.005" material="hand_rubber"/>
                                 <geom class="hand_collision" mesh="hand_right_little_2"/>
                               </body>
                             </body>

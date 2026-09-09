@@ -248,23 +248,25 @@ def _absolute_asset_xml_with_camera(
                 raise FileNotFoundError(f"MuJoCo asset not found: {asset_path}")
             element.set("file", str(asset_path))
 
-    # The appearance model can wrap the tag over the curved hand shell, while
-    # IPPE_SQUARE (and a real tag fixed to a rigid backing) assumes a plane.
-    # Inject an explicitly UV-mapped 50 mm carrier.  The texture has a 640/800
-    # black-square ratio, hence its metric black edge is exactly 40 mm.
+    # Inject an explicitly UV-mapped copy of the 50 mm planar plate face. The
+    # texture has a 640/800 black-square ratio, hence its metric black edge is
+    # exactly 40 mm.
     asset = root.find("asset")
     tag_geom = root.find(".//geom[@name='apriltag_36h11_id0']")
     if asset is None or tag_geom is None:
         raise RuntimeError(f"{ROBOT_SCENE} has no AprilTag asset/geometry")
     planar_mesh_name = "sim_calibration_planar_apriltag"
+    printed_face_z = TAG_BODY_TO_PRINTED_TAG_XYZ[2]
     asset.append(
         ET.Element(
             "mesh",
             {
                 "name": planar_mesh_name,
                 "vertex": (
-                    "-0.025 -0.025 0.002  0.025 -0.025 0.002  "
-                    "0.025 0.025 0.002  -0.025 0.025 0.002"
+                    f"-0.025 -0.025 {printed_face_z}  "
+                    f"0.025 -0.025 {printed_face_z}  "
+                    f"0.025 0.025 {printed_face_z}  "
+                    f"-0.025 0.025 {printed_face_z}"
                 ),
                 # Preserve the existing tag texture's orientation relative to
                 # the apriltag_0 body: texture U=-Y and texture V=+X.
@@ -391,7 +393,7 @@ def _project_tag_corners(
 def _world_to_printed_tag_from_fk(data: Any, tag_body_id: int) -> np.ndarray:
     """Return the printed tag frame in the robot/world frame from MuJoCo FK."""
     world_to_tag_body = _pose(data.xpos[tag_body_id], data.xmat[tag_body_id])
-    # The in-memory planar mesh is 2 mm above the tag body.  Its UV mapping
+    # The in-memory planar face is on top of the 2.3 mm plate. Its UV mapping
     # rotates the printed AprilTag axes +90 degrees around the body's +Z.
     body_to_printed_tag = make_transform(
         quaternion_xyzw_to_matrix(TAG_BODY_TO_PRINTED_TAG_QUATERNION_XYZW),
