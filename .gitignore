@@ -4,6 +4,9 @@
 /log
 /logs/
 
+# Local reference worktree.
+/reference/
+
 # Local camera-calibration captures/results.
 /calibration_run*.log
 

@@ -62,6 +62,8 @@ namespace franka_trajectory_replay {
  *  - ``~/trajectory`` (trajectory_msgs/JointTrajectory): the trajectory to replay. Must start
  *    within ``max_trajectory_start_error`` of the current command. Points carrying velocities
  *    are interpolated with cubic Hermite splines, points without them linearly.
+ *  - ``~/pause`` / ``~/resume`` (std_msgs/Empty): smoothly ramp the trajectory clock to zero
+ *    and back to full speed. The controller keeps holding the reference while paused.
  *  - ``~/abort`` (std_msgs/Empty): decelerate smoothly to a stop and hold.
  *
  * Outputs:
@@ -140,6 +142,8 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
 
   void goto_callback(const sensor_msgs::msg::JointState::SharedPtr msg);
   void trajectory_callback(const trajectory_msgs::msg::JointTrajectory::SharedPtr msg);
+  void pause_callback(const std_msgs::msg::Empty::SharedPtr msg);
+  void resume_callback(const std_msgs::msg::Empty::SharedPtr msg);
   void abort_callback(const std_msgs::msg::Empty::SharedPtr msg);
   void publish_status();
   void reject(const std::string& reason);
@@ -168,6 +172,7 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
   double max_trajectory_start_error_{0.05};
   double trajectory_velocity_scale_{1.0};
   double trajectory_acceleration_scale_{1.0};
+  double pause_ramp_duration_{0.5};
   double abort_stop_duration_{0.5};
   /// One controller cycle. The arm delivers one state packet per millisecond and franka_hardware
   /// blocks on it, so a cycle is 1 ms of robot time whatever the wall clock measured.
@@ -183,6 +188,8 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
   rclcpp::Client<franka_msgs::srv::SetFullCollisionBehavior>::SharedPtr collision_client_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr goto_subscriber_;
   rclcpp::Subscription<trajectory_msgs::msg::JointTrajectory>::SharedPtr trajectory_subscriber_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr pause_subscriber_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr resume_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr abort_subscriber_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr status_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
@@ -194,6 +201,7 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
   uint64_t next_command_id_{0};  ///< only touched by the single-threaded executor callbacks
   std::atomic<int> phase_{static_cast<int>(Phase::kIdle)};
   std::atomic<uint64_t> active_command_id_{0};
+  std::atomic<uint64_t> processed_command_id_{0};
   std::atomic<uint64_t> completed_command_id_{0};
   std::atomic<double> phase_elapsed_{0.0};
   std::atomic<double> phase_duration_{0.0};
@@ -201,6 +209,9 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
   std::atomic<uint64_t> rate_limit_engaged_last_command_{0};
   std::atomic<bool> command_initialized_{false};
   std::atomic<bool> is_active_{false};
+  std::atomic<bool> pause_requested_{false};
+  std::atomic<bool> paused_{false};
+  std::atomic<double> playback_rate_{1.0};
   std::array<std::atomic<double>, kNumJoints> measured_positions_snapshot_;
   std::array<std::atomic<double>, kNumJoints> command_snapshot_;
   std::string last_rejection_;  ///< executor thread only
@@ -213,6 +224,10 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
   size_t rt_segment_hint_{0};
   double rt_elapsed_{0.0};
   double rt_duration_{0.0};
+  double rt_playback_rate_{1.0};
+  double rt_playback_target_{1.0};
+  double rt_rate_ramp_start_{1.0};
+  double rt_rate_ramp_elapsed_{0.0};
   Vector7d blend_start_;
   Vector7d blend_target_;
   Vector7d stop_velocity_;

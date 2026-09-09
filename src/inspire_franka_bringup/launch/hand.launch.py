@@ -1,6 +1,6 @@
 """The Inspire hand on real hardware, on its own.
 
-    ros2 launch inspire_franka_bringup hand.launch.py port:=/dev/ttyUSB0
+    ros2 launch inspire_franka_bringup hand.launch.py
     ros2 launch inspire_franka_bringup hand.launch.py mock:=true start_rviz:=true
 
 A thin wrapper over inspire_hand_driver's own launch, kept here so that the

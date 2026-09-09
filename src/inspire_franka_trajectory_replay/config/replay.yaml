@@ -28,10 +28,8 @@ timing:
   cycles: 1
   goto_timeout: 60.0
 
-# Rest-to-rest trajectory sent through the stock JointTrajectoryController.
-# The controller claims position interfaces, so franka_hardware uses the
-# robot-internal joint-impedance controller; these are path-shaping limits, not
-# impedance gains.
+# Legacy position-JTC client's homing limits (--arm-controller position-jtc).
+# Hardware effort replay uses goto_* in controllers_joint_impedance.yaml.
 goto:
   max_velocity: 0.5
   max_acceleration: 1.0

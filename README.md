@@ -15,6 +15,7 @@ docker/                          dev image, compose, entrypoint
 docs/hand.md                     RS485 wiring, bring-up, and the driver's interface
 docs/network.md                  network layout and FCI access
 apps/camera_calibration/         calibration entry scripts, utilities, and hardware tests
+apps/operations/                 one-shot hand-zero and FR3-home commands
 .gitmodules                     external ROS repositories
 src/
   inspire_hand_msgs/             service definitions for the hand
@@ -72,30 +73,54 @@ ros2 launch inspire_franka_sim passive_viewer.launch.py
 ros2 run inspire_franka_bringup fci_check 172.16.0.2               # is the FCI up?
 ros2 run inspire_hand_driver inspire_hand_probe /dev/ttyUSB0      # is the hand up?
 
-ros2 launch inspire_franka_bringup inspire_franka.launch.py \
-    hand_port:=/dev/ttyUSB0                                       # both
+ros2 launch inspire_franka_bringup inspire_franka.launch.py       # both
 
 ros2 launch inspire_franka_bringup arm.launch.py                  # arm alone
 ros2 launch inspire_franka_bringup arm.launch.py \
     gravity_compensation:=true                                    # arm, hand-guiding/float mode
-ros2 launch inspire_franka_bringup hand.launch.py port:=/dev/ttyUSB0  # hand alone
+ros2 launch inspire_franka_bringup hand.launch.py                 # hand alone
 
-# Coordinated replay: this launch replaces ordinary bringup for the session.
-ros2 launch inspire_franka_trajectory_replay replay.launch.py \
-    hand_port:=/dev/ttyUSB0
+# In another sourced shell, zero/open the hand or home the arm. The arm command
+# asks for confirmation and uses the valid Franka ready pose (not seven zeros).
+./apps/operations/zero_hand.py
+./apps/operations/home_arm.py
+# Options and safety behavior: apps/operations/README.md
+
+# Coordinated replay: example joint-impedance effort law + recorded waypoints.
+# This launch replaces ordinary bringup for the session.
+ros2 launch inspire_franka_trajectory_replay replay.launch.py
 
 # Either device alone. The runner flag must match the launch argument:
 # arm:=false with --no-arm, hand:=false with --no-hand.
 ros2 launch inspire_franka_trajectory_replay replay.launch.py \
-    hand_port:=/dev/ttyUSB0 arm:=false
+    arm:=false
 
-# In another sourced shell: home from YAML, then replay one recorded rollout.
+# In another sourced shell: run the hardware-validated threading baseline.
+# This artifact includes the +90-degree joint-7 retarget required by the
+# physical 180-degree flange mount. Do not substitute raw traj_1 for the arm.
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
-    apps/traj_replay/demo_trajs/traj_1 --cycle 1 \
-    --home apps/traj_replay/demo_trajs/homing/threading.yaml
+    apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
+    --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
+    --close-support-fingers
 
-# Hand only. Replays on the recording's own clock, not the arm's scaled one,
-# so no FR3 limit check applies - see the package README.
+# Pickup rollout with live scene-adjustment pauses. During replay, SPACE
+# smoothly pauses and holds both devices; SPACE resumes and q aborts.
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    apps/traj_replay/demo_trajs/pickup_1 --env 0 --segment 1 \
+    --home apps/traj_replay/demo_trajs/homing/pickup_multi.yaml \
+    --interactive-pause
+
+# Slow every recorded waypoint interval (and the interpolated stream) by 5x.
+# The coordinated hand follows the same scaled trajectory clock.
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
+    --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
+    --close-support-fingers \
+    --time-scale 5
+
+# Hand only. Raw traj_1 remains valid here because --no-arm never commands
+# joint 7. It is otherwise a source/legacy-mount artifact, not a hardware-arm
+# baseline. Hand-only replay uses the recording's own clock.
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
     apps/traj_replay/demo_trajs/traj_1 --cycle 1 --no-arm \
     --home apps/traj_replay/demo_trajs/homing/threading.yaml
@@ -440,6 +465,7 @@ Everything that can be checked without hardware or a simulator is a test, and
 | `inspire_franka_description` | every launch variant expands to one root link with no dangling joints; `ros2_control` names only joints that exist; followers expose no command interface; unsupported combinations fail loudly |
 | `inspire_franka_sim` | every MJCF scene compiles; joint sets per scene; actuators only on driven joints; couplings equal the URDF's; zero contacts at rest; the flange hand matches the combined URDF |
 | `camera_calibration` | synthetic eye-to-hand recovery, SE(3) conventions, outlier rejection and degenerate-motion detection; AprilTag corner ordering; generated pose programs against joint limits, field of view and rotation spread; standstill detection; clock-offset recovery; and the whole automated run against a simulated arm and camera |
+| `apps/operations` | valid FR3 home target and limits, namespace/prefix handling, feedback matching, and safe controller-conflict selection |
 
 The two that matter most are the cross-checks. `ros2_control` matches the
 description to the simulator **by joint name and nothing else**, so a joint that
@@ -477,17 +503,25 @@ no error at all — just a robot that quietly does the wrong thing.
   (`apps/camera_calibration/tests/test_auto_calibration.py`). **Still to do on
   hardware:** teach the seed poses, run it, and confirm the residual and the
   measured delay against the numbers above.
-- **Trajectory replay — simulation complete, hardware validation deferred to a
-  PREEMPT_RT workstation.** The retargeted `threading_5x_flange180` artifact and
-  the complete stock position-`JointTrajectoryController` path pass the 49.65 s
-  MuJoCo replay. On this generic `PREEMPT_DYNAMIC`/`powersave` host, the real FR3
-  accepts and begins the home action but stops on
-  `joint_motion_generator_acceleration_discontinuity`. An experiment with
-  libfranka's position-rate limiter did not resolve it and was discarded; the
-  Franka submodules remain at their pinned upstream revisions. Do not keep
-  repeating that hardware test here. The RT-host checklist and the
-  robot-time-paced position-adapter fallback are recorded in
-  `src/inspire_franka_trajectory_replay/README.md`.
+- **Trajectory replay — example joint-impedance effort mode is now the hardware
+  default.** The user confirmed the simple upstream example works on the FR3
+  and the host has a real-time kernel. Replay now uses that example's PD torque
+  law and gains with a waypoint reference, through the existing replay plugin.
+  The previous position-JTC path reflexed during homing; its passing MuJoCo
+  run does not validate the new effort path. On 2026-09-08, the user confirmed
+  the current simple joint-impedance replay works well on the arm; quantitative
+  tracking accuracy has not been measured. See `src/inspire_franka_trajectory_replay/README.md`
+  for build and arm-only test commands. The retained MuJoCo replay launch needs
+  `--arm-controller position-jtc` on the runner.
+  On 2026-09-09, coordinated threading cycle 1 was confirmed on hardware with
+  the correct tool orientation and a good replay using the 180-degree flange
+  baseline: a `+90 deg` retarget of `fr3_joint7`, its matching retargeted home,
+  and `--close-support-fingers`. The checked-in
+  `demo_trajs/threading_cycle1_flange180` artifact is the default hardware
+  baseline. The retargeted `threading_5x_flange180` five-cycle run was then
+  confirmed on hardware at 5x slowdown with interactive pause. Raw `traj_1`,
+  raw `homing/threading.yaml`, and unretargeted `threading_5x` remain outdated
+  for arm replay with the current mount.
 - **Simulation — verified end to end.** MuJoCo runs headless with
   `MujocoSystemInterface` active at 1 kHz, all three controllers active, sim
   clock advancing. Arm and hand trajectories sent *simultaneously* both report

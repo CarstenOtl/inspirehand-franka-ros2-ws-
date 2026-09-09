@@ -3,22 +3,21 @@
     ros2 launch inspire_franka_trajectory_replay sim_replay.launch.py
 
 Then, in a second sourced shell, the runner exactly as on hardware -- same
-executable, same arguments, no simulation flag:
+executable, with an explicit selection of the legacy position controller:
 
     ros2 run inspire_franka_trajectory_replay replay_trajectory \\
-        apps/traj_replay/demo_trajs/traj_1 --cycle 1 --yes
+        apps/traj_replay/demo_trajs/traj_1 --cycle 1 --arm-controller position-jtc
 
-This is the simulation counterpart of ``replay.launch.py`` and deliberately
-keeps the same interface, so what is exercised here is the real path: the stock
-``JointTrajectoryController`` action over position commands, and the RS485
-driver's own command path for the hand.
+This launch preserves the stock ``JointTrajectoryController`` position-based
+simulation. Hardware replay now defaults to the simple joint-impedance example's
+effort law; this simulation does not validate that hardware torque controller.
 
 How the two devices get into the simulator
 ------------------------------------------
 The arm is direct: ``inspire_franka_description``'s ``fr3.ros2_control.xacro``
 exports position commands and position/velocity state under
 ``MujocoSystemInterface``, which is exactly what the stock trajectory controller
-claims. The same action interface is therefore used in simulation and hardware.
+claims. The runner selects this action interface with --arm-controller position-jtc.
 
 The hand is not direct, because on hardware it is not a ros2_control device at
 all. The driver runs in ``mock`` mode, ``inspire_hand_sim_bridge`` forwards what

@@ -58,6 +58,8 @@ class ReplayClient(Node):
         self._goto_publisher = self.create_publisher(JointState, self.controller_ns + '/goto', 1)
         self._trajectory_publisher = self.create_publisher(
             JointTrajectory, self.controller_ns + '/trajectory', 1)
+        self._pause_publisher = self.create_publisher(Empty, self.controller_ns + '/pause', 1)
+        self._resume_publisher = self.create_publisher(Empty, self.controller_ns + '/resume', 1)
         self._abort_publisher = self.create_publisher(Empty, self.controller_ns + '/abort', 1)
 
         self._lock = threading.Lock()
@@ -148,7 +150,7 @@ class ReplayClient(Node):
             'command_interface', 'rate_limit', 'k_gains', 'd_gains', 'goto_max_velocity',
             'goto_max_acceleration', 'goto_min_duration', 'max_joint_step',
             'max_trajectory_start_error', 'coriolis_compensation', 'set_collision_behavior',
-            'torque_rate_limit'])
+            'torque_rate_limit', 'pause_ramp_duration'])
 
     def robot_description(self):
         return self.remote_parameters(
@@ -220,7 +222,7 @@ class ReplayClient(Node):
         return int(status['active_command_id']), int(status['completed_command_id']), int(status['rejections'])
 
     def _wait_command(self, active_before, rejections_before, timeout, description,
-                      accept_timeout=5.0, on_accept=None):
+                      accept_timeout=5.0, on_accept=None, allow_pauses=False):
         def accepted():
             status = self.status()
             return status is not None and (int(status['active_command_id']) > active_before
@@ -233,17 +235,34 @@ class ReplayClient(Node):
         if on_accept is not None:
             on_accept()
 
-        def progress():
-            status = self.status()
-            if status:
-                print('  %s: %.1f / %.1f s' % (status['phase_name'], float(status['elapsed']),
-                                              float(status['duration'])), flush=True)
-
         def finished():
             status = self.status()
             return status is not None and int(status['completed_command_id']) >= command_id \
                 and status['phase_name'] == 'idle'
-        self.wait_until(finished, timeout, 'the %s to finish' % description, progress)
+
+        # A deliberate interactive pause can last indefinitely. Count only
+        # unpaused wall time against the normal watchdog while continuing to
+        # require fresh controller status through status().
+        deadline = time.monotonic() + timeout
+        previous = time.monotonic()
+        last_report = 0.0
+        while True:
+            if finished():
+                break
+            now = time.monotonic()
+            status = self.status()
+            if allow_pauses and status and status.get('pause_requested') == 'true':
+                deadline += now - previous
+            if now >= deadline:
+                raise TimeoutError('timed out after %.1f active seconds waiting for the %s to finish'
+                                   % (timeout, description))
+            if status and now - last_report > 1.0:
+                state = 'paused' if status.get('paused') == 'true' else status['phase_name']
+                print('  %s: %.1f / %.1f s' % (state, float(status['elapsed']),
+                                               float(status['duration'])), flush=True)
+                last_report = now
+            previous = now
+            time.sleep(0.02)
         return command_id
 
     def goto(self, positions, timeout=None):
@@ -261,7 +280,7 @@ class ReplayClient(Node):
                 'end_ns': self.get_clock().now().nanoseconds}
 
     def send_trajectory(self, prepared, send_rate=None, timeout_margin=15.0,
-                        on_accept=None):
+                        on_accept=None, allow_pauses=False):
         """Send a prepared trajectory (positions and velocities) and block until it is done."""
         send_rate = float(send_rate or prepared.rate)
         stride = max(1, int(round(prepared.rate / send_rate)))
@@ -288,9 +307,31 @@ class ReplayClient(Node):
         self._trajectory_publisher.publish(message)
         command_id = self._wait_command(active_before, rejections_before,
                                         prepared.duration + timeout_margin, 'trajectory',
-                                        accept_timeout=15.0, on_accept=on_accept)
+                                        accept_timeout=15.0, on_accept=on_accept,
+                                        allow_pauses=allow_pauses)
         return {'command_id': command_id, 'start_ns': started_ns,
                 'end_ns': self.get_clock().now().nanoseconds, 'points_sent': int(len(points))}
+
+    def _set_paused(self, requested, timeout=2.0):
+        publisher = self._pause_publisher if requested else self._resume_publisher
+        publisher.publish(Empty())
+        expected = 'true' if requested else 'false'
+        self.wait_until(
+            lambda: (self.status() or {}).get('pause_requested') == expected,
+            timeout,
+            'the controller to acknowledge %s' % ('pause' if requested else 'resume'),
+        )
+
+    def pause(self):
+        self._set_paused(True)
+        self.wait_until(
+            lambda: (self.status() or {}).get('paused') == 'true',
+            3.0,
+            'the trajectory clock to stop',
+        )
+
+    def resume(self):
+        self._set_paused(False)
 
     def abort(self):
         self._abort_publisher.publish(Empty())

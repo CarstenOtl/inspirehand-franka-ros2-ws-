@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <franka_trajectory_replay/trajectory_replay_controller.hpp>
+#include <franka_trajectory_replay/joint_impedance.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -214,10 +215,8 @@ TrajectoryReplayController::Vector7d TrajectoryReplayController::compute_torque_
     std::array<double, 7> coriolis_array = franka_robot_model_->getCoriolisForceVector();
     coriolis = Vector7d(coriolis_array.data());
   }
-  const double kAlpha = 0.99;
-  dq_filtered_ = (1 - kAlpha) * dq_filtered_ + kAlpha * dq_current;
-  const Vector7d q_error = q_desired - q_current;
-  return k_gains_.cwiseProduct(q_error) - d_gains_.cwiseProduct(dq_filtered_) + coriolis;
+  return example_joint_impedance(q_desired, q_current, dq_current,
+                                 k_gains_, d_gains_, dq_filtered_) + coriolis;
 }
 
 TrajectoryReplayController::Vector7d TrajectoryReplayController::saturate_torque_rate(
@@ -483,6 +482,26 @@ void TrajectoryReplayController::trajectory_callback(
               100.0 * peak_acceleration_ratio, start_error);
 }
 
+void TrajectoryReplayController::pause_callback(
+    const std_msgs::msg::Empty::SharedPtr /*msg*/) {
+  if (static_cast<Phase>(phase_.load(std::memory_order_acquire)) != Phase::kTrajectory) {
+    reject("pause is only valid while a trajectory is running");
+    return;
+  }
+  pause_requested_.store(true, std::memory_order_release);
+  RCLCPP_INFO(get_node()->get_logger(), "Trajectory pause requested.");
+}
+
+void TrajectoryReplayController::resume_callback(
+    const std_msgs::msg::Empty::SharedPtr /*msg*/) {
+  if (static_cast<Phase>(phase_.load(std::memory_order_acquire)) != Phase::kTrajectory) {
+    reject("resume is only valid while a trajectory is running");
+    return;
+  }
+  pause_requested_.store(false, std::memory_order_release);
+  RCLCPP_INFO(get_node()->get_logger(), "Trajectory resume requested.");
+}
+
 void TrajectoryReplayController::abort_callback(const std_msgs::msg::Empty::SharedPtr /*msg*/) {
   Command command;
   command.kind = CommandKind::kAbort;
@@ -516,9 +535,13 @@ void TrajectoryReplayController::publish_status() {
   add("phase_name", phase_name(phase));
   add("command_mode", effort_mode_ ? "effort" : "position");
   add("active_command_id", std::to_string(active_command_id_.load()));
+  add("processed_command_id", std::to_string(processed_command_id_.load()));
   add("completed_command_id", std::to_string(completed_command_id_.load()));
   add("elapsed", std::to_string(phase_elapsed_.load()));
   add("duration", std::to_string(phase_duration_.load()));
+  add("pause_requested", pause_requested_.load() ? "true" : "false");
+  add("paused", paused_.load() ? "true" : "false");
+  add("playback_rate", std::to_string(playback_rate_.load()));
   add("rate_limit_engaged_total", std::to_string(rate_limit_engaged_.load()));
   add("rate_limit_engaged_last_command", std::to_string(rate_limit_engaged_last_command_.load()));
   add("rejections", std::to_string(rejections_));
@@ -535,15 +558,17 @@ void TrajectoryReplayController::publish_status() {
 // --- realtime loop ------------------------------------------------------------------------
 
 controller_interface::return_type TrajectoryReplayController::update(
-    const rclcpp::Time& time, const rclcpp::Duration& /*period*/) {
+    const rclcpp::Time& time, const rclcpp::Duration& period) {
   update_joint_states();
   Vector7d q_current(joint_positions_current_.data());
   Vector7d dq_current(joint_velocities_current_.data());
 
-  // Advance by the nominal cycle, not the measured period: the reference has to be smooth in
-  // the robot's 1 kHz clock, and a scheduling hiccup on the PC must not turn into a velocity
-  // step that libfranka's motion generator would reject.
-  const double dt = cycle_time_;
+  // Match JointImpedanceExampleController's reference clock in effort mode.
+  // Position mode retains its existing nominal-cycle sampling and rate limiter.
+  const double dt = effort_mode_ ? period.seconds() : cycle_time_;
+  if (!std::isfinite(dt) || dt < 0.0) {
+    return controller_interface::return_type::ERROR;
+  }
 
   if (first_update_) {
     // Hold wherever the arm is until somebody commands something.
@@ -579,6 +604,13 @@ controller_interface::return_type TrajectoryReplayController::update(
         rt_segment_hint_ = 0;
         rt_duration_ = command->duration;
         rt_elapsed_ = 0.0;
+        rt_playback_rate_ = 1.0;
+        rt_playback_target_ = 1.0;
+        rt_rate_ramp_start_ = 1.0;
+        rt_rate_ramp_elapsed_ = pause_ramp_duration_;
+        pause_requested_.store(false, std::memory_order_release);
+        paused_.store(false, std::memory_order_release);
+        playback_rate_.store(1.0, std::memory_order_release);
         rt_phase_ = Phase::kTrajectory;
         break;
       case CommandKind::kAbort:
@@ -588,6 +620,8 @@ controller_interface::return_type TrajectoryReplayController::update(
           rt_duration_ = abort_stop_duration_;
           rt_elapsed_ = 0.0;
           rt_phase_ = Phase::kStopping;
+        } else {
+          completed_command_id_.store(command->id);
         }
         break;
       case CommandKind::kNone:
@@ -614,10 +648,32 @@ controller_interface::return_type TrajectoryReplayController::update(
       break;
     }
     case Phase::kTrajectory: {
-      rt_elapsed_ += dt;
+      const double requested_rate =
+          pause_requested_.load(std::memory_order_acquire) ? 0.0 : 1.0;
+      if (requested_rate != rt_playback_target_) {
+        rt_rate_ramp_start_ = rt_playback_rate_;
+        rt_playback_target_ = requested_rate;
+        rt_rate_ramp_elapsed_ = 0.0;
+      }
+      const double previous_rate = rt_playback_rate_;
+      if (rt_rate_ramp_elapsed_ < pause_ramp_duration_) {
+        rt_rate_ramp_elapsed_ = std::min(rt_rate_ramp_elapsed_ + dt, pause_ramp_duration_);
+        const double s = rt_rate_ramp_elapsed_ / pause_ramp_duration_;
+        rt_playback_rate_ = rt_rate_ramp_start_ +
+                            (rt_playback_target_ - rt_rate_ramp_start_) * quintic_blend(s);
+      } else {
+        rt_playback_rate_ = rt_playback_target_;
+      }
+      // Trapezoidal integration avoids a one-cycle clock jump at either end of
+      // the smooth rate transition. At rate zero the sampled reference is held.
+      rt_elapsed_ += 0.5 * (previous_rate + rt_playback_rate_) * dt;
       std::array<double, 7> sample{};
       sample_trajectory(*rt_trajectory_, rt_elapsed_, rt_segment_hint_, sample);
       position_command_ = Vector7d(sample.data());
+      const bool is_paused = pause_requested_.load(std::memory_order_relaxed) &&
+                             rt_playback_rate_ <= 1e-9;
+      paused_.store(is_paused, std::memory_order_release);
+      playback_rate_.store(rt_playback_rate_, std::memory_order_release);
       if (rt_elapsed_ >= rt_duration_) {
         position_command_ = Vector7d(rt_trajectory_->positions.back().data());
         finished = true;
@@ -641,9 +697,16 @@ controller_interface::return_type TrajectoryReplayController::update(
     completed_command_id_.store(rt_command_id_);
     rt_phase_ = Phase::kIdle;
     rt_trajectory_.reset();
+    pause_requested_.store(false, std::memory_order_release);
+    paused_.store(false, std::memory_order_release);
+    playback_rate_.store(1.0, std::memory_order_release);
   }
 
-  velocity_command_ = (position_command_ - position_command_previous_) / dt;
+  // A zero first period holds the initial reference, as the upstream example
+  // does. Do not differentiate through zero while reporting the reference.
+  if (dt > 0.0) {
+    velocity_command_ = (position_command_ - position_command_previous_) / dt;
+  }
   position_command_previous_ = position_command_;
 
   Vector7d output;
@@ -671,6 +734,9 @@ controller_interface::return_type TrajectoryReplayController::update(
   phase_.store(static_cast<int>(rt_phase_));
   phase_elapsed_.store(rt_elapsed_);
   phase_duration_.store(rt_duration_);
+  // Includes an abort received while already idle, so clients can wait for
+  // acknowledgment instead of mistaking an old idle status for a stopped arm.
+  processed_command_id_.store(rt_command_id_);
 
   if (state_publisher_ && state_publisher_->trylock()) {
     auto& msg = state_publisher_->msg_;
@@ -717,6 +783,7 @@ CallbackReturn TrajectoryReplayController::on_init() {
     auto_declare<double>("max_trajectory_start_error", 0.05);
     auto_declare<double>("trajectory_velocity_scale", 1.0);
     auto_declare<double>("trajectory_acceleration_scale", 1.0);
+    auto_declare<double>("pause_ramp_duration", 0.5);
     auto_declare<double>("abort_stop_duration", 0.5);
     auto_declare<double>("status_rate", 50.0);
     auto_declare<std::vector<double>>("position_limits_lower",
@@ -782,11 +849,14 @@ bool TrajectoryReplayController::assign_parameters() {
   max_trajectory_start_error_ = node->get_parameter("max_trajectory_start_error").as_double();
   trajectory_velocity_scale_ = node->get_parameter("trajectory_velocity_scale").as_double();
   trajectory_acceleration_scale_ = node->get_parameter("trajectory_acceleration_scale").as_double();
+  pause_ramp_duration_ = node->get_parameter("pause_ramp_duration").as_double();
   abort_stop_duration_ = node->get_parameter("abort_stop_duration").as_double();
 
   if (!(goto_max_velocity_ > 0.0) || !(goto_max_acceleration_ > 0.0) ||
-      !(goto_min_duration_ > 0.0) || !(abort_stop_duration_ > 0.0)) {
-    RCLCPP_FATAL(node->get_logger(), "goto_* and abort_stop_duration must all be > 0");
+      !(goto_min_duration_ > 0.0) || !(pause_ramp_duration_ > 0.0) ||
+      !(abort_stop_duration_ > 0.0)) {
+    RCLCPP_FATAL(node->get_logger(),
+                 "goto_*, pause_ramp_duration and abort_stop_duration must all be > 0");
     return false;
   }
 
@@ -890,6 +960,12 @@ CallbackReturn TrajectoryReplayController::on_configure(
       [this](const trajectory_msgs::msg::JointTrajectory::SharedPtr msg) {
         trajectory_callback(msg);
       });
+  pause_subscriber_ = get_node()->create_subscription<std_msgs::msg::Empty>(
+      "~/pause", rclcpp::QoS(1),
+      [this](const std_msgs::msg::Empty::SharedPtr msg) { pause_callback(msg); });
+  resume_subscriber_ = get_node()->create_subscription<std_msgs::msg::Empty>(
+      "~/resume", rclcpp::QoS(1),
+      [this](const std_msgs::msg::Empty::SharedPtr msg) { resume_callback(msg); });
   abort_subscriber_ = get_node()->create_subscription<std_msgs::msg::Empty>(
       "~/abort", rclcpp::QoS(1),
       [this](const std_msgs::msg::Empty::SharedPtr msg) { abort_callback(msg); });
@@ -948,9 +1024,13 @@ CallbackReturn TrajectoryReplayController::on_activate(
   rt_command_id_ = 0;
   next_command_id_ = 0;
   active_command_id_.store(0);
+  processed_command_id_.store(0);
   completed_command_id_.store(0);
   rate_limit_engaged_.store(0);
   rate_limit_engaged_last_command_.store(0);
+  pause_requested_.store(false, std::memory_order_release);
+  paused_.store(false, std::memory_order_release);
+  playback_rate_.store(1.0, std::memory_order_release);
   rt_trajectory_.reset();
   command_buffer_.writeFromNonRT(Command{});
   last_rejection_.clear();

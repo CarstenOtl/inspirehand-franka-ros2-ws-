@@ -7,6 +7,9 @@ pose of the hand is preserved exactly by adding the same angle to fr3_joint7.
 
 This tool writes a new artifact and a matching homing YAML.  The source files
 are never modified and an existing output directory is never overwritten.
+Generated artifacts are candidates, not automatically hardware baselines.  The
+validated baseline is demo_trajs/threading_cycle1_flange180; validate any new
+cycle selection with --dry-run and on hardware before promoting it.
 """
 
 import argparse

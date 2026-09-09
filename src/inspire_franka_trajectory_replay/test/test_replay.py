@@ -1,29 +1,194 @@
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import yaml
 
-from inspire_franka_trajectory_replay.replay import _stream_hand
+from inspire_franka_trajectory_replay.replay import (
+    HAND_UPPER, SUPPORT_FINGER_INDICES, _close_support_fingers,
+    _hand_stream_native, _prepare_arm, _stream_hand, CoordinatedReplayClient,
+    PositionReplayClient,
+)
 from inspire_franka_trajectory_replay.joint_trajectory_client import JointTrajectoryClient
+from franka_trajectory_replay.replay_client import ReplayClient, Rejected
 
 
-def test_hardware_replay_uses_stock_position_controller_and_franka_timing():
-    config_path = Path(__file__).parents[1] / "config" / "controllers_internal_impedance.yaml"
+def test_support_finger_override_changes_only_requested_hand_channels():
+    hand = np.arange(18, dtype=float).reshape(3, 6) / 100.0
+    home = np.arange(6, dtype=float) / 10.0
+    original_hand = hand.copy()
+    original_home = home.copy()
+
+    overridden, overridden_home = _close_support_fingers(hand, home)
+
+    untouched = [index for index in range(6) if index not in SUPPORT_FINGER_INDICES]
+    assert overridden[:, SUPPORT_FINGER_INDICES] == pytest.approx(
+        np.tile(HAND_UPPER[list(SUPPORT_FINGER_INDICES)], (len(hand), 1))
+    )
+    assert overridden_home[list(SUPPORT_FINGER_INDICES)] == pytest.approx(
+        HAND_UPPER[list(SUPPORT_FINGER_INDICES)]
+    )
+    assert overridden[:, untouched] == pytest.approx(original_hand[:, untouched])
+    assert overridden_home[untouched] == pytest.approx(original_home[untouched])
+    assert hand == pytest.approx(original_hand)
+    assert home == pytest.approx(original_home)
+
+
+def test_support_finger_override_requires_recorded_hand_positions():
+    with pytest.raises(ValueError, match="requires Inspire hand positions"):
+        _close_support_fingers(None, np.zeros(6))
+
+
+def test_explicit_time_scale_stretches_arm_waypoint_timing(monkeypatch):
+    calls = []
+
+    def fake_prepare(_source, **arguments):
+        calls.append(arguments)
+        return SimpleNamespace(
+            report={"ok": True},
+            params={"time_scale": arguments["time_scale"]},
+        )
+
+    monkeypatch.setattr(
+        "inspire_franka_trajectory_replay.replay.prepare", fake_prepare
+    )
+    trajectory = SimpleNamespace(
+        time=np.array([0.0, 1.0]),
+        arm=np.zeros((2, 7)),
+        source="capture.npz",
+        duration=1.0,
+    )
+    config = {
+        "joint_names": [f"fr3_joint{i}" for i in range(1, 8)],
+        "prepare": {
+            "rate": 1000,
+            "cutoff_hz": 0.0,
+            "hold_start": 0.5,
+            "hold_end": 0.5,
+            "time_scale": 1.0,
+            "auto_scale": True,
+            "velocity_margin": 0.8,
+            "acceleration_margin": 0.5,
+            "jerk_margin": 0.5,
+            "lead_in": 0.5,
+            "lead_out": 0.5,
+            "lead_max_acceleration": 2.5,
+            "interpolation": "cubic",
+            "blend_time": 0.04,
+        },
+    }
+
+    prepared = _prepare_arm(trajectory, config, 120.0, time_scale=5.0)
+
+    assert calls[0]["time_scale"] == 5.0
+    assert prepared.params["time_scale"] == 5.0
+
+
+def test_time_scale_stretches_native_hand_waypoint_timing():
+    trajectory = SimpleNamespace(
+        time=np.array([0.0, 1.0 / 15.0]),
+        hand=np.vstack((np.zeros(6), np.ones(6))),
+    )
+
+    stream_time, positions = _hand_stream_native(trajectory, rate=30.0, time_scale=5.0)
+
+    assert stream_time[-1] == pytest.approx(5.0 / 15.0)
+    assert len(stream_time) == 11
+    assert positions[5] == pytest.approx(np.full(6, 0.5))
+
+
+def test_hardware_replay_matches_the_working_example_profile():
+    config_path = Path(__file__).parents[1] / "config" / "controllers_joint_impedance.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))["/**"]
     manager = config["controller_manager"]["ros__parameters"]
     controller = config["trajectory_replay_controller"]["ros__parameters"]
 
     assert manager["trajectory_replay_controller"]["type"] == (
-        "joint_trajectory_controller/JointTrajectoryController"
+        "franka_trajectory_replay/TrajectoryReplayController"
     )
     assert manager["thread_priority"] == 97
     assert manager["overruns"] == {"manage": False, "print_warnings": False}
-    assert controller["command_interfaces"] == ["position"]
-    assert controller["interpolate_from_desired_state"] is True
-    assert controller["set_last_command_interface_value_as_state_on_activation"] is True
+    assert controller["command_interface"] == "effort"
+    assert controller["k_gains"] == [24, 24, 24, 24, 10, 6, 2]
+    assert controller["d_gains"] == [2, 2, 2, 1, 1, 1, 0.5]
+    assert controller["coriolis_compensation"] is False
+    assert controller["pause_ramp_duration"] == 0.5
+    assert controller["set_collision_behavior"] is False
+    assert controller["torque_rate_limit"] == 0.0
+
+
+def test_hardware_client_uses_waypoint_transport_and_sim_keeps_action_transport():
+    assert issubclass(CoordinatedReplayClient, ReplayClient)
+    assert not issubclass(CoordinatedReplayClient, JointTrajectoryClient)
+    assert issubclass(PositionReplayClient, JointTrajectoryClient)
+
+
+def test_impedance_client_rejects_a_running_position_controller_before_activation():
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    node.controller = "trajectory_replay_controller"
+    node.list_controllers = lambda: {
+        node.controller: SimpleNamespace(type="joint_trajectory_controller/JointTrajectoryController")
+    }
+    with pytest.raises(Rejected, match="waypoint effort controller"):
+        node.ensure_active()
+
+
+def test_impedance_client_rejects_stale_completion_feedback():
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    node._lock = threading.Lock()
+    node._status = {"phase_name": "idle", "completed_command_id": "1"}
+    node._status_stamp = time.monotonic() - 2.0
+    with pytest.raises(Rejected, match="feedback stopped"):
+        node.status()
+
+
+def test_waypoint_client_waits_for_completion_and_releases_hand_after_acceptance(monkeypatch):
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    pending = {"active_command_id": "0", "completed_command_id": "0",
+               "rejections": "0", "phase_name": "idle", "elapsed": "0", "duration": "1"}
+    accepted = dict(pending, active_command_id="1", phase_name="trajectory")
+    complete = dict(accepted, completed_command_id="1", phase_name="idle")
+    current = dict(pending)
+    events = []
+    node.status = lambda: dict(current)
+
+    def tick(_seconds):
+        current.update(accepted if not events else complete)
+
+    monkeypatch.setattr("franka_trajectory_replay.replay_client.time.sleep", tick)
+    result = node._wait_command(
+        0, 0, 1.0, "trajectory", on_accept=lambda: events.append("hand-start"),
+    )
+    assert result == 1
+    assert events == ["hand-start"]
+    assert current["phase_name"] == "idle"
+
+
+def test_abort_waits_for_new_acknowledgment_even_if_old_status_is_idle(monkeypatch):
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    node._lock = threading.Lock()
+    node._status = {"processed_command_id": "3", "completed_command_id": "3",
+                    "phase_name": "idle"}
+    node._status_stamp = time.monotonic()
+    events = []
+    node._abort_publisher = SimpleNamespace(publish=lambda _message: events.append("abort"))
+
+    def tick(_seconds):
+        if node._status["processed_command_id"] == "3":
+            # Status can mix an old phase with a newer processed id; require
+            # completion too before returning from abort.
+            events.append("acknowledgment")
+            node._status["processed_command_id"] = "4"
+        else:
+            events.append("completed")
+            node._status["completed_command_id"] = "4"
+
+    monkeypatch.setattr("franka_trajectory_replay.replay_client.time.sleep", tick)
+    node.abort()
+    assert events == ["abort", "acknowledgment", "completed"]
 
 
 class RecordingNode:
@@ -87,6 +252,66 @@ def test_hand_stream_stops_while_waiting_for_arm_acceptance():
 
     assert not node.commands
     assert not errors
+
+
+def test_hand_stream_follows_the_arm_trajectory_clock_across_pause():
+    node = RecordingNode()
+    started = threading.Event()
+    started.set()
+    stopped = threading.Event()
+    errors = []
+    clock = {"elapsed": 0.0}
+    positions = np.vstack((np.zeros(6), np.ones(6), np.full(6, 2.0)))
+    thread = threading.Thread(
+        target=_stream_hand,
+        args=(
+            node,
+            started,
+            stopped,
+            np.array([0.0, 0.1, 0.2]),
+            positions,
+            errors,
+            lambda: clock["elapsed"],
+        ),
+    )
+    thread.start()
+    time.sleep(0.03)
+    assert len(node.commands) == 1
+
+    # A paused arm clock does not let wall time advance the hand.
+    time.sleep(0.03)
+    assert len(node.commands) == 1
+    clock["elapsed"] = 0.1
+    time.sleep(0.03)
+    assert len(node.commands) == 2
+    clock["elapsed"] = 0.2
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert not errors
+    assert np.asarray(node.commands) == pytest.approx(positions)
+
+
+@pytest.mark.parametrize("client_type", [CoordinatedReplayClient, PositionReplayClient])
+def test_wait_for_hand_republishes_home_command_until_feedback_arrives(client_type):
+    """Hand homing uses wait_until's progress callback to recover a lost command."""
+    node = client_type.__new__(client_type)
+    node._hand_lock = threading.Lock()
+    node._hand_position = np.ones(6)
+    commands = []
+
+    def command_hand(target):
+        commands.append(np.asarray(target))
+        with node._hand_lock:
+            node._hand_position = np.asarray(target)
+
+    node.command_hand = command_hand
+    target = np.zeros(6)
+
+    node.wait_for_hand(target, timeout=0.5, tolerance=0.01)
+
+    assert len(commands) == 1
+    assert commands[0] == pytest.approx(target)
 
 
 def test_command_hand_converts_radians_to_open_ratios():

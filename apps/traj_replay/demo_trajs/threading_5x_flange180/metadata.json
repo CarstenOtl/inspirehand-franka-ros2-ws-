@@ -2,7 +2,21 @@
   "schema_version": 1,
   "data_file": "replay_data.npz",
   "generated_by": "apps/traj_replay/retarget_flange_mount.py",
-  "description": "Cycles 1-5 of the source capture, concatenated as recorded, followed by a quintic ramp onto the homing pose. One continuous run: no --cycle or --segment needed. Retargeted for the 180-degree link8-Z hand mount.",
+  "description": "Cycles 1-5 of the source capture, concatenated as recorded, followed by a quintic ramp onto the homing pose. One continuous run: no --cycle or --segment needed. Retargeted for the 180-degree link8-Z hand mount. Pinky, ring, and middle are held fully curled.",
+  "hardware_replay_status": "validated_extended_run",
+  "hardware_baseline": "../threading_cycle1_flange180",
+  "hardware_validation": {
+    "result": "five-cycle coordinated replay worked as expected on the physical FR3 with Inspire RH56",
+    "mount": "180-degree flange mount",
+    "time_scale": 5.0,
+    "interactive_pause": true,
+    "runner_options": [
+      "--close-support-fingers",
+      "--time-scale 5",
+      "--interactive-pause",
+      "--max-prepared-duration 300"
+    ]
+  },
   "units": "radians",
   "recording_frequency_hz": 15.000000000000053,
   "sample_count": 451,
@@ -56,5 +70,16 @@
       -3.0508,
       3.0508
     ]
+  },
+  "hand_waypoint_override": {
+    "units": "radians",
+    "joints": [
+      "pinky_proximal_joint",
+      "ring_proximal_joint",
+      "middle_proximal_joint"
+    ],
+    "value_rad": 1.47,
+    "open_ratio": 0.0,
+    "scope": "all trajectory samples and the homing pose"
   }
 }

@@ -333,8 +333,9 @@
   </actuator>
 
   <keyframe>
-    <!-- Pickup homing pose. Passive joints are evaluated from the equality
-         constraints above so the keyframe starts on the mimic manifold. -->
-    <key name="start" qpos="-0.392613 0.004288 -0.072713 -1.811251 0.592754 2.280553 -2.620279 1.14 0.2 0.2285 0.1715578 0.44 0.491436 1.0999 1.22847831 1.0999 1.22847831 1.0999 1.22847831"/>
+    <!-- Pickup-derived test pose with fr3_joint7 zeroed. Passive joints are
+         evaluated from the equality constraints above so the keyframe starts
+         on the mimic manifold. -->
+    <key name="start" qpos="-0.392613 0.004288 -0.072713 -1.811251 0.592754 2.280553 0 1.14 0.2 0.2285 0.1715578 0.44 0.491436 1.0999 1.22847831 1.0999 1.22847831 1.0999 1.22847831"/>
   </keyframe>
 </mujoco>

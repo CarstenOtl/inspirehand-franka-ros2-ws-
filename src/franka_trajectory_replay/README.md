@@ -28,6 +28,11 @@ ros2 run franka_trajectory_replay replay_trajectory.py ~/trajs/policy.npz
 trajectory N times, `--no-record` / `--no-analyze` do what they say. Ctrl-C sends an abort:
 the controller decelerates over 0.5 s and holds.
 
+The controller also accepts `std_msgs/Empty` on `~/pause` and `~/resume`. During a pause it
+ramps the trajectory clock from full speed to zero over `pause_ramp_duration` (0.5 s), holds
+the resulting reference, and resumes the same trajectory rather than skipping elapsed wall
+time. Status includes `pause_requested`, `paused`, and `playback_rate`.
+
 ## Control modes
 
 | `command_interface` | what runs the joints | when |

@@ -85,6 +85,10 @@ if(BUILD_TESTING)
     find_package(controller_manager REQUIRED)
     find_package(ros2_control_test_assets REQUIRED)
 
+    ament_add_gmock(${PROJECT_NAME}_test_joint_impedance test/test_joint_impedance.cpp)
+    target_include_directories(${PROJECT_NAME}_test_joint_impedance PRIVATE
+        include ${EIGEN3_INCLUDE_DIRS})
+
     ament_add_gmock(${PROJECT_NAME}_test_load test/test_load_controller.cpp)
     target_include_directories(${PROJECT_NAME}_test_load PRIVATE include)
     target_link_libraries(${PROJECT_NAME}_test_load ${PROJECT_NAME})

@@ -1,8 +1,8 @@
 schema_version: 1
 name: threading_homing_flange180
-description: Validated five-cycle extended run for the current 180-degree flange
-  mount. Confirmed on the physical FR3 and RH56 at 5x slowdown with interactive
-  pause; use only with the trajectory colocated with this YAML.
+description: De facto hardware baseline, validated on the physical FR3 and RH56.
+  Retargeted for the 180-degree link8-Z hand mount; use only with the trajectory
+  colocated with this YAML.
 units: radians
 joint_names:
 - fr3_joint1
@@ -26,9 +26,9 @@ positions:
 - 1.368818
 - 2.028677
 - -0.27530567320510335
-- 1.47
-- 1.47
-- 1.47
+- 1.0999
+- 1.0999
+- 1.0999
 - 0.44
 - 0.2
 - 1.14

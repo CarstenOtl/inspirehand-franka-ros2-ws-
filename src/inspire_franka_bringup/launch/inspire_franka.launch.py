@@ -1,7 +1,6 @@
 """Both assets on real hardware: the FR3 over the FCI, the Inspire hand over RS485.
 
     ros2 launch inspire_franka_bringup inspire_franka.launch.py \
-        robot_ip:=172.16.0.2 hand_port:=/dev/ttyUSB0 \
         gravity_compensation:=true
 
     # neither piece of hardware present, everything else identical
@@ -9,7 +8,7 @@
         use_fake_hardware:=true hand_mock:=true start_rviz:=true
 
     # one asset only - the same as arm.launch.py / hand.launch.py
-    ros2 launch inspire_franka_bringup inspire_franka.launch.py hand:=false robot_ip:=172.16.0.2
+    ros2 launch inspire_franka_bringup inspire_franka.launch.py hand:=false
     ros2 launch inspire_franka_bringup inspire_franka.launch.py arm:=false
 
 When both assets are enabled, the hand is always understood to be bolted to the

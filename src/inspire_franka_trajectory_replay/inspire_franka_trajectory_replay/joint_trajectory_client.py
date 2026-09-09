@@ -53,11 +53,16 @@ class JointTrajectoryClient(Node):
             with self._lock:
                 self._joint_state = [positions[name] for name in self.config["joint_names"]]
 
-    def wait_until(self, predicate, timeout, description):
+    def wait_until(self, predicate, timeout, description, progress=None):
         deadline = time.monotonic() + timeout
+        last_progress = 0.0
         while time.monotonic() < deadline:
             if predicate():
                 return
+            now = time.monotonic()
+            if progress is not None and now - last_progress > 1.0:
+                progress()
+                last_progress = now
             time.sleep(0.02)
         raise TimeoutError(f"timed out after {timeout:.1f} s waiting for {description}")
 
@@ -227,7 +232,10 @@ class JointTrajectoryClient(Node):
         result["points_sent"] = 1
         return result
 
-    def send_trajectory(self, prepared, send_rate=None, timeout_margin=15.0, on_accept=None):
+    def send_trajectory(self, prepared, send_rate=None, timeout_margin=15.0, on_accept=None,
+                        allow_pauses=False):
+        if allow_pauses:
+            raise ValueError("the stock JointTrajectoryController cannot pause a trajectory")
         send_rate = float(send_rate or prepared.rate)
         stride = max(1, int(round(prepared.rate / send_rate)))
         indices = np.arange(0, len(prepared.t), stride)

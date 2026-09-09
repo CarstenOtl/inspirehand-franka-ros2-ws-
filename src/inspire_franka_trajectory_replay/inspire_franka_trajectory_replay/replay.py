@@ -1,11 +1,15 @@
 """Home and replay a coordinated Forge trajectory on an FR3 and Inspire RH56."""
 
 import argparse
+from contextlib import nullcontext
 import dataclasses
 from pathlib import Path
+import select
 import sys
+import termios
 import threading
 import time
+import tty
 
 import numpy as np
 import rclpy
@@ -16,7 +20,7 @@ from sensor_msgs.msg import JointState
 
 from franka_trajectory_replay.prepare import prepare, summarize
 from franka_trajectory_replay import limits
-from franka_trajectory_replay.replay_client import Rejected
+from franka_trajectory_replay.replay_client import Rejected, ReplayClient
 from franka_trajectory_replay.runconfig import load_config
 from franka_trajectory_replay.trajectory_io import Trajectory as ArmTrajectory
 from inspire_hand_driver import kinematics as kin
@@ -35,6 +39,19 @@ HAND_DOF = tuple(kin.dof_index(name) for name in HAND_JOINTS)
 # not fail a comparison, it would scale every hand command wrongly.
 HAND_LOWER = np.array([kin.DOFS[index].lower for index in HAND_DOF])
 HAND_UPPER = np.array([kin.DOFS[index].upper for index in HAND_DOF])
+
+# These are the three support fingers used by the threading task. Keep this
+# override separate from trajectory generation/retargeting: applying it at the
+# replay boundary guarantees that all seven recorded FR3 joints remain exactly
+# as loaded, including joint 7.
+SUPPORT_FINGER_JOINTS = (
+    "pinky_proximal_joint",
+    "ring_proximal_joint",
+    "middle_proximal_joint",
+)
+SUPPORT_FINGER_INDICES = tuple(
+    HAND_JOINTS.index(name) for name in SUPPORT_FINGER_JOINTS
+)
 
 # How far outside those limits a sample may sit and still be treated as being
 # *at* the limit. Forge writes float32, so a joint the policy drove hard onto
@@ -71,8 +88,11 @@ def load_home(path):
     return arm, hand
 
 
-def _prepare_arm(trajectory, config, max_duration):
+def _prepare_arm(trajectory, config, max_duration, time_scale=None):
     settings = config["prepare"]
+    requested_time_scale = (
+        settings["time_scale"] if time_scale is None else float(time_scale)
+    )
     source = ArmTrajectory(
         t=trajectory.time,
         q=trajectory.arm,
@@ -83,7 +103,7 @@ def _prepare_arm(trajectory, config, max_duration):
         cutoff_hz=settings["cutoff_hz"],
         hold_start=settings["hold_start"],
         hold_end=settings["hold_end"],
-        time_scale=settings["time_scale"],
+        time_scale=requested_time_scale,
         auto_scale=False,
         velocity_margin=settings["velocity_margin"],
         acceleration_margin=settings["acceleration_margin"],
@@ -100,7 +120,7 @@ def _prepare_arm(trajectory, config, max_duration):
         return prepared
 
     required = 1.02 * limits.required_time_scale(prepared.report)
-    scaled_duration = trajectory.duration * settings["time_scale"] * required
+    scaled_duration = trajectory.duration * requested_time_scale * required
     scaled_duration += (
         settings["hold_start"]
         + settings["hold_end"]
@@ -120,7 +140,7 @@ def _prepare_arm(trajectory, config, max_duration):
             "Safety violations: "
             + "; ".join(prepared.report["violations"])
         )
-    arguments["time_scale"] = settings["time_scale"] * required
+    arguments["time_scale"] = requested_time_scale * required
     arguments["auto_scale"] = True
     return prepare(source, **arguments)
 
@@ -190,6 +210,20 @@ def _validate_hand(values, label):
     return np.clip(values, HAND_LOWER, HAND_UPPER)
 
 
+def _close_support_fingers(hand, home_hand):
+    """Override only pinky, ring, and middle with their closed joint limits."""
+    if hand is None:
+        raise ValueError(
+            "--close-support-fingers requires Inspire hand positions in the trajectory"
+        )
+    overridden = np.array(hand, dtype=float, copy=True)
+    overridden_home = np.array(home_hand, dtype=float, copy=True)
+    for index in SUPPORT_FINGER_INDICES:
+        overridden[..., index] = HAND_UPPER[index]
+        overridden_home[index] = HAND_UPPER[index]
+    return overridden, overridden_home
+
+
 def _check_home(home_arm, first, home_path, tolerance):
     """Refuse a homing pose that is not where the trajectory actually begins.
 
@@ -218,8 +252,8 @@ def _check_home(home_arm, first, home_path, tolerance):
     )
 
 
-class CoordinatedReplayClient(JointTrajectoryClient):
-    """Stock FR3 trajectory action client plus the hand's position link."""
+class HandReplayMixin:
+    """The hand's position link shared by the hardware and legacy sim clients."""
 
     def __init__(self, config, hand_topic, hand_state_topic):
         super().__init__(
@@ -295,7 +329,76 @@ class CoordinatedReplayClient(JointTrajectoryClient):
         )
 
 
-def _stream_hand(node, started, stopped, stream_time, positions, errors):
+class CoordinatedReplayClient(HandReplayMixin, ReplayClient):
+    """Example joint-impedance waypoint client plus the hand's position link."""
+
+    def ensure_active(self, log=print):
+        controllers = self.list_controllers()
+        controller = controllers.get(self.controller)
+        if controller is None or controller.type != (
+            "franka_trajectory_replay/TrajectoryReplayController"
+        ):
+            raise Rejected(
+                "joint-impedance replay requires the waypoint effort controller; "
+                "restart replay.launch.py with its default controllers_joint_impedance.yaml. "
+                "For the legacy MuJoCo position stack use --arm-controller position-jtc."
+            )
+        parameters = self.controller_parameters()
+        if parameters["command_interface"] != "effort" or parameters["coriolis_compensation"]:
+            raise Rejected(
+                "expected the simple joint-impedance example profile "
+                "(command_interface=effort, coriolis_compensation=false)"
+            )
+        super().ensure_active(log)
+        self.wait_until(
+            lambda: all(publisher.get_subscription_count() > 0 for publisher in (
+                self._goto_publisher, self._trajectory_publisher,
+                self._pause_publisher, self._resume_publisher, self._abort_publisher
+            )),
+            10.0,
+            "the waypoint controller's command subscriptions",
+        )
+        if "processed_command_id" not in self.wait_for_status():
+            raise Rejected("rebuild franka_trajectory_replay: controller lacks abort acknowledgment")
+        log("waypoint replay uses the example's joint-impedance law over effort interfaces")
+
+    def status(self):
+        # A deactivated controller stops publishing: never treat old 'idle'
+        # feedback as successful completion after a hardware reflex.
+        with self._lock:
+            if self._status is not None and time.monotonic() - self._status_stamp > 1.0:
+                raise Rejected("waypoint controller feedback stopped; check the hardware log")
+            return dict(self._status) if self._status else None
+
+    def abort(self):
+        with self._lock:
+            before = int((self._status or {}).get("processed_command_id", 0))
+        super().abort()
+        # Keep the executor alive while the reference decelerates to a hold.
+        # On a reflex the status stream may already have stopped; report that
+        # without replacing the original exception during cleanup.
+        try:
+            def stopped():
+                status = self.status() or {}
+                processed = int(status.get("processed_command_id", 0))
+                return (processed > before
+                        and int(status.get("completed_command_id", 0)) >= processed
+                        and status.get("phase_name") == "idle")
+
+            self.wait_until(
+                stopped,
+                2.0, "the impedance reference to stop",
+            )
+        except (Rejected, TimeoutError) as exc:
+            self.get_logger().warning(f"could not confirm arm hold: {exc}")
+
+
+class PositionReplayClient(HandReplayMixin, JointTrajectoryClient):
+    """Explicit compatibility path for the existing MuJoCo position stack."""
+
+
+def _stream_hand(node, started, stopped, stream_time, positions, errors,
+                 trajectory_clock=None):
     try:
         deadline = time.monotonic() + 20.0
         while not started.is_set() and time.monotonic() < deadline:
@@ -304,20 +407,100 @@ def _stream_hand(node, started, stopped, stream_time, positions, errors):
             started.wait(timeout=0.05)
         if not started.is_set():
             raise TimeoutError("arm controller did not accept the trajectory")
-        epoch_ns = node.get_clock().now().nanoseconds
+        epoch_ns = None if trajectory_clock is not None else node.get_clock().now().nanoseconds
         for target_time, target in zip(stream_time, positions):
-            target_ns = epoch_ns + int(float(target_time) * 1e9)
-            while True:
-                remaining = (target_ns - node.get_clock().now().nanoseconds) / 1e9
-                if remaining <= 0:
-                    break
-                if stopped.wait(timeout=min(remaining, 0.02)):
-                    return
+            if trajectory_clock is None:
+                target_ns = epoch_ns + int(float(target_time) * 1e9)
+                while True:
+                    remaining = (target_ns - node.get_clock().now().nanoseconds) / 1e9
+                    if remaining <= 0:
+                        break
+                    if stopped.wait(timeout=min(remaining, 0.02)):
+                        return
+            else:
+                # The arm owns the prepared trajectory clock. It slows and then
+                # freezes that clock during an interactive pause, so waiting on
+                # elapsed trajectory time keeps the independent 50 Hz hand link
+                # aligned with the exact arm sample across an arbitrary pause.
+                while float(trajectory_clock()) < float(target_time):
+                    if stopped.wait(timeout=0.01):
+                        return
             if stopped.is_set():
                 return
             node.command_hand(target)
     except Exception as exc:  # reported by the main thread after the arm stops
         errors.append(exc)
+
+
+class _InteractivePause:
+    """Read one-key pause/resume commands without interfering with ROS threads."""
+
+    def __init__(self, node, started, coordinated_stop=None):
+        self.node = node
+        self.started = started
+        self.coordinated_stop = coordinated_stop
+        self.stopped = threading.Event()
+        self.errors = []
+        self.aborted = threading.Event()
+        self.paused = False
+        self.fd = None
+        self.terminal_settings = None
+        self.thread = None
+
+    def __enter__(self):
+        if not sys.stdin.isatty():
+            raise RuntimeError("--interactive-pause requires a terminal on stdin")
+        self.fd = sys.stdin.fileno()
+        self.terminal_settings = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        print("Interactive replay: SPACE pauses/resumes; q aborts.", flush=True)
+        return self
+
+    def _run(self):
+        try:
+            while not self.started.wait(timeout=0.05):
+                if self.stopped.is_set():
+                    return
+            while not self.stopped.is_set():
+                readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if not readable:
+                    continue
+                key = sys.stdin.read(1)
+                if key == " ":
+                    if self.paused:
+                        self.node.resume()
+                        self.paused = False
+                        print("\nRESUMED", flush=True)
+                    else:
+                        print("\nPause requested; wait for PAUSED before approaching.", flush=True)
+                        self.node.pause()
+                        self.paused = True
+                        print("PAUSED: arm and hand are holding. SPACE resumes; q aborts.",
+                              flush=True)
+                elif key.lower() == "q":
+                    print("\nAbort requested.", flush=True)
+                    self.aborted.set()
+                    if self.coordinated_stop is not None:
+                        self.coordinated_stop.set()
+                    self.node.abort()
+                    return
+        except Exception as exc:
+            self.errors.append(exc)
+            if self.coordinated_stop is not None:
+                self.coordinated_stop.set()
+            try:
+                self.node.abort()
+            except Exception:
+                pass
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join(timeout=3.0)
+        if self.terminal_settings is not None:
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.terminal_settings)
 
 
 def _gate(enabled, prompt):
@@ -331,6 +514,11 @@ def main(argv=None):
     parser.add_argument("trajectory", help="replay_data.npz or its trajectory directory")
     parser.add_argument("--home", default=None, help="homing YAML (default: threading.yaml)")
     parser.add_argument("--config", default=None, help="Franka replay configuration YAML")
+    parser.add_argument(
+        "--arm-controller", choices=("joint-impedance", "position-jtc"),
+        default="joint-impedance",
+        help="joint-impedance: example effort law (default); position-jtc: legacy MuJoCo stack",
+    )
     parser.add_argument("--rate", type=float, default=None, help="input rate if absent")
     parser.add_argument("--env", type=int, default=0, help="environment in a batched Forge NPZ")
     parser.add_argument(
@@ -372,10 +560,17 @@ def main(argv=None):
         help="reject excessive automatic slow-down before allocating the 1 kHz stream",
     )
     parser.add_argument(
+        "--time-scale",
+        type=float,
+        default=None,
+        help="playback duration multiplier (5 plays five times slower); applies to "
+             "the arm and coordinated hand, or to the hand with --no-arm",
+    )
+    parser.add_argument(
         "--hand-time-scale",
         type=float,
-        default=1.0,
-        help="stretch (>1) or compress (<1) the hand's own clock; --no-arm only",
+        default=None,
+        help="deprecated hand-only alias for --time-scale; requires --no-arm",
     )
     parser.add_argument("--no-hand", action="store_true", help="arm only")
     parser.add_argument(
@@ -385,6 +580,17 @@ def main(argv=None):
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--yes", "-y", action="store_true", help="skip motion prompts")
+    parser.add_argument(
+        "--close-support-fingers",
+        action="store_true",
+        help="hold pinky, ring, and middle at their fully closed limits during "
+             "homing and replay; arm waypoints are unchanged",
+    )
+    parser.add_argument(
+        "--interactive-pause",
+        action="store_true",
+        help="during replay, SPACE pauses/resumes both devices and q aborts",
+    )
     # `ros2 run` appends "--ros-args ..." for node parameters, and the whole
     # tail belongs to rclpy rather than to argparse. Only the tail is dropped,
     # so a mistyped flag before it is still an error rather than being quietly
@@ -401,7 +607,9 @@ def main(argv=None):
         parser.error("--hand-rate must be positive")
     if args.max_prepared_duration <= 0:
         parser.error("--max-prepared-duration must be positive")
-    if args.hand_time_scale <= 0:
+    if args.time_scale is not None and args.time_scale <= 0:
+        parser.error("--time-scale must be positive")
+    if args.hand_time_scale is not None and args.hand_time_scale <= 0:
         parser.error("--hand-time-scale must be positive")
     if args.max_home_delta < 0:
         parser.error("--max-home-delta must not be negative")
@@ -409,9 +617,24 @@ def main(argv=None):
         parser.error("--timeout-margin must not be negative")
     if args.no_arm and args.no_hand:
         parser.error("--no-arm and --no-hand together leave nothing to replay")
-    if args.hand_time_scale != 1.0 and not args.no_arm:
+    if args.close_support_fingers and args.no_hand:
+        parser.error("--close-support-fingers cannot be used with --no-hand")
+    if args.interactive_pause and args.no_arm:
+        parser.error("--interactive-pause requires the arm trajectory clock")
+    if args.interactive_pause and args.arm_controller != "joint-impedance":
+        parser.error("--interactive-pause requires the joint-impedance replay controller")
+    if args.hand_time_scale is not None and not args.no_arm:
         parser.error("--hand-time-scale only applies to --no-arm; the coordinated "
                      "hand stream follows the arm's prepared clock")
+    if args.time_scale is not None and args.hand_time_scale is not None:
+        parser.error("use --time-scale or --hand-time-scale, not both")
+    if not args.no_arm and args.time_scale is not None and args.time_scale < 1.0:
+        parser.error("--time-scale must be at least 1 for arm replay")
+    playback_time_scale = (
+        args.time_scale if args.time_scale is not None
+        else args.hand_time_scale if args.hand_time_scale is not None
+        else 1.0
+    )
     home_path = args.home or _packaged("threading.yaml")
     config_path = args.config or _packaged("replay.yaml")
     hand_topic = args.hand_topic or "/inspire_hand/command"
@@ -422,10 +645,18 @@ def main(argv=None):
             args.trajectory, args.rate, args.env, args.cycle, args.segment
         )
         home_arm, home_hand = load_home(home_path)
+        if args.close_support_fingers:
+            overridden_hand, home_hand = _close_support_fingers(
+                trajectory.hand, home_hand
+            )
+            trajectory = dataclasses.replace(trajectory, hand=overridden_hand)
         prepared = None
         if not args.no_arm:
             prepared = _prepare_arm(
-                trajectory, load_config(config_path), args.max_prepared_duration
+                trajectory,
+                load_config(config_path),
+                args.max_prepared_duration,
+                time_scale=args.time_scale,
             )
             if not prepared.report["ok"]:
                 raise ValueError("prepared arm trajectory violates FR3 limits")
@@ -447,7 +678,7 @@ def main(argv=None):
     if not args.no_hand:
         if args.no_arm:
             stream_time, hand_positions = _hand_stream_native(
-                trajectory, args.hand_rate, args.hand_time_scale
+                trajectory, args.hand_rate, playback_time_scale
             )
         else:
             stream_time, hand_positions = _hand_stream(trajectory, prepared, args.hand_rate)
@@ -457,6 +688,12 @@ def main(argv=None):
         print(f"Forge rollout cycle: {trajectory.cycle}")
     if trajectory.segment is not None:
         print(f"Forge episode segment: {trajectory.segment}")
+    if args.close_support_fingers:
+        values = ", ".join(
+            f"{name}={HAND_UPPER[index]:g} rad"
+            for name, index in zip(SUPPORT_FINGER_JOINTS, SUPPORT_FINGER_INDICES)
+        )
+        print(f"hand-only override: {values}; no arm retarget applied")
     print(
         f"coordinated source: {len(trajectory.time)} samples, "
         f"{trajectory.duration:.2f} s, hand={'yes' if hand_positions is not None else 'no'}"
@@ -476,7 +713,7 @@ def main(argv=None):
         )
         print(
             f"hand stream: {len(stream_time)} samples at {args.hand_rate:g} Hz "
-            f"over {replay_duration:.2f} s (time scale {args.hand_time_scale:g})"
+            f"over {replay_duration:.2f} s (time scale {playback_time_scale:g})"
         )
         print(
             "home-to-first-source max hand delta: "
@@ -487,7 +724,9 @@ def main(argv=None):
         return 0
 
     rclpy.init(args=None)
-    node = CoordinatedReplayClient(
+    client_type = (CoordinatedReplayClient if args.arm_controller == "joint-impedance"
+                   else PositionReplayClient)
+    node = client_type(
         config,
         hand_topic,
         hand_state_topic,
@@ -527,6 +766,26 @@ def main(argv=None):
         _gate(not args.yes, f"Replay the {label} {replay_duration:.1f} s trajectory?")
         started = threading.Event()
         hand_errors = []
+        trajectory_progress = {"elapsed": 0.0, "command_id": None}
+        def trajectory_clock():
+            status = node.status()
+            if status is not None and status.get("phase_name") == "trajectory":
+                trajectory_progress["command_id"] = int(status["active_command_id"])
+                trajectory_progress["elapsed"] = max(
+                    trajectory_progress["elapsed"], float(status["elapsed"])
+                )
+            elif (
+                status is not None
+                and status.get("phase_name") == "idle"
+                and trajectory_progress["command_id"] is not None
+                and int(status["completed_command_id"]) == trajectory_progress["command_id"]
+            ):
+                # The status timer may observe the final transition only after
+                # the phase has become idle. Release the hand's final sample on
+                # normal completion, but not after a newer abort command.
+                trajectory_progress["elapsed"] = replay_duration
+            return trajectory_progress["elapsed"]
+
         if hand_positions is not None:
             hand_thread = threading.Thread(
                 target=_stream_hand,
@@ -537,17 +796,29 @@ def main(argv=None):
                     stream_time,
                     hand_positions,
                     hand_errors,
+                    trajectory_clock
+                    if not args.no_arm and args.arm_controller == "joint-impedance"
+                    else None,
                 ),
                 daemon=True,
             )
             hand_thread.start()
         if prepared is not None:
-            node.send_trajectory(
-                prepared,
-                config["prepare"]["send_rate"],
-                timeout_margin=args.timeout_margin,
-                on_accept=started.set,
-            )
+            keyboard = (_InteractivePause(node, started, hand_stop)
+                        if args.interactive_pause else nullcontext())
+            with keyboard as controls:
+                node.send_trajectory(
+                    prepared,
+                    config["prepare"]["send_rate"],
+                    timeout_margin=args.timeout_margin,
+                    on_accept=started.set,
+                    allow_pauses=args.interactive_pause,
+                )
+            if args.interactive_pause:
+                if controls.errors:
+                    raise RuntimeError(f"interactive pause failed: {controls.errors[0]}")
+                if controls.aborted.is_set():
+                    raise Rejected("interactive replay aborted")
         else:
             # With no arm controller to acknowledge a trajectory, there is
             # nothing for the hand thread to wait on: release it immediately.

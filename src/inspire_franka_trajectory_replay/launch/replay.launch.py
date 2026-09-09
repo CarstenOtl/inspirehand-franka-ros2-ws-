@@ -63,20 +63,19 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_ip", default_value="172.16.0.2"),
-            # Stock JointTrajectoryController over position interfaces. This
-            # makes franka_hardware use the FR3's internal joint-impedance
-            # controller; no custom torque/impedance law is in the replay path.
+            # The simple joint-impedance example's effort law and gains, with
+            # the replay plugin supplying its reference from recorded waypoints.
             DeclareLaunchArgument(
                 "controllers_yaml",
                 default_value=PathJoinSubstitution(
                     [
                         FindPackageShare("inspire_franka_trajectory_replay"),
                         "config",
-                        "controllers_internal_impedance.yaml",
+                        "controllers_joint_impedance.yaml",
                     ]
                 ),
-                description="Controller manager configuration for the stock position "
-                "trajectory controller and robot-internal joint impedance.",
+                description="Controller manager configuration for example joint-impedance "
+                "waypoint replay over effort interfaces.",
             ),
             DeclareLaunchArgument("hand_port", default_value="/dev/ttyUSB0"),
             DeclareLaunchArgument("hand_id", default_value="1"),
