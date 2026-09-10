@@ -24,7 +24,7 @@ Measured workcell transforms are stored in UTC timestamp directories:
 
 ```text
 calibration/
-  20260909T175352_443744Z/
+  20260910T152223_150165Z/
     calibrated_tf.yaml
 ```
 
