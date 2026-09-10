@@ -19,8 +19,9 @@ thick, centred on its mesh origin. The MJCF places that origin 5 mm above
 `fr3_link8`, making the part span the full 0--10 mm gap to the palm.
 
 `apriltag_36h11_id0_dorsal.obj` is not a replacement hand mesh. It is the local,
-flat 2.3 mm dorsal mounting plate used on the physical workcell hand. The 36h11
+flat 2.3 mm mounting plate used by the physical flange-mounted holder. The 36h11
 id 0 black square is 40 mm; its one-cell quiet zone makes the complete textured
-face 50 mm square. The upper-left black corner is 20 mm from the little-finger
-rim and 80 mm from the palm's z=0 flange datum. Its print is rotated 180 degrees
-to match the physical workcell hand.
+face 50 mm square. The mount first creates an `Rz1=-45 deg` frame about
+`fr3_link8` Z, then places the printed face centre 59 mm along Rz1 +X and 35 mm
+along Rz1 +Z. The print has zero in-plane clocking, with one edge parallel to
+flange Z. The existing print/UV orientation is preserved.

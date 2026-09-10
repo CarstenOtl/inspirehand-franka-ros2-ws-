@@ -1,7 +1,7 @@
-# Flat AprilTag plate matching the physical dorsal mount
-# First black pixel: y=-0.020545646 m, z=0.080 m in the palm frame
+# Flat AprilTag plate matching the physical flange-mounted holder
+# Printed face pose is defined by its parent body in the MJCF scene
 # Black square: 40 mm; full face including quiet zone: 50 mm
-# Plate thickness: 2.3 mm; printed face is local z=0.0023 m
+# Raw mesh thickness: 2.3 mm; MJCF offsets its local z=0.0023 printed face to TCP z=0
 v -0.025 -0.025 0.0000
 v  0.025 -0.025 0.0000
 v  0.025  0.025 0.0000

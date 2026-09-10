@@ -1,9 +1,9 @@
 # RealSense D415 RGB eye-to-hand calibration
 
 This app estimates a fixed table camera's pose in the Franka `world` frame.
-An AprilTag is stuck rigidly to the back of the Inspire Hand. Its placement
-is the measured fixed pose represented by the current robot asset. The solver
-uses that known mount and estimates only `fr3_link0 -> camera`.
+An AprilTag is fixed rigidly to an end-effector flange-mounted holder. Its
+placement is the measured fixed pose represented by the current robot asset.
+The solver uses that known mount and estimates only `fr3_link0 -> camera`.
 
 The entry point is a passive recorder. It starts the camera and calibration
 node, but never starts a controller or sends a robot/hand command. Start the
@@ -13,9 +13,10 @@ while keeping the complete tag visible.
 ## Before running
 
 1. Print a supported AprilTag (default `tag36h11`, ID 0) and attach it to the
-   2.3 mm flat plate on the back of the palm—not to a moving finger. The asset
-   places the upper-left black corner 80 mm from the palm's flange datum and
-   20 mm from the little-finger-side rim.
+   2.3 mm flat flange-mounted holder—not to a moving finger. The asset places
+   First rotate an intermediate mount frame `Rz1=-45 deg` about `fr3_link8` Z,
+   then place the printed face centre at `(59, 0, 35)` mm in `Rz1`. The print
+   has zero in-plane clocking within that frame.
 2. Measure the outer edge of the black square, excluding the white paper, in
    metres. Pose scale depends directly on this value.
 3. Start the combined robot bringup so `fr3_link0 -> fr3_link8` is available.
@@ -139,13 +140,16 @@ Defaults:
 - moving pose: `fr3_link0 -> fr3_link8`
 - calibrated pose: `fr3_link0 -> camera_link`
 
-The tag is physically fixed on the Inspire Hand. The recorder uses timestamped
+The tag is physically fixed to the end-effector flange. The recorder uses timestamped
 `fr3_link0 -> fr3_link8` FK generated from the arm's `/joint_states`, then applies
 the measured fixed `fr3_link8 -> apriltag_0` transform from the current physical
-asset, `assets/fr3_inspirehand/fr3_inspirehand.xml`. That transform includes the
-180-degree Z clocking, 10 mm adapter between the flange and palm, and the tag
-plane on top of its 2.3 mm backing plate. The tag mount is not estimated; only
-the fixed camera pose is calibrated.
+asset, `assets/fr3_inspirehand/fr3_inspirehand.xml`. The printed tag transform is
+The MJCF first creates `apriltag_rz1` with `Rz=-45 deg` relative to
+`fr3_link8`, then places `apriltag_0` at `xyz=(0.059, 0, 0.035)` m in that
+intermediate frame. Consequently, the printed centre resolves to approximately
+`xyz=(0.0417193, -0.0417193, 0.035)` m in `fr3_link8`. Its origin is the printed
+face centre; the 2.3 mm backing plate extends behind it. The tag mount is not
+estimated; only the fixed camera pose is calibrated.
 
 `--manual` means hand-guided collection: move the hand across the image, vary
 its distance and orientation, and keep the complete tag visible. At each pose,

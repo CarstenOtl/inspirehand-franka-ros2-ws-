@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Standalone FR3 + Inspire Hand MuJoCo sidebar-control bringup.
 
-Run this file directly to open MuJoCo's native viewer.  The right sidebar's
-``Control`` section contains position sliders for the seven FR3 joints and the
-six independently driven Inspire Hand joints.  This dummy is simulation-only:
-it does not initialize ROS 2 or send commands to hardware.
+Run this file directly to open MuJoCo's native viewer. Body coordinate frames
+and body names are shown for every robot link. The right sidebar's ``Control``
+section contains position sliders for the seven FR3 joints and the six
+independently driven Inspire Hand joints. This dummy is simulation-only: it
+does not initialize ROS 2 or send commands to hardware.
 
 Pytest only runs the non-interactive model contract test, so test discovery
 never opens a window or waits for the viewer to close.
@@ -217,6 +218,7 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
 
     print(f"Loaded scene: {scene}")
     print("Simulation only: ROS 2 and real-robot commands are disabled.")
+    print("Body frames and link names are enabled (RGB axes: X/Y/Z).")
     print("Open the right sidebar's Control section to move the arm and hand.")
     print("Close the window or press Ctrl+C in this terminal to exit.")
 
@@ -226,6 +228,13 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
         show_left_ui=True,
         show_right_ui=True,
     ) as viewer:
+        # These are the same controls exposed under Visualization > Frame and
+        # Label in MuJoCo's left sidebar. BODY draws an RGB coordinate triad at
+        # every body/link origin; BODY labels make each frame identifiable.
+        with viewer.lock():
+            viewer.opt.frame = mujoco.mjtFrame.mjFRAME_BODY
+            viewer.opt.label = mujoco.mjtLabel.mjLABEL_BODY
+
         next_step = time.monotonic()
         try:
             while viewer.is_running():

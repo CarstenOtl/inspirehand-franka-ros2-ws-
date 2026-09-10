@@ -281,6 +281,9 @@ def _absolute_asset_xml_with_camera(
     tag_geom.set("type", "mesh")
     tag_geom.set("mesh", planar_mesh_name)
     tag_geom.attrib.pop("size", None)
+    # The generated mesh is already the zero-thickness printed surface. Remove
+    # the source plate's thickness offset while retaining its UV-yaw correction.
+    tag_geom.set("pos", "0 0 0")
 
     visual_global = root.find("./visual/global")
     if visual_global is None:
@@ -393,8 +396,7 @@ def _project_tag_corners(
 def _world_to_printed_tag_from_fk(data: Any, tag_body_id: int) -> np.ndarray:
     """Return the printed tag frame in the robot/world frame from MuJoCo FK."""
     world_to_tag_body = _pose(data.xpos[tag_body_id], data.xmat[tag_body_id])
-    # The in-memory planar face is on top of the 2.3 mm plate. Its UV mapping
-    # rotates the printed AprilTag axes +90 degrees around the body's +Z.
+    # The body/site origin is the printed tag centre and detector frame.
     body_to_printed_tag = make_transform(
         quaternion_xyzw_to_matrix(TAG_BODY_TO_PRINTED_TAG_QUATERNION_XYZW),
         TAG_BODY_TO_PRINTED_TAG_XYZ,
