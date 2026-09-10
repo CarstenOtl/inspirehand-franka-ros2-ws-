@@ -114,6 +114,8 @@ def test_hardware_replay_matches_the_working_example_profile():
     assert controller["command_interface"] == "effort"
     assert controller["k_gains"] == [24, 24, 24, 24, 10, 6, 2]
     assert controller["d_gains"] == [2, 2, 2, 1, 1, 1, 0.5]
+    assert controller["stiffness_scale"] == 1.0
+    assert controller["gain_ramp_duration"] == 1.0
     assert controller["coriolis_compensation"] is False
     assert controller["pause_ramp_duration"] == 0.5
     assert controller["set_collision_behavior"] is False

@@ -360,7 +360,10 @@ class CoordinatedReplayClient(HandReplayMixin, ReplayClient):
         )
         if "processed_command_id" not in self.wait_for_status():
             raise Rejected("rebuild franka_trajectory_replay: controller lacks abort acknowledgment")
-        log("waypoint replay uses the example's joint-impedance law over effort interfaces")
+        log(
+            "waypoint replay uses the example's joint-impedance law over effort "
+            f"interfaces (stiffness scale {parameters.get('stiffness_scale', 1.0):g})"
+        )
 
     def status(self):
         # A deactivated controller stops publishing: never treat old 'idle'

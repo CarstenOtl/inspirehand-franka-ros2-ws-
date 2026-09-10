@@ -50,6 +50,12 @@ std::string format_joints(const std::array<double, 7>& values) {
   return buffer;
 }
 
+std::string format_joints(const TrajectoryReplayController::Vector7d& values) {
+  std::array<double, 7> array{};
+  std::copy(values.data(), values.data() + values.size(), array.begin());
+  return format_joints(array);
+}
+
 }  // namespace
 
 const char* TrajectoryReplayController::phase_name(Phase phase) {
@@ -217,6 +223,35 @@ TrajectoryReplayController::Vector7d TrajectoryReplayController::compute_torque_
   }
   return example_joint_impedance(q_desired, q_current, dq_current,
                                  k_gains_, d_gains_, dq_filtered_) + coriolis;
+}
+
+void TrajectoryReplayController::update_impedance_gains(double dt) {
+  const GainSettings* settings = gain_settings_buffer_.readFromRT();
+  if (settings != nullptr && settings->revision != rt_gain_revision_) {
+    gain_ramp_start_k_ = k_gains_;
+    gain_ramp_start_d_ = d_gains_;
+    gain_target_k_ =
+        settings->stiffness_scale * Vector7d(settings->stiffness.data());
+    gain_target_d_ = Vector7d(settings->damping.data());
+    rt_gain_ramp_elapsed_ = 0.0;
+    rt_gain_ramp_duration_ = settings->ramp_duration;
+    rt_gain_revision_ = settings->revision;
+  }
+
+  if (rt_gain_ramp_elapsed_ < rt_gain_ramp_duration_) {
+    rt_gain_ramp_elapsed_ = std::min(rt_gain_ramp_elapsed_ + dt, rt_gain_ramp_duration_);
+    const double s = quintic_blend(rt_gain_ramp_elapsed_ / rt_gain_ramp_duration_);
+    k_gains_ = gain_ramp_start_k_ + s * (gain_target_k_ - gain_ramp_start_k_);
+    d_gains_ = gain_ramp_start_d_ + s * (gain_target_d_ - gain_ramp_start_d_);
+  } else {
+    k_gains_ = gain_target_k_;
+    d_gains_ = gain_target_d_;
+  }
+
+  for (int i = 0; i < kNumJoints; ++i) {
+    stiffness_snapshot_[i].store(k_gains_(i), std::memory_order_relaxed);
+    damping_snapshot_[i].store(d_gains_(i), std::memory_order_relaxed);
+  }
 }
 
 TrajectoryReplayController::Vector7d TrajectoryReplayController::saturate_torque_rate(
@@ -542,6 +577,15 @@ void TrajectoryReplayController::publish_status() {
   add("pause_requested", pause_requested_.load() ? "true" : "false");
   add("paused", paused_.load() ? "true" : "false");
   add("playback_rate", std::to_string(playback_rate_.load()));
+  add("stiffness_scale_target", std::to_string(stiffness_scale_target_.load()));
+  std::array<double, 7> stiffness{};
+  std::array<double, 7> damping{};
+  for (int i = 0; i < kNumJoints; ++i) {
+    stiffness[i] = stiffness_snapshot_[i].load(std::memory_order_relaxed);
+    damping[i] = damping_snapshot_[i].load(std::memory_order_relaxed);
+  }
+  add("k_gains_applied", format_joints(stiffness));
+  add("d_gains_applied", format_joints(damping));
   add("rate_limit_engaged_total", std::to_string(rate_limit_engaged_.load()));
   add("rate_limit_engaged_last_command", std::to_string(rate_limit_engaged_last_command_.load()));
   add("rejections", std::to_string(rejections_));
@@ -586,6 +630,10 @@ controller_interface::return_type TrajectoryReplayController::update(
       command_snapshot_[i].store(position_command_(i), std::memory_order_relaxed);
     }
     command_initialized_.store(true, std::memory_order_release);
+  }
+
+  if (effort_mode_) {
+    update_impedance_gains(dt);
   }
 
   const Command* command = command_buffer_.readFromRT();
@@ -796,6 +844,8 @@ CallbackReturn TrajectoryReplayController::on_init() {
     auto_declare<std::vector<double>>("k_gains",
                                       {600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0});
     auto_declare<std::vector<double>>("d_gains", {30.0, 30.0, 30.0, 30.0, 10.0, 10.0, 5.0});
+    auto_declare<double>("stiffness_scale", 1.0);
+    auto_declare<double>("gain_ramp_duration", 1.0);
 
     // Collision thresholds, the values franka_example_controllers/default_robot_behavior_utils.hpp
     // installs before the upstream examples run.
@@ -877,9 +927,124 @@ bool TrajectoryReplayController::assign_parameters() {
       !fill7("k_gains", k) || !fill7("d_gains", d)) {
     return false;
   }
-  k_gains_ = Vector7d(k.data());
+  const double stiffness_scale = node->get_parameter("stiffness_scale").as_double();
+  const double gain_ramp_duration = node->get_parameter("gain_ramp_duration").as_double();
+  const auto finite_nonnegative = [](const std::array<double, 7>& values) {
+    return std::all_of(values.begin(), values.end(),
+                       [](double value) { return std::isfinite(value) && value >= 0.0; });
+  };
+  if (!finite_nonnegative(k) || !finite_nonnegative(d) ||
+      !std::isfinite(stiffness_scale) || stiffness_scale < 0.0 ||
+      !std::isfinite(gain_ramp_duration) || !(gain_ramp_duration > 0.0)) {
+    RCLCPP_FATAL(node->get_logger(),
+                 "k_gains, d_gains and stiffness_scale must be finite and non-negative; "
+                 "gain_ramp_duration must be finite and > 0");
+    return false;
+  }
+
+  GainSettings settings;
+  settings.stiffness = k;
+  settings.damping = d;
+  settings.stiffness_scale = stiffness_scale;
+  settings.ramp_duration = gain_ramp_duration;
+  settings.revision = ++next_gain_revision_;
+  gain_settings_buffer_.writeFromNonRT(settings);
+  stiffness_scale_target_.store(stiffness_scale, std::memory_order_release);
+  k_gains_ = stiffness_scale * Vector7d(k.data());
   d_gains_ = Vector7d(d.data());
   return true;
+}
+
+rcl_interfaces::msg::SetParametersResult
+TrajectoryReplayController::gain_parameters_callback(
+    const std::vector<rclcpp::Parameter>& parameters) {
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  GainSettings settings = *gain_settings_buffer_.readFromNonRT();
+  bool changed = false;
+  for (const auto& parameter : parameters) {
+    const auto& name = parameter.get_name();
+    if (name == "k_gains") {
+      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+        result.successful = false;
+        result.reason = "k_gains must be a double array";
+        return result;
+      }
+      const auto values = parameter.as_double_array();
+      if (values.size() != kNumJoints) {
+        result.successful = false;
+        result.reason = "k_gains must contain exactly 7 values";
+        return result;
+      }
+      std::copy(values.begin(), values.end(), settings.stiffness.begin());
+      changed = true;
+    } else if (name == "d_gains") {
+      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
+        result.successful = false;
+        result.reason = "d_gains must be a double array";
+        return result;
+      }
+      const auto values = parameter.as_double_array();
+      if (values.size() != kNumJoints) {
+        result.successful = false;
+        result.reason = "d_gains must contain exactly 7 values";
+        return result;
+      }
+      std::copy(values.begin(), values.end(), settings.damping.begin());
+      changed = true;
+    } else if (name == "stiffness_scale") {
+      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        result.successful = false;
+        result.reason = "stiffness_scale must be a double";
+        return result;
+      }
+      settings.stiffness_scale = parameter.as_double();
+      changed = true;
+    } else if (name == "gain_ramp_duration") {
+      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        result.successful = false;
+        result.reason = "gain_ramp_duration must be a double";
+        return result;
+      }
+      settings.ramp_duration = parameter.as_double();
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return result;
+  }
+  if (!effort_mode_) {
+    result.successful = false;
+    result.reason = "live impedance gains are only available in effort mode";
+    return result;
+  }
+  const auto finite_nonnegative = [](const std::array<double, 7>& values) {
+    return std::all_of(values.begin(), values.end(),
+                       [](double value) { return std::isfinite(value) && value >= 0.0; });
+  };
+  if (!finite_nonnegative(settings.stiffness) || !finite_nonnegative(settings.damping) ||
+      !std::isfinite(settings.stiffness_scale) || settings.stiffness_scale < 0.0) {
+    result.successful = false;
+    result.reason = "k_gains, d_gains and stiffness_scale must be finite and non-negative";
+    return result;
+  }
+  if (!std::isfinite(settings.ramp_duration) || !(settings.ramp_duration > 0.0)) {
+    result.successful = false;
+    result.reason = "gain_ramp_duration must be finite and > 0";
+    return result;
+  }
+
+  settings.revision = ++next_gain_revision_;
+  gain_settings_buffer_.writeFromNonRT(settings);
+  stiffness_scale_target_.store(settings.stiffness_scale, std::memory_order_release);
+  RCLCPP_INFO(get_node()->get_logger(),
+              "Joint-impedance gain update requested: stiffness scale %.3f, K %s, D %s "
+              "(%.3f s ramp).",
+              settings.stiffness_scale,
+              format_joints(settings.stiffness_scale * Vector7d(settings.stiffness.data())).c_str(),
+              format_joints(Vector7d(settings.damping.data())).c_str(), settings.ramp_duration);
+  return result;
 }
 
 bool TrajectoryReplayController::apply_collision_behavior() {
@@ -937,6 +1102,13 @@ CallbackReturn TrajectoryReplayController::on_configure(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   if (!assign_parameters()) {
     return CallbackReturn::FAILURE;
+  }
+
+  if (!parameter_callback_handle_) {
+    parameter_callback_handle_ = get_node()->add_on_set_parameters_callback(
+        [this](const std::vector<rclcpp::Parameter>& parameters) {
+          return gain_parameters_callback(parameters);
+        });
   }
 
   franka_robot_model_.reset();
@@ -1019,6 +1191,16 @@ CallbackReturn TrajectoryReplayController::on_activate(
   RCLCPP_INFO(get_node()->get_logger(), "Cycle time %.4f s (controller manager update rate %u Hz).",
               cycle_time_, update_rate);
   first_update_ = true;
+  const GainSettings settings = *gain_settings_buffer_.readFromNonRT();
+  rt_gain_revision_ = settings.revision;
+  k_gains_ = settings.stiffness_scale * Vector7d(settings.stiffness.data());
+  d_gains_ = Vector7d(settings.damping.data());
+  gain_ramp_start_k_ = k_gains_;
+  gain_ramp_start_d_ = d_gains_;
+  gain_target_k_ = k_gains_;
+  gain_target_d_ = d_gains_;
+  rt_gain_ramp_elapsed_ = settings.ramp_duration;
+  rt_gain_ramp_duration_ = settings.ramp_duration;
   command_initialized_.store(false, std::memory_order_release);
   phase_.store(static_cast<int>(Phase::kIdle));
   rt_command_id_ = 0;
@@ -1037,6 +1219,10 @@ CallbackReturn TrajectoryReplayController::on_activate(
   rejections_ = 0;
   for (auto& value : measured_positions_snapshot_) {
     value.store(0.0, std::memory_order_relaxed);
+  }
+  for (int i = 0; i < kNumJoints; ++i) {
+    stiffness_snapshot_[i].store(k_gains_(i), std::memory_order_relaxed);
+    damping_snapshot_[i].store(d_gains_(i), std::memory_order_relaxed);
   }
   if (franka_robot_model_) {
     franka_robot_model_->assign_loaned_state_interfaces(state_interfaces_);

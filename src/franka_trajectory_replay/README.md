@@ -43,6 +43,17 @@ time. Status includes `pause_requested`, `paused`, and `playback_rate`.
 Pick the mode with `controllers_yaml:=` on the launch; the controller reports which one it is
 in on its status topic and the report records it.
 
+In `effort` mode the stiffness is live-tunable. `stiffness_scale` multiplies the configured
+seven-element `k_gains` vector, and changes to that scale, `k_gains`, or `d_gains` are blended
+over `gain_ramp_duration` (1 s by default) in the real-time loop. For example, while active:
+
+```bash
+ros2 param set /trajectory_replay_controller stiffness_scale 1.25
+```
+
+This affects only the ROS-side effort law. It cannot change the position mode's internal
+libfranka impedance; set that through the robot's supported joint-impedance mechanism instead.
+
 ### What the controller guards
 
 `franka_hardware` passes position commands to libfranka **unfiltered and unlimited** (both

@@ -95,13 +95,23 @@ ros2 launch inspire_franka_trajectory_replay replay.launch.py
 ros2 launch inspire_franka_trajectory_replay replay.launch.py \
     arm:=false
 
-# In another sourced shell: run the hardware-validated threading baseline.
-# This artifact includes the +90-degree joint-7 retarget required by the
-# physical 180-degree flange mount. Do not substitute raw traj_1 for the arm.
+# In another sourced shell: run the hardware-validated legacy traj_1 baseline.
+# This already-generated artifact contains the historical +90-degree joint-7
+# retarget. Do not add or remove that offset from this retained baseline.
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
     apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
     --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
     --close-support-fingers
+
+# traj_2 and every later policy capture use the current hardware orientation:
+# replay joint 7 exactly as recorded and never apply the legacy +90-degree step.
+# This five-cycle candidate has passed dry-run preparation; remove --dry-run
+# only for an intentional hardware validation run.
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    apps/traj_replay/demo_trajs/traj_2_5x \
+    --home apps/traj_replay/demo_trajs/traj_2_5x/homing.yaml \
+    --time-scale 5 --interactive-pause \
+    --max-prepared-duration 300 --dry-run
 
 # Pickup rollout with live scene-adjustment pauses. During replay, SPACE
 # smoothly pauses and holds both devices; SPACE resumes and q aborts.
@@ -514,14 +524,18 @@ no error at all — just a robot that quietly does the wrong thing.
   for build and arm-only test commands. The retained MuJoCo replay launch needs
   `--arm-controller position-jtc` on the runner.
   On 2026-09-09, coordinated threading cycle 1 was confirmed on hardware with
-  the correct tool orientation and a good replay using the 180-degree flange
-  baseline: a `+90 deg` retarget of `fr3_joint7`, its matching retargeted home,
-  and `--close-support-fingers`. The checked-in
+  the correct tool orientation and a good replay using the legacy-source
+  180-degree flange baseline: a `+90 deg` retarget of `fr3_joint7`, its matching
+  retargeted home, and `--close-support-fingers`. The checked-in
   `demo_trajs/threading_cycle1_flange180` artifact is the default hardware
-  baseline. The retargeted `threading_5x_flange180` five-cycle run was then
-  confirmed on hardware at 5x slowdown with interactive pause. Raw `traj_1`,
-  raw `homing/threading.yaml`, and unretargeted `threading_5x` remain outdated
-  for arm replay with the current mount.
+  baseline. Raw `traj_1`, raw `homing/threading.yaml`, and the unretargeted
+  `threading_5x` artifact are outdated for arm replay with the current mount.
+  This compensation is historical, not the current capture workflow. `traj_2`
+  and all later policy trajectories are developed with the hardware joint
+  orientation already correct: joint 7 is replayed unchanged with a zero
+  offset, and `retarget_flange_mount.py` must not be applied. The checked-in
+  `traj_2_cycle3` and `traj_2_5x` candidates follow that rule and pass dry-run
+  preparation; physical validation is still recorded separately.
 - **Simulation — verified end to end.** MuJoCo runs headless with
   `MujocoSystemInterface` active at 1 kHz, all three controllers active, sim
   clock advancing. Arm and hand trajectories sent *simultaneously* both report

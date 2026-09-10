@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "data_file": "replay_data.npz",
+  "generated_by": "inspire_franka_trajectory_replay.make_cycles",
+  "description": "Cycles 1-5 of traj_2 concatenated as recorded with joint orientations unchanged, followed by a smooth return to the matching home. One continuous run: no --cycle or --segment needed.",
+  "units": "radians",
+  "recording_frequency_hz": 15.000000000000053,
+  "sample_count": 472,
+  "arm_joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7"
+  ],
+  "hand_joint_names": [
+    "pinky_proximal_joint",
+    "ring_proximal_joint",
+    "middle_proximal_joint",
+    "index_proximal_joint",
+    "thumb_proximal_pitch_joint",
+    "thumb_proximal_yaw_joint"
+  ],
+  "cycles": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "cycle_samples": 442,
+  "ramp_samples": 30,
+  "rate_hz": 15.000000000000053,
+  "start_from_home": 7.152557373046875e-07,
+  "recorded_end_from_home": 0.007539510726928711,
+  "final_from_home": 0.0,
+  "source": "../traj_2/replay_data.npz",
+  "home": "homing.yaml",
+  "environment": 0,
+  "hardware_orientation": {
+    "joint": "fr3_joint7",
+    "offset_rad": 0.0,
+    "note": "The traj_2 policy was developed with the current hardware joint orientation; no artificial flange-clock compensation is applied."
+  }
+}

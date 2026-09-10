@@ -1,15 +1,56 @@
 # Trajectory replay artifacts
 
-## De facto threading hardware baseline
+## `fr3_joint7` orientation contract
 
-Use `threading_cycle1_flange180` for coordinated or arm-only threading replay
-on the current physical FR3 + Inspire RH56 setup. It is the configuration that
-was confirmed on hardware with the correct tool orientation and a good replay:
+`traj_2` establishes the convention for all new captures: policies are developed
+with the current physical FR3 + Inspire hand orientation, so `fr3_joint7` is
+replayed exactly as recorded. The matching home must use the same recorded
+value. Do **not** apply `+90 deg`, `+pi/2`, `retarget_flange_mount.py`, or a
+`*_flange180` conversion to `traj_2` or any later trajectory.
 
-- physical 180-degree flange mount;
-- `+90 deg` (`+pi/2 rad`) applied to every `fr3_joint7` waypoint;
-- the matching retargeted `homing.yaml` colocated with the trajectory;
-- `--close-support-fingers` at replay time.
+The rotation remains relevant only to legacy `traj_1` material. `traj_1` was
+recorded under the old convention, and its retained hardware derivatives
+`threading_cycle1_flange180` and `threading_5x_flange180` contain the historical
+`+90 deg` compensation. Those artifacts remain valid as already generated and
+validated; do not add or remove the offset from them.
+
+Always keep a trajectory with its matching `homing.yaml`. A difference of about
+`1.571 rad` on joint 7 means conventions were mixed; never hide that with
+`--max-home-delta`.
+
+## Current-orientation `traj_2` artifacts
+
+- `traj_2`: six-cycle 15 Hz source capture; select one with `--cycle N` and use
+  its `homing.yaml`.
+- `traj_2_cycle3`: one continuous cycle-3 candidate plus a smooth return home.
+- `traj_2_5x`: cycles 1–5 as one continuous candidate plus a smooth return home.
+
+All three keep the recorded joint-7 values unchanged (`offset_rad: 0.0`). The
+derived candidates pass the replay dry-run checks but remain distinct from a
+physically validated baseline until a hardware run is confirmed.
+
+Five continuous cycles at 5x slowdown prepare to 159 seconds, so the duration
+guard must be raised explicitly:
+
+```bash
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_2_5x \
+  --home apps/traj_replay/demo_trajs/traj_2_5x/homing.yaml \
+  --time-scale 5 \
+  --interactive-pause \
+  --max-prepared-duration 300 \
+  --dry-run
+```
+
+Remove `--dry-run` only after the normal hardware checks and replay launch. Add
+`--close-support-fingers` only when deliberately overriding the recorded pinky,
+ring, and middle positions with their fully closed limits.
+
+## Legacy `traj_1` hardware baselines
+
+The de facto one-cycle baseline remains `threading_cycle1_flange180`. It was
+confirmed on hardware with the historical joint-7 compensation and the
+support-finger override:
 
 ```bash
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
@@ -18,23 +59,8 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
   --close-support-fingers --dry-run
 ```
 
-Remove `--dry-run` only after the normal hardware checks and replay launch.
-Never raise `--max-home-delta` to bridge a 1.571 rad joint-7 mismatch: that is
-the known signature of mixing the legacy and current mount conventions.
-
-## Outdated threading arm configurations
-
-The following are retained for provenance, visualization, hand-only testing,
-or deriving new candidates. They are not current hardware-arm baselines:
-
-- `traj_1`: original Forge source using the legacy mount convention;
-- `homing/threading.yaml`: matching legacy-mount source home;
-- `threading_5x`: unretargeted five-cycle intermediate.
-
-`threading_5x_flange180` is not outdated: it is the validated extended run for
-the same mount convention. Its complete five-cycle replay was confirmed on
-hardware at 5x slowdown with interactive pause. The smaller
-`threading_cycle1_flange180` remains the canonical baseline.
+`threading_5x_flange180` is the validated five-cycle legacy run. Its complete
+replay was confirmed on hardware at 5x slowdown with interactive pause:
 
 ```bash
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
@@ -46,12 +72,11 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
   --max-prepared-duration 300
 ```
 
-Raw `traj_1` is still valid with `--no-arm`, because hand-only replay never
-commands `fr3_joint7`. The pickup artifacts belong to a separate task and are
-not classified by this threading decision.
+Raw `traj_1`, `homing/threading.yaml`, and `threading_5x` remain legacy source
+material rather than direct hardware-arm artifacts. Raw `traj_1` is still valid
+with `--no-arm`, because hand-only replay never commands `fr3_joint7`.
 
-When deriving another threading cycle or multi-cycle candidate, first use
-`make_cycle_trajectory`, then apply `retarget_flange_mount.py` with
-`--joint7-offset-deg 90`, and keep the generated trajectory paired with its
-generated homing YAML. A derived candidate does not replace or extend the
-baseline until it is independently hardware-validated.
+For future multi-cycle captures, use `make_cycle_trajectory` with the capture's
+matching zero-offset home and replay the generated result directly. The
+retargeting script is retained only for deriving artifacts from legacy
+`traj_1`-convention sources.

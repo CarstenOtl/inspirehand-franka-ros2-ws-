@@ -150,7 +150,8 @@ class ReplayClient(Node):
             'command_interface', 'rate_limit', 'k_gains', 'd_gains', 'goto_max_velocity',
             'goto_max_acceleration', 'goto_min_duration', 'max_joint_step',
             'max_trajectory_start_error', 'coriolis_compensation', 'set_collision_behavior',
-            'torque_rate_limit', 'pause_ramp_duration'])
+            'torque_rate_limit', 'pause_ramp_duration', 'stiffness_scale',
+            'gain_ramp_duration'])
 
     def robot_description(self):
         return self.remote_parameters(

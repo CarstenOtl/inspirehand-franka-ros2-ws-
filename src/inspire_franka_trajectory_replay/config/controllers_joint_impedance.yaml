@@ -29,6 +29,11 @@
       # Exact gains of joint_impedance_example_controller (not the IK example).
       k_gains: [24.0, 24.0, 24.0, 24.0, 10.0, 6.0, 2.0]
       d_gains: [2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 0.5]
+      # Both k_gains and this multiplier can be changed while replay is active.
+      # The controller blends every live gain change over gain_ramp_duration so
+      # increasing stiffness cannot introduce a one-cycle torque discontinuity.
+      stiffness_scale: 1.0
+      gain_ramp_duration: 1.0
       coriolis_compensation: false
       # Pause/resume changes the trajectory clock continuously rather than
       # freezing a moving reference in one controller cycle.

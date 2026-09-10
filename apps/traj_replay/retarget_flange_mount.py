@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""Retarget a coordinated FR3 replay after changing the hand flange clocking.
+"""Retarget a legacy coordinated FR3 replay after changing hand flange clocking.
 
-The current physical and unified-simulation mount is clocked another +90 degrees
-around link8 Z relative to the legacy Forge replay model.  The recorded world
-pose of the hand is preserved exactly by adding the same angle to fr3_joint7.
+This compatibility tool is for ``traj_1``-convention source material only. The
+current physical and unified-simulation mount is clocked another +90 degrees
+around link8 Z relative to that legacy Forge replay model. The recorded world
+pose of the hand is preserved by adding the same angle to fr3_joint7.
+
+``traj_2`` and all later captures are developed with the hardware joint
+orientation already correct. Do not pass them through this tool; replay their
+joint-7 values unchanged.
 
 This tool writes a new artifact and a matching homing YAML.  The source files
 are never modified and an existing output directory is never overwritten.
-Generated artifacts are candidates, not automatically hardware baselines.  The
-validated baseline is demo_trajs/threading_cycle1_flange180; validate any new
-cycle selection with --dry-run and on hardware before promoting it.
+Generated legacy artifacts are candidates, not automatically hardware
+baselines. The validated legacy baseline is
+demo_trajs/threading_cycle1_flange180; validate any derived selection with
+--dry-run and on hardware before promoting it.
 """
 
 import argparse
@@ -166,7 +172,7 @@ def main(argv=None) -> int:
         "--joint7-offset-deg",
         type=float,
         required=True,
-        help="explicit fr3_joint7 compensation in degrees (+90 for the current mount)",
+        help="explicit legacy fr3_joint7 compensation in degrees (+90 for traj_1 sources)",
     )
     args = parser.parse_args(argv)
     try:

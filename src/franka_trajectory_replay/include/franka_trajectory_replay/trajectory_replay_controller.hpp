@@ -28,6 +28,7 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <franka_msgs/srv/set_full_collision_behavior.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <realtime_tools/realtime_buffer.hpp>
 #include <realtime_tools/realtime_publisher.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -65,6 +66,8 @@ namespace franka_trajectory_replay {
  *  - ``~/pause`` / ``~/resume`` (std_msgs/Empty): smoothly ramp the trajectory clock to zero
  *    and back to full speed. The controller keeps holding the reference while paused.
  *  - ``~/abort`` (std_msgs/Empty): decelerate smoothly to a stop and hold.
+ *  - live parameters ``stiffness_scale``, ``k_gains`` and ``d_gains``: update the effort-mode
+ *    impedance while active. Changes follow a quintic ``gain_ramp_duration`` transition.
  *
  * Outputs:
  *  - ``~/controller_state`` (control_msgs/JointTrajectoryControllerState) every update:
@@ -72,6 +75,7 @@ namespace franka_trajectory_replay {
  *    output (the torque, or the position command after the rate limiter).
  *  - ``~/status`` (diagnostic_msgs/DiagnosticArray) at ``status_rate``: phase, command id,
  *    progress, limiter engagement count, last rejection reason.
+ *    Effort mode also reports the requested stiffness scale and the gains currently applied.
  */
 class TrajectoryReplayController : public controller_interface::ControllerInterface {
  public:
@@ -127,7 +131,18 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
     std::shared_ptr<const Trajectory> trajectory;
   };
 
+  struct GainSettings {
+    std::array<double, kNumJoints> stiffness{};
+    std::array<double, kNumJoints> damping{};
+    double stiffness_scale{1.0};
+    double ramp_duration{1.0};
+    uint64_t revision{0};
+  };
+
   bool assign_parameters();
+  rcl_interfaces::msg::SetParametersResult gain_parameters_callback(
+      const std::vector<rclcpp::Parameter>& parameters);
+  void update_impedance_gains(double dt);
   void update_joint_states();
   bool apply_collision_behavior();
   std::vector<std::string> joint_names() const;
@@ -195,10 +210,13 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
   rclcpp::TimerBase::SharedPtr status_timer_;
   std::unique_ptr<realtime_tools::RealtimePublisher<control_msgs::msg::JointTrajectoryControllerState>>
       state_publisher_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
 
   // --- cross-thread state -----------------------------------------------------------------
   realtime_tools::RealtimeBuffer<Command> command_buffer_;
+  realtime_tools::RealtimeBuffer<GainSettings> gain_settings_buffer_;
   uint64_t next_command_id_{0};  ///< only touched by the single-threaded executor callbacks
+  uint64_t next_gain_revision_{0};
   std::atomic<int> phase_{static_cast<int>(Phase::kIdle)};
   std::atomic<uint64_t> active_command_id_{0};
   std::atomic<uint64_t> processed_command_id_{0};
@@ -214,6 +232,9 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
   std::atomic<double> playback_rate_{1.0};
   std::array<std::atomic<double>, kNumJoints> measured_positions_snapshot_;
   std::array<std::atomic<double>, kNumJoints> command_snapshot_;
+  std::array<std::atomic<double>, kNumJoints> stiffness_snapshot_;
+  std::array<std::atomic<double>, kNumJoints> damping_snapshot_;
+  std::atomic<double> stiffness_scale_target_{1.0};
   std::string last_rejection_;  ///< executor thread only
   uint64_t rejections_{0};
 
@@ -236,6 +257,13 @@ class TrajectoryReplayController : public controller_interface::ControllerInterf
   Vector7d velocity_command_;
   Vector7d tau_command_previous_;
   Vector7d dq_filtered_;
+  Vector7d gain_ramp_start_k_;
+  Vector7d gain_ramp_start_d_;
+  Vector7d gain_target_k_;
+  Vector7d gain_target_d_;
+  uint64_t rt_gain_revision_{0};
+  double rt_gain_ramp_elapsed_{0.0};
+  double rt_gain_ramp_duration_{1.0};
   // rate limiter memory (position mode)
   Vector7d limiter_q_;
   Vector7d limiter_dq_;

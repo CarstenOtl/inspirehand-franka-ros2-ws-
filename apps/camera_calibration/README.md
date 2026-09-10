@@ -140,11 +140,11 @@ Defaults:
 - moving pose: `fr3_link0 -> fr3_link8`
 - calibrated pose: `fr3_link0 -> camera_link`
 
-The tag is physically fixed to the end-effector flange. The recorder uses timestamped
-`fr3_link0 -> fr3_link8` FK generated from the arm's `/joint_states`, then applies
-the measured fixed `fr3_link8 -> apriltag_0` transform from the current physical
-asset, `assets/fr3_inspirehand/fr3_inspirehand.xml`. The printed tag transform is
-The MJCF first creates `apriltag_rz1` with `Rz=-45 deg` relative to
+The tag is physically fixed to the end-effector flange. The recorder uses
+timestamped `fr3_link0 -> fr3_link8` FK generated from the arm's `/joint_states`,
+then applies the measured fixed `fr3_link8 -> apriltag_0` transform from the
+current physical asset, `assets/fr3_inspirehand/fr3_inspirehand.xml`. The MJCF
+first creates `apriltag_rz1` with `Rz=-45 deg` relative to
 `fr3_link8`, then places `apriltag_0` at `xyz=(0.059, 0, 0.035)` m in that
 intermediate frame. Consequently, the printed centre resolves to approximately
 `xyz=(0.0417193, -0.0417193, 0.035)` m in `fr3_link8`. Its origin is the printed

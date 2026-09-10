@@ -20,6 +20,7 @@ find_package(franka_semantic_components REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(realtime_tools REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -47,6 +48,7 @@ ament_target_dependencies(${PROJECT_NAME}
     hardware_interface
     pluginlib
     rclcpp
+    rcl_interfaces
     rclcpp_lifecycle
     realtime_tools
     sensor_msgs
@@ -104,6 +106,6 @@ endif()
 
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME})
-ament_export_dependencies(controller_interface franka_semantic_components rclcpp_lifecycle)
+ament_export_dependencies(controller_interface franka_semantic_components rcl_interfaces rclcpp_lifecycle)
 
 ament_package()
