@@ -221,7 +221,8 @@
                                     <joint name="thumb_distal_joint" axis="0 0 1" range="0 0.2775"/>
                                     <geom class="hand_visual" mesh="hand_right_thumb_4" material="hand_rubber"/>
                                     <geom class="hand_collision" mesh="hand_right_thumb_4"/>
-                                    <body name="thumb_tip" pos="0.006 0.022 -0.006"/>
+                                    <!-- Inner distal pinch-pad point on the mesh surface. -->
+                                    <body name="thumb_tip" pos="0.011696 0.021625 -0.006000"/>
                                   </body>
                                 </body>
                               </body>
@@ -236,7 +237,8 @@
                                 <joint name="index_intermediate_joint" axis="0 0 -1" range="0 1.527"/>
                                 <geom class="hand_visual" mesh="hand_right_index_2"/>
                                 <geom class="hand_collision" mesh="hand_right_index_2"/>
-                                <body name="index_tip" pos="0.004 0.043 -0.005"/>
+                                <!-- Inner distal pinch-pad point on the mesh surface. -->
+                                <body name="index_tip" pos="0.016282 0.031961 -0.006065"/>
                               </body>
                             </body>
                             <body name="middle_proximal" pos="-0.000285 0.00295 0.1371" euler="1.5708 0 0">

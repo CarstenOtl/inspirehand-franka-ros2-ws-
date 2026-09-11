@@ -72,8 +72,27 @@ HAND_JOINT_LABELS = (
     ("Thumb yaw", "thumb_proximal_yaw_joint"),
 )
 FINGERTIP_BODIES = ("thumb_tip", "index_tip")
+FINGERTIP_LOCAL_POSITIONS_M = {
+    "thumb_tip": np.array((0.011696, 0.021625, -0.006000)),
+    "index_tip": np.array((0.016282, 0.031961, -0.006065)),
+}
+PALM_BODY = "hand_base_link"
+INDEX_ROTATION_JOINTS = (
+    "index_proximal_joint",
+    "index_intermediate_joint",
+)
+THUMB_ROTATION_JOINTS = (
+    "thumb_proximal_yaw_joint",
+    "thumb_proximal_pitch_joint",
+    "thumb_intermediate_joint",
+    "thumb_distal_joint",
+)
 FINGERTIP_MARKER_RADIUS_M = 0.006
-FINGERTIP_MARKER_RGBA = np.array((1.0, 0.0, 0.0, 0.9))
+ROTATION_CENTER_MARKER_RADIUS_M = 0.003
+PALM_BASELINE_EXTENTS_M = (-0.10, 0.08)
+FINGER_GUIDE_EXTENSION_M = 0.03
+MEASUREMENT_LINE_WIDTH_PIXELS = 4.0
+MEASUREMENT_RED_RGBA = np.array((1.0, 0.0, 0.0, 0.9))
 CONTROLLED_JOINTS = ARM_JOINTS + HAND_JOINTS
 DEFAULT_HAND_KP = 40.0
 DEFAULT_HAND_KV = 2.0
@@ -270,20 +289,140 @@ def measure_hand(model: Any, data: Any) -> tuple[dict[str, float], float]:
     return joint_degrees, fingertip_distance_mm
 
 
+def index_measurement_points(
+    model: Any, data: Any
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the index rotation centres and its tip in world coordinates."""
+    proximal_joint_id, intermediate_joint_id = (
+        _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        for joint_name in INDEX_ROTATION_JOINTS
+    )
+    tip_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, "index_tip")
+    return (
+        data.xanchor[proximal_joint_id],
+        data.xanchor[intermediate_joint_id],
+        data.xpos[tip_id],
+    )
+
+
+def thumb_measurement_points(
+    model: Any, data: Any
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return all thumb rotation centres and its tip in world coordinates."""
+    joint_centres = tuple(
+        data.xanchor[
+            _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        ]
+        for joint_name in THUMB_ROTATION_JOINTS
+    )
+    tip_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, "thumb_tip")
+    return (*joint_centres, data.xpos[tip_id])
+
+
+def measure_index_geometry(model: Any, data: Any) -> dict[str, float]:
+    """Measure index-link bends from the palm and from each other.
+
+    The palm plane is its local Y-Z plane, with +Z along the fingers at zero
+    curl and +X pointing out of the palmar surface.  The segment centerlines
+    run between the proximal joint, intermediate joint, and tip reference.
+    Measuring in this bending plane keeps the values meaningful when the whole
+    hand or arm moves in the world.
+    """
+    palm_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, PALM_BODY)
+    palm_rotation = data.xmat[palm_id].reshape(3, 3)
+    palm_normal = palm_rotation[:, 0]
+    palm_longitudinal = palm_rotation[:, 2]
+    proximal_center, intermediate_center, index_tip = index_measurement_points(
+        model, data
+    )
+    proximal_axis = intermediate_center - proximal_center
+    intermediate_axis = index_tip - intermediate_center
+    proximal_axis /= np.linalg.norm(proximal_axis)
+    intermediate_axis /= np.linalg.norm(intermediate_axis)
+
+    def angle_from_palm(segment_axis: np.ndarray) -> float:
+        return abs(
+            float(
+                np.degrees(
+                    np.arctan2(
+                        np.dot(segment_axis, palm_normal),
+                        np.dot(segment_axis, palm_longitudinal),
+                    )
+                )
+            )
+        )
+
+    parts_relative = np.degrees(
+        np.arccos(np.clip(np.dot(proximal_axis, intermediate_axis), -1.0, 1.0))
+    )
+    return {
+        "Index proximal / palm": angle_from_palm(proximal_axis),
+        "Index intermediate / palm": angle_from_palm(intermediate_axis),
+        "Index parts relative": float(parts_relative),
+    }
+
+
+def measure_thumb_geometry(model: Any, data: Any) -> dict[str, float]:
+    """Measure relative bends between the three moving thumb segments."""
+    _, pitch_center, intermediate_center, distal_center, thumb_tip = (
+        thumb_measurement_points(model, data)
+    )
+    segment_axes = (
+        intermediate_center - pitch_center,
+        distal_center - intermediate_center,
+        thumb_tip - distal_center,
+    )
+    segment_axes = tuple(axis / np.linalg.norm(axis) for axis in segment_axes)
+
+    def relative_angle(first: np.ndarray, second: np.ndarray) -> float:
+        return float(
+            np.degrees(
+                np.arccos(np.clip(np.dot(first, second), -1.0, 1.0))
+            )
+        )
+
+    return {
+        "Thumb proximal / intermediate": relative_angle(
+            segment_axes[0], segment_axes[1]
+        ),
+        "Thumb intermediate / distal": relative_angle(
+            segment_axes[1], segment_axes[2]
+        ),
+    }
+
+
 def format_hand_measurements(model: Any, data: Any) -> tuple[str, str]:
     """Format the live hand measurements as the viewer's two text columns."""
     joint_degrees, fingertip_distance_mm = measure_hand(model, data)
-    labels = ["MEASURED HAND STATE", *joint_degrees, "Thumb <-> index tips"]
+    index_geometry = measure_index_geometry(model, data)
+    thumb_geometry = measure_thumb_geometry(model, data)
+    labels = [
+        "MEASURED HAND STATE",
+        *joint_degrees,
+        "",
+        "INDEX GEOMETRY",
+        *index_geometry,
+        "",
+        "THUMB GEOMETRY",
+        *thumb_geometry,
+        "Thumb <-> index tips",
+    ]
     values = [
         "",
         *(f"{angle_degrees:7.2f} deg" for angle_degrees in joint_degrees.values()),
+        "",
+        "",
+        *(f"{angle_degrees:7.2f} deg" for angle_degrees in index_geometry.values()),
+        "",
+        "",
+        *(f"{angle_degrees:7.2f} deg" for angle_degrees in thumb_geometry.values()),
         f"{fingertip_distance_mm:7.2f} mm",
     ]
     return "\n".join(labels), "\n".join(values)
 
 
-def update_fingertip_markers(user_scene: Any, model: Any, data: Any) -> None:
-    """Draw non-colliding red markers at the measured fingertip positions."""
+def update_measurement_visuals(user_scene: Any, model: Any, data: Any) -> None:
+    """Draw non-colliding markers and lines for the measured hand geometry."""
     user_scene.ngeom = 0
     for body_name in FINGERTIP_BODIES:
         body_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
@@ -294,9 +433,82 @@ def update_fingertip_markers(user_scene: Any, model: Any, data: Any) -> None:
             size=np.array((FINGERTIP_MARKER_RADIUS_M, 0.0, 0.0)),
             pos=data.xpos[body_id],
             mat=np.eye(3).ravel(),
-            rgba=FINGERTIP_MARKER_RGBA,
+            rgba=MEASUREMENT_RED_RGBA,
         )
         user_scene.ngeom += 1
+
+    proximal_center, intermediate_center, index_tip = index_measurement_points(
+        model, data
+    )
+    thumb_points = thumb_measurement_points(model, data)
+    thumb_rotation_centres = thumb_points[:-1]
+    thumb_tip = thumb_points[-1]
+    for rotation_center in (
+        proximal_center,
+        intermediate_center,
+        *thumb_rotation_centres,
+    ):
+        marker = user_scene.geoms[user_scene.ngeom]
+        mujoco.mjv_initGeom(
+            marker,
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=np.array((ROTATION_CENTER_MARKER_RADIUS_M, 0.0, 0.0)),
+            pos=rotation_center,
+            mat=np.eye(3).ravel(),
+            rgba=MEASUREMENT_RED_RGBA,
+        )
+        user_scene.ngeom += 1
+
+    def append_line(start: np.ndarray, end: np.ndarray) -> None:
+        line = user_scene.geoms[user_scene.ngeom]
+        mujoco.mjv_initGeom(
+            line,
+            type=mujoco.mjtGeom.mjGEOM_LINE,
+            size=np.zeros(3),
+            pos=np.zeros(3),
+            mat=np.eye(3).ravel(),
+            rgba=MEASUREMENT_RED_RGBA,
+        )
+        mujoco.mjv_connector(
+            line,
+            mujoco.mjtGeom.mjGEOM_LINE,
+            MEASUREMENT_LINE_WIDTH_PIXELS,
+            start,
+            end,
+        )
+        user_scene.ngeom += 1
+
+    palm_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, PALM_BODY)
+    palm_longitudinal = data.xmat[palm_id].reshape(3, 3)[:, 2]
+    append_line(
+        proximal_center + PALM_BASELINE_EXTENTS_M[0] * palm_longitudinal,
+        proximal_center + PALM_BASELINE_EXTENTS_M[1] * palm_longitudinal,
+    )
+
+    proximal_axis = intermediate_center - proximal_center
+    proximal_axis /= np.linalg.norm(proximal_axis)
+    append_line(
+        proximal_center - FINGER_GUIDE_EXTENSION_M * proximal_axis,
+        intermediate_center + FINGER_GUIDE_EXTENSION_M * proximal_axis,
+    )
+
+    intermediate_axis = index_tip - intermediate_center
+    intermediate_axis /= np.linalg.norm(intermediate_axis)
+    append_line(
+        intermediate_center - FINGER_GUIDE_EXTENSION_M * intermediate_axis,
+        index_tip + FINGER_GUIDE_EXTENSION_M * intermediate_axis,
+    )
+
+    # Connect consecutive thumb rotation centres and the pad point.  Using the
+    # actual xanchor positions keeps these guides attached to the hinge axes.
+    for start, end in zip(thumb_points[:-1], thumb_points[1:], strict=True):
+        axis = end - start
+        axis /= np.linalg.norm(axis)
+        append_line(
+            start - FINGER_GUIDE_EXTENSION_M * axis,
+            end + FINGER_GUIDE_EXTENSION_M * axis,
+        )
+    append_line(thumb_tip, index_tip)
 
 
 def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
@@ -309,6 +521,8 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
     print("Hand controls: 1.0 = fully open, 0.0 = fully closed.")
     print("Measured hand angles and the thumb/index tip gap appear at top left.")
     print("Red spheres mark the thumb and index fingertips used for the gap.")
+    print("Small red spheres mark the index and thumb rotation centres.")
+    print("Red lines show the palm baseline, finger axes, and fingertip gap.")
     print("Close the window or press Ctrl+C in this terminal to exit.")
 
     shutdown_requested = False
@@ -330,7 +544,7 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
             while viewer.is_running() and not shutdown_requested:
                 with viewer.lock():
                     mujoco.mj_step(model, data)
-                    update_fingertip_markers(
+                    update_measurement_visuals(
                         viewer.user_scn, model, data
                     )
 
@@ -497,8 +711,27 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
     assert fingertip_distance_mm >= 0.0
     labels, values = format_hand_measurements(model, data)
     assert all(label in labels for label, _ in HAND_JOINT_LABELS)
+    index_geometry = measure_index_geometry(model, data)
+    assert tuple(index_geometry) == (
+        "Index proximal / palm",
+        "Index intermediate / palm",
+        "Index parts relative",
+    )
+    assert all(np.isfinite(tuple(index_geometry.values())))
+    assert all(0.0 <= angle <= 180.0 for angle in index_geometry.values())
+    assert all(label in labels for label in index_geometry)
+    thumb_geometry = measure_thumb_geometry(model, data)
+    assert tuple(thumb_geometry) == (
+        "Thumb proximal / intermediate",
+        "Thumb intermediate / distal",
+    )
+    assert all(np.isfinite(tuple(thumb_geometry.values())))
+    assert all(0.0 <= angle <= 180.0 for angle in thumb_geometry.values())
+    assert all(label in labels for label in thumb_geometry)
     assert "Thumb <-> index tips" in labels
-    assert values.count(" deg") == len(HAND_JOINTS)
+    assert values.count(" deg") == (
+        len(HAND_JOINTS) + len(index_geometry) + len(thumb_geometry)
+    )
     assert values.count(" mm") == 1
 
 
@@ -512,6 +745,18 @@ def test_only_the_thumb_uses_the_rubber_material() -> None:
             for geom in root.findall(".//geom[@material='hand_rubber']")
         ]
         assert colored_meshes == ["hand_right_thumb_2", "hand_right_thumb_4"]
+
+
+def test_fingertip_frames_are_on_the_inner_pinch_pads() -> None:
+    """Keep measurement endpoints on the current official distal meshes."""
+    scenes = (DEFAULT_SCENE, ASSET_DIR / "fr3_inspirehand_replay.xml")
+    for scene in scenes:
+        root = ET.parse(scene).getroot()
+        for body_name, expected_position in FINGERTIP_LOCAL_POSITIONS_M.items():
+            body = root.find(f".//body[@name='{body_name}']")
+            assert body is not None
+            position = np.fromstring(body.get("pos", ""), sep=" ")
+            assert np.allclose(position, expected_position)
 
 
 def test_dummy_scene_starts_joint7_at_zero() -> None:
