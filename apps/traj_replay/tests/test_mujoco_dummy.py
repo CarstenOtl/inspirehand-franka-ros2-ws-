@@ -3,8 +3,9 @@
 
 Run this file directly to open MuJoCo's native viewer.  The right sidebar's
 ``Control`` section contains position sliders for the seven FR3 joints and the
-six independently driven Inspire Hand joints.  This dummy is simulation-only:
-it does not initialize ROS 2 or send commands to hardware.
+six independently driven Inspire Hand joints.  The hand sliders are normalized:
+1 is fully open and 0 is fully closed.  This dummy is simulation-only; it does
+not initialize ROS 2 or send commands to hardware.
 
 Pytest only runs the non-interactive model contract test, so test discovery
 never opens a window or waits for the viewer to close.
@@ -53,15 +54,29 @@ HAND_JOINTS = (
     "thumb_proximal_pitch_joint",
     "thumb_proximal_yaw_joint",
 )
-HAND_FOLLOWERS = (
-    "index_intermediate_joint",
-    "middle_intermediate_joint",
-    "ring_intermediate_joint",
-    "pinky_intermediate_joint",
-    "thumb_intermediate_joint",
-    "thumb_distal_joint",
+HAND_MIMICS = (
+    ("index_intermediate_joint", "index_proximal_joint", 1.1169),
+    ("middle_intermediate_joint", "middle_proximal_joint", 1.1169),
+    ("ring_intermediate_joint", "ring_proximal_joint", 1.1169),
+    ("pinky_intermediate_joint", "pinky_proximal_joint", 1.1169),
+    ("thumb_intermediate_joint", "thumb_proximal_pitch_joint", 1.1425),
+    ("thumb_distal_joint", "thumb_intermediate_joint", 0.7508),
 )
+HAND_FOLLOWERS = tuple(follower for follower, _, _ in HAND_MIMICS)
+HAND_JOINT_LABELS = (
+    ("Pinky curl", "pinky_proximal_joint"),
+    ("Ring curl", "ring_proximal_joint"),
+    ("Middle curl", "middle_proximal_joint"),
+    ("Index curl", "index_proximal_joint"),
+    ("Thumb pitch", "thumb_proximal_pitch_joint"),
+    ("Thumb yaw", "thumb_proximal_yaw_joint"),
+)
+FINGERTIP_BODIES = ("thumb_tip", "index_tip")
+FINGERTIP_MARKER_RADIUS_M = 0.006
+FINGERTIP_MARKER_RGBA = np.array((1.0, 0.0, 0.0, 0.9))
 CONTROLLED_JOINTS = ARM_JOINTS + HAND_JOINTS
+DEFAULT_HAND_KP = 40.0
+DEFAULT_HAND_KV = 2.0
 # Current physical FR3 adapter for the official TienKung 2 Pro hand coordinate
 # frame, clocked 90 degrees from the legacy installation.
 TIENKUNG_FLANGE_TO_PALM_QUAT = np.array((0.0, 0.0, 0.0, 1.0))
@@ -123,14 +138,16 @@ def _position_servo(
     *,
     kp: float,
     kv: float,
+    normalized: bool = False,
 ) -> None:
     """Turn one compiled torque actuator into a position servo in memory.
 
     The production MJCF deliberately uses plain torque motors for
     ``mujoco_ros2_control`` compatibility.  This local viewer instead needs
     ``data.ctrl`` to remain a position target, because the native sidebar
-    writes directly into that array.  MuJoCo's affine actuator equation below
-    is ``force = kp * ctrl - kp * length - kv * velocity``.
+    writes directly into that array.  With ``normalized=True``, ``ctrl`` spans
+    0 (the joint's upper/closed limit) to 1 (its lower/open limit), while the
+    affine actuator still produces ``kp * (target - position) - kv * velocity``.
     """
     actuator_id = _named_id(
         model, mujoco.mjtObj.mjOBJ_ACTUATOR, joint_name
@@ -148,15 +165,27 @@ def _position_servo(
     model.actuator_biastype[actuator_id] = mujoco.mjtBias.mjBIAS_AFFINE
     model.actuator_gainprm[actuator_id, :] = 0.0
     model.actuator_biasprm[actuator_id, :] = 0.0
-    model.actuator_gainprm[actuator_id, 0] = kp
+    low, high = model.jnt_range[joint_id]
+    span = float(high - low)
+    if not np.isfinite(span) or span <= 0.0:
+        raise RuntimeError(f"joint {joint_name!r} has an invalid position range")
+
+    model.actuator_gainprm[actuator_id, 0] = -kp * span if normalized else kp
+    model.actuator_biasprm[actuator_id, 0] = kp * high if normalized else 0.0
     model.actuator_biasprm[actuator_id, 1] = -kp
     model.actuator_biasprm[actuator_id, 2] = -kv
 
-    low, high = model.jnt_range[joint_id]
     model.actuator_ctrllimited[actuator_id] = mujoco.mjtLimited.mjLIMITED_TRUE
-    model.actuator_ctrlrange[actuator_id] = (low, high)
     qpos_address = int(model.jnt_qposadr[joint_id])
-    data.ctrl[actuator_id] = np.clip(data.qpos[qpos_address], low, high)
+    joint_position = float(data.qpos[qpos_address])
+    if normalized:
+        model.actuator_ctrlrange[actuator_id] = (0.0, 1.0)
+        data.ctrl[actuator_id] = np.clip(
+            (high - joint_position) / span, 0.0, 1.0
+        )
+    else:
+        model.actuator_ctrlrange[actuator_id] = (low, high)
+        data.ctrl[actuator_id] = np.clip(joint_position, low, high)
 
 
 def configure_sidebar_position_servos(
@@ -165,8 +194,8 @@ def configure_sidebar_position_servos(
     *,
     arm_kp: float = 300.0,
     arm_kv: float = 30.0,
-    hand_kp: float = 10.0,
-    hand_kv: float = 0.4,
+    hand_kp: float = DEFAULT_HAND_KP,
+    hand_kv: float = DEFAULT_HAND_KV,
 ) -> None:
     """Expose stable, bounded joint-position targets in the Control sidebar."""
     gains = (arm_kp, arm_kv, hand_kp, hand_kv)
@@ -176,7 +205,14 @@ def configure_sidebar_position_servos(
     for joint_name in ARM_JOINTS:
         _position_servo(model, data, joint_name, kp=arm_kp, kv=arm_kv)
     for joint_name in HAND_JOINTS:
-        _position_servo(model, data, joint_name, kp=hand_kp, kv=hand_kv)
+        _position_servo(
+            model,
+            data,
+            joint_name,
+            kp=hand_kp,
+            kv=hand_kv,
+            normalized=True,
+        )
     mujoco.mj_forward(model, data)
 
 
@@ -186,8 +222,8 @@ def load_dummy_scene(
     keyframe: str = DEFAULT_KEYFRAME,
     arm_kp: float = 300.0,
     arm_kv: float = 30.0,
-    hand_kp: float = 10.0,
-    hand_kv: float = 0.4,
+    hand_kp: float = DEFAULT_HAND_KP,
+    hand_kv: float = DEFAULT_HAND_KV,
 ) -> tuple[Any, Any, Path]:
     """Load and initialize the combined robot for local sidebar control."""
     mj = _require_mujoco()
@@ -216,6 +252,53 @@ def load_dummy_scene(
     return model, data, scene
 
 
+def measure_hand(model: Any, data: Any) -> tuple[dict[str, float], float]:
+    """Return active hand-joint angles in degrees and the fingertip gap in mm."""
+    joint_degrees = {}
+    for label, joint_name in HAND_JOINT_LABELS:
+        joint_id = _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        qpos_address = int(model.jnt_qposadr[joint_id])
+        joint_degrees[label] = float(np.degrees(data.qpos[qpos_address]))
+
+    thumb_tip_id, index_tip_id = (
+        _named_id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+        for body_name in FINGERTIP_BODIES
+    )
+    fingertip_distance_mm = 1_000.0 * float(
+        np.linalg.norm(data.xpos[thumb_tip_id] - data.xpos[index_tip_id])
+    )
+    return joint_degrees, fingertip_distance_mm
+
+
+def format_hand_measurements(model: Any, data: Any) -> tuple[str, str]:
+    """Format the live hand measurements as the viewer's two text columns."""
+    joint_degrees, fingertip_distance_mm = measure_hand(model, data)
+    labels = ["MEASURED HAND STATE", *joint_degrees, "Thumb <-> index tips"]
+    values = [
+        "",
+        *(f"{angle_degrees:7.2f} deg" for angle_degrees in joint_degrees.values()),
+        f"{fingertip_distance_mm:7.2f} mm",
+    ]
+    return "\n".join(labels), "\n".join(values)
+
+
+def update_fingertip_markers(user_scene: Any, model: Any, data: Any) -> None:
+    """Draw non-colliding red markers at the measured fingertip positions."""
+    user_scene.ngeom = 0
+    for body_name in FINGERTIP_BODIES:
+        body_id = _named_id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+        marker = user_scene.geoms[user_scene.ngeom]
+        mujoco.mjv_initGeom(
+            marker,
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=np.array((FINGERTIP_MARKER_RADIUS_M, 0.0, 0.0)),
+            pos=data.xpos[body_id],
+            mat=np.eye(3).ravel(),
+            rgba=FINGERTIP_MARKER_RGBA,
+        )
+        user_scene.ngeom += 1
+
+
 def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
     """Run local physics while the native right sidebar edits position targets."""
     import mujoco.viewer
@@ -223,6 +306,9 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
     print(f"Loaded scene: {scene}")
     print("Simulation only: ROS 2 and real-robot commands are disabled.")
     print("Open the right sidebar's Control section to move the arm and hand.")
+    print("Hand controls: 1.0 = fully open, 0.0 = fully closed.")
+    print("Measured hand angles and the thumb/index tip gap appear at top left.")
+    print("Red spheres mark the thumb and index fingertips used for the gap.")
     print("Close the window or press Ctrl+C in this terminal to exit.")
 
     shutdown_requested = False
@@ -240,9 +326,26 @@ def launch_sidebar_control(model: Any, data: Any, scene: Path) -> None:
             show_right_ui=True,
         ) as viewer:
             next_step = time.monotonic()
+            next_measurement_update = 0.0
             while viewer.is_running() and not shutdown_requested:
                 with viewer.lock():
                     mujoco.mj_step(model, data)
+                    update_fingertip_markers(
+                        viewer.user_scn, model, data
+                    )
+
+                now = time.monotonic()
+                if now >= next_measurement_update:
+                    labels, values = format_hand_measurements(model, data)
+                    viewer.set_texts(
+                        (
+                            mujoco.mjtFontScale.mjFONTSCALE_150,
+                            mujoco.mjtGridPos.mjGRID_TOPLEFT,
+                            labels,
+                            values,
+                        )
+                    )
+                    next_measurement_update = now + 0.05
                 viewer.sync()
 
                 next_step += float(model.opt.timestep)
@@ -333,8 +436,13 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
         low, high = model.jnt_range[joint_id]
         assert np.isclose(data.qpos[qpos_address], PICKUP_INIT[joint_name])
         assert model.actuator_biastype[actuator_id] == mujoco.mjtBias.mjBIAS_AFFINE
-        assert np.allclose(model.actuator_ctrlrange[actuator_id], (low, high))
-        assert np.isclose(data.ctrl[actuator_id], data.qpos[qpos_address])
+        if joint_name in HAND_JOINTS:
+            expected_control = (high - data.qpos[qpos_address]) / (high - low)
+            assert np.allclose(model.actuator_ctrlrange[actuator_id], (0.0, 1.0))
+            assert np.isclose(data.ctrl[actuator_id], expected_control)
+        else:
+            assert np.allclose(model.actuator_ctrlrange[actuator_id], (low, high))
+            assert np.isclose(data.ctrl[actuator_id], data.qpos[qpos_address])
 
     for joint_name in HAND_FOLLOWERS:
         assert _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name) >= 0
@@ -352,7 +460,11 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
         joint_id = _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         qpos_address = int(model.jnt_qposadr[joint_id])
         initial_error[joint_name] = abs(float(data.qpos[qpos_address]) - target)
-        data.ctrl[actuator_id] = target
+        if joint_name in HAND_JOINTS:
+            low, high = model.jnt_range[joint_id]
+            data.ctrl[actuator_id] = (high - target) / (high - low)
+        else:
+            data.ctrl[actuator_id] = target
 
     for _ in range(1_000):
         mujoco.mj_step(model, data)
@@ -364,6 +476,30 @@ def test_dummy_scene_has_sidebar_position_controls() -> None:
         final_error = abs(float(data.qpos[qpos_address]) - target)
         assert final_error < initial_error[joint_name]
         assert final_error < 0.01
+
+    # Check the behavior, not just the declarations: every passive joint must
+    # remain on its driver's mimic manifold while the hand moves under physics.
+    for follower, driver, multiplier in HAND_MIMICS:
+        follower_id = _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, follower)
+        driver_id = _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, driver)
+        follower_position = data.qpos[int(model.jnt_qposadr[follower_id])]
+        driver_position = data.qpos[int(model.jnt_qposadr[driver_id])]
+        assert np.isclose(
+            follower_position,
+            multiplier * driver_position,
+            atol=0.01,
+        ), f"{follower} did not follow {driver}"
+
+    joint_degrees, fingertip_distance_mm = measure_hand(model, data)
+    assert tuple(joint_degrees) == tuple(label for label, _ in HAND_JOINT_LABELS)
+    assert all(np.isfinite(tuple(joint_degrees.values())))
+    assert np.isfinite(fingertip_distance_mm)
+    assert fingertip_distance_mm >= 0.0
+    labels, values = format_hand_measurements(model, data)
+    assert all(label in labels for label, _ in HAND_JOINT_LABELS)
+    assert "Thumb <-> index tips" in labels
+    assert values.count(" deg") == len(HAND_JOINTS)
+    assert values.count(" mm") == 1
 
 
 def test_only_the_thumb_uses_the_rubber_material() -> None:
@@ -453,8 +589,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--arm-kp", type=float, default=300.0)
     parser.add_argument("--arm-kv", type=float, default=30.0)
-    parser.add_argument("--hand-kp", type=float, default=10.0)
-    parser.add_argument("--hand-kv", type=float, default=0.4)
+    parser.add_argument(
+        "--hand-kp",
+        type=float,
+        default=DEFAULT_HAND_KP,
+        help=f"Hand position stiffness (default: {DEFAULT_HAND_KP:g}).",
+    )
+    parser.add_argument(
+        "--hand-kv",
+        type=float,
+        default=DEFAULT_HAND_KV,
+        help=f"Hand velocity damping (default: {DEFAULT_HAND_KV:g}).",
+    )
     args = parser.parse_args(argv)
     if args.steps < 0:
         parser.error("--steps must be nonnegative")

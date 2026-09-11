@@ -307,12 +307,16 @@
   </contact>
 
   <equality>
-    <joint name="index_intermediate_joint_follows_index_proximal_joint" joint1="index_intermediate_joint" joint2="index_proximal_joint" polycoef="0 1.1169 0 0 0"/>
-    <joint name="middle_intermediate_joint_follows_middle_proximal_joint" joint1="middle_intermediate_joint" joint2="middle_proximal_joint" polycoef="0 1.1169 0 0 0"/>
-    <joint name="ring_intermediate_joint_follows_ring_proximal_joint" joint1="ring_intermediate_joint" joint2="ring_proximal_joint" polycoef="0 1.1169 0 0 0"/>
-    <joint name="pinky_intermediate_joint_follows_pinky_proximal_joint" joint1="pinky_intermediate_joint" joint2="pinky_proximal_joint" polycoef="0 1.1169 0 0 0"/>
-    <joint name="thumb_intermediate_joint_follows_thumb_proximal_pitch_joint" joint1="thumb_intermediate_joint" joint2="thumb_proximal_pitch_joint" polycoef="0 1.1425 0 0 0"/>
-    <joint name="thumb_distal_joint_follows_thumb_intermediate_joint" joint1="thumb_distal_joint" joint2="thumb_intermediate_joint" polycoef="0 0.7508 0 0 0"/>
+    <!-- The default equality impedance is too compliant for the sidebar's
+         position servos: a driven joint can move while its follower appears
+         almost stationary. Keep these constraints near-rigid so the visible
+         motion matches the hand's mechanical linkage. -->
+    <joint name="index_intermediate_joint_follows_index_proximal_joint" joint1="index_intermediate_joint" joint2="index_proximal_joint" polycoef="0 1.1169 0 0 0" solref="0.004 1" solimp="0.999 0.9999 0.0001 0.5 2"/>
+    <joint name="middle_intermediate_joint_follows_middle_proximal_joint" joint1="middle_intermediate_joint" joint2="middle_proximal_joint" polycoef="0 1.1169 0 0 0" solref="0.004 1" solimp="0.999 0.9999 0.0001 0.5 2"/>
+    <joint name="ring_intermediate_joint_follows_ring_proximal_joint" joint1="ring_intermediate_joint" joint2="ring_proximal_joint" polycoef="0 1.1169 0 0 0" solref="0.004 1" solimp="0.999 0.9999 0.0001 0.5 2"/>
+    <joint name="pinky_intermediate_joint_follows_pinky_proximal_joint" joint1="pinky_intermediate_joint" joint2="pinky_proximal_joint" polycoef="0 1.1169 0 0 0" solref="0.004 1" solimp="0.999 0.9999 0.0001 0.5 2"/>
+    <joint name="thumb_intermediate_joint_follows_thumb_proximal_pitch_joint" joint1="thumb_intermediate_joint" joint2="thumb_proximal_pitch_joint" polycoef="0 1.1425 0 0 0" solref="0.004 1" solimp="0.999 0.9999 0.0001 0.5 2"/>
+    <joint name="thumb_distal_joint_follows_thumb_intermediate_joint" joint1="thumb_distal_joint" joint2="thumb_intermediate_joint" polycoef="0 0.7508 0 0 0" solref="0.004 1" solimp="0.999 0.9999 0.0001 0.5 2"/>
   </equality>
 
   <actuator>
