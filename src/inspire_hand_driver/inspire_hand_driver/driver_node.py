@@ -33,6 +33,29 @@ Services
     ``~/set_speed``      ``inspire_hand_msgs/srv/SetSpeed``
     ``~/set_force``      ``inspire_hand_msgs/srv/SetForce``
 
+Thumb-abduction calibration
+----------------------------
+Every angle command path receives the final overlays from
+:mod:`inspire_hand_driver.command_overlays`. At open ratio ``0.0`` the thumb
+swings past the palm plane, so the bottom of its commanded range is unusable.
+The current overlay therefore treats ``0.25`` as the thumb's zero and rescales
+the whole command onto the usable travel::
+
+    physical = 0.25 + 0.75 * commanded
+
+A command of ``0.0`` reaches the hand as ``0.25`` and ``1.0`` still reaches it
+as ``1.0``, so the mapping stays monotonic and every commanded value remains
+distinct -- unlike a floor, which would collapse the bottom quarter of the
+range onto one pose. The other five DOF are unchanged. Inputs are still
+validated against the public ``[0, 1]`` command range before the overlay is
+applied.
+
+``~/joint_states`` reports the hand's *physical* pose, not the pre-overlay
+command, because it feeds ``robot_state_publisher`` and TF. Commanding thumb
+abduction ``0.0`` therefore reads back ``0.25``; callers that need to compare
+feedback against a command should map the command forward with
+:func:`~inspire_hand_driver.command_overlays.apply_open_ratio_overlay`.
+
 Commanding in ratios, not radians
 ---------------------------------
 ``~/joint_states`` publishes radians because that is what ``robot_state_publisher``
@@ -80,6 +103,7 @@ from sensor_msgs.msg import JointState
 
 from inspire_hand_msgs.srv import SetAngles, SetForce, SetSpeed
 
+from . import command_overlays
 from . import kinematics as kin
 from .protocol import (
     ANGLE_INVALID,
@@ -327,7 +351,8 @@ class InspireHandNode(Node):
             except KeyError:
                 unknown.append(str(name))
                 continue
-            angles[index] = open_ratio_to_angle(float(value))
+            ratio = command_overlays.apply_open_ratio_overlay(index, float(value))
+            angles[index] = open_ratio_to_angle(ratio)
             touched = True
 
         if unknown:

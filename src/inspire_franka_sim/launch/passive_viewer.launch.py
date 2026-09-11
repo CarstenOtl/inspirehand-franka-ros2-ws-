@@ -59,6 +59,29 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("max_physics_steps_per_frame", default_value="20"),
         DeclareLaunchArgument("clamp_to_joint_limits", default_value="false"),
+        DeclareLaunchArgument(
+            "frame",
+            default_value="none",
+            description="Coordinate frames to draw: none, body, geom, site, camera, "
+            "light, contact, world.",
+        ),
+        DeclareLaunchArgument(
+            "label",
+            default_value="none",
+            description="Labels to draw next to the frames: none, body, joint, geom, "
+            "site, camera, actuator, tendon, constraint, contact.",
+        ),
+        DeclareLaunchArgument(
+            "site_groups",
+            default_value="",
+            description="Site groups (0-5, comma separated) to render; empty keeps the "
+            "viewer default 0,1,2. The flange attachment_site is in group 4.",
+        ),
+        DeclareLaunchArgument(
+            "frame_scale",
+            default_value="1.0",
+            description="Multiplier on the drawn frame axis length and width.",
+        ),
     ]
 
     bool_parameters = (
@@ -86,6 +109,10 @@ def generate_launch_description():
         "max_physics_steps_per_frame": ParameterValue(
             LaunchConfiguration("max_physics_steps_per_frame"), value_type=int
         ),
+        "frame": ParameterValue(LaunchConfiguration("frame"), value_type=str),
+        "label": ParameterValue(LaunchConfiguration("label"), value_type=str),
+        "site_groups": ParameterValue(LaunchConfiguration("site_groups"), value_type=str),
+        "frame_scale": ParameterValue(LaunchConfiguration("frame_scale"), value_type=float),
     }
     parameters.update(
         {

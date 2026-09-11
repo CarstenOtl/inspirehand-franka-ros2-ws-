@@ -136,27 +136,45 @@ def load_trajectory(path: Path, environment: int = 0) -> ReplayTrajectory:
         raise FileNotFoundError(f"trajectory data not found: {data_file}")
 
     required = {
-        "sample_time_s",
         "joint_pos",
         "joint_vel",
         "nut_pos",
         "nut_quat",
         "tcp_pos",
-        "replay_phase",
-        "cycle",
     }
     with np.load(data_file, allow_pickle=False) as archive:
         missing = required - set(archive.files)
         if missing:
             raise ValueError(f"trajectory is missing fields: {sorted(missing)}")
-        sample_time_s = np.asarray(archive["sample_time_s"], dtype=np.float64).copy()
         joint_pos_all = np.asarray(archive["joint_pos"], dtype=np.float64)
         joint_vel_all = np.asarray(archive["joint_vel"], dtype=np.float64)
         nut_pos_all = np.asarray(archive["nut_pos"], dtype=np.float64)
         nut_quat_all = np.asarray(archive["nut_quat"], dtype=np.float64)
         tcp_pos_all = np.asarray(archive["tcp_pos"], dtype=np.float64)
-        replay_phase = np.asarray(archive["replay_phase"]).copy()
-        cycle = np.asarray(archive["cycle"]).copy()
+        count = joint_pos_all.shape[0]
+        if "sample_time_s" in archive:
+            sample_time_s = np.asarray(
+                archive["sample_time_s"], dtype=np.float64
+            ).copy()
+        else:
+            dt = metadata.get("dt")
+            if dt is None and metadata.get("recording_frequency_hz"):
+                dt = 1.0 / float(metadata["recording_frequency_hz"])
+            if dt is None:
+                raise ValueError(
+                    "trajectory needs sample_time_s or metadata dt/recording_frequency_hz"
+                )
+            sample_time_s = np.arange(count, dtype=np.float64) * float(dt)
+        replay_phase = (
+            np.asarray(archive["replay_phase"]).copy()
+            if "replay_phase" in archive
+            else np.full(count, metadata.get("replay", "policy"), dtype=object)
+        )
+        cycle = (
+            np.asarray(archive["cycle"]).copy()
+            if "cycle" in archive
+            else np.ones(count, dtype=np.int64)
+        )
 
         if joint_pos_all.ndim != 3:
             raise ValueError(f"joint_pos must be [time, environment, joint], got {joint_pos_all.shape}")
@@ -348,7 +366,10 @@ def evaluate_fit(
 
 def print_fit_report(trajectory: ReplayTrajectory, report: FitReport) -> None:
     duration = float(trajectory.sample_time_s[-1] - trajectory.sample_time_s[0])
-    print(f"Task: {trajectory.metadata.get('threading_task', 'unknown')}")
+    task = trajectory.metadata.get(
+        "threading_task", trajectory.metadata.get("task", "unknown")
+    )
+    print(f"Task: {task}")
     print(
         f"Trajectory: {trajectory.sample_count} samples, {duration:.2f} s, "
         f"{trajectory.metadata.get('recording_frequency_hz', 'unknown')} Hz"
@@ -493,6 +514,40 @@ def test_replay_contract_and_training_geometry() -> None:
     assert np.isfinite(report.tcp_rmse_m)
     assert np.isfinite(report.tcp_max_error_m)
     assert report.tcp_max_error_m < 2.0e-6
+
+
+def test_loads_minimal_policy_recording_schema(tmp_path: Path) -> None:
+    """New policy captures may omit legacy cycle, phase, and time arrays."""
+    trajectory_dir = tmp_path / "traj_3"
+    trajectory_dir.mkdir()
+    count = 3
+    joint_names = tuple(MODEL_TO_RECORDED_JOINT.values())
+    np.savez(
+        trajectory_dir / "replay_data.npz",
+        joint_pos=np.zeros((count, 1, len(joint_names))),
+        joint_vel=np.zeros((count, 1, len(joint_names))),
+        nut_pos=np.zeros((count, 1, 3)),
+        nut_quat=np.tile([1.0, 0.0, 0.0, 0.0], (count, 1, 1)),
+        tcp_pos=np.zeros((count, 1, 3)),
+    )
+    (trajectory_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "data_file": "replay_data.npz",
+                "sample_count": count,
+                "joint_names": joint_names,
+                "recording_frequency_hz": 15.0,
+                "replay": "policy",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    trajectory = load_trajectory(trajectory_dir)
+
+    assert np.allclose(trajectory.sample_time_s, [0.0, 1 / 15.0, 2 / 15.0])
+    assert trajectory.replay_phase.tolist() == ["policy"] * count
+    assert trajectory.cycle.tolist() == [1] * count
 
 
 def main(argv: Sequence[str] | None = None) -> int:

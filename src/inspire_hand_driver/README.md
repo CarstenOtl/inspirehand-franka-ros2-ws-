@@ -21,6 +21,7 @@ ros2 launch inspire_hand_driver inspire_hand.launch.py mock:=true \
 |---|---|
 | `protocol.py` | the serial transport and the register map. Speaks both wire formats the RH56 family ships with (Modbus RTU, and Inspire's legacy `EB 90` framing), plus a mock that slews to its targets so the whole pipeline runs with no hardware. |
 | `kinematics.py` | the six register channels ↔ the URDF's twelve joints, including the four-bar coupling that makes six of them followers. |
+| `command_overlays.py` | final per-DOF command calibration; universally rescales thumb abduction commands from `[0, 1]` onto open ratio `[0.25, 1.0]`. |
 | `driver_node.py` | the ROS node: polls state, publishes it in both radians and open ratios, and accepts commands in either. |
 | `probe.py` | scans protocols, baud rates and hand IDs, and prints the launch line for whatever answers. |
 

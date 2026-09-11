@@ -55,9 +55,7 @@ class ReplayClient(Node):
         self.controller_ns = namespaced(namespace, self.controller)
         self.manager_ns = namespaced(namespace, config['controller_manager'])
 
-        self._goto_publisher = self.create_publisher(JointState, self.controller_ns + '/goto', 1)
-        self._trajectory_publisher = self.create_publisher(
-            JointTrajectory, self.controller_ns + '/trajectory', 1)
+        self._goto_publisher, self._trajectory_publisher = self._create_command_publishers()
         self._pause_publisher = self.create_publisher(Empty, self.controller_ns + '/pause', 1)
         self._resume_publisher = self.create_publisher(Empty, self.controller_ns + '/resume', 1)
         self._abort_publisher = self.create_publisher(Empty, self.controller_ns + '/abort', 1)
@@ -70,6 +68,11 @@ class ReplayClient(Node):
         self.create_subscription(DiagnosticArray, self.controller_ns + '/status', self._on_status, 10)
         self.create_subscription(
             JointState, namespaced(namespace, config['joint_state_topic']), self._on_joint_state, 10)
+
+    def _create_command_publishers(self):
+        """(goto, trajectory) publishers; the Cartesian client overrides the message types."""
+        return (self.create_publisher(JointState, self.controller_ns + '/goto', 1),
+                self.create_publisher(JointTrajectory, self.controller_ns + '/trajectory', 1))
 
     # --- subscriptions ----------------------------------------------------------------------
     def _on_status(self, msg):

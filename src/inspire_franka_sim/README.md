@@ -90,6 +90,13 @@ right, or select the initial layout explicitly:
 ```bash
 ros2 launch inspire_franka_sim passive_viewer.launch.py \
   show_left_ui:=true show_right_ui:=true
+
+# Coordinate frames and labels without the panels: frame:=body|geom|site|world,
+# label:=body|joint|geom|site, site_groups:=4 shows the flange attachment_site
+# (hidden group 4), frame_scale enlarges the drawn axes.
+ros2 launch inspire_franka_sim passive_viewer.launch.py frame:=body label:=body
+ros2 launch inspire_franka_sim passive_viewer.launch.py \
+  frame:=site label:=site site_groups:=4 frame_scale:=2
 ```
 
 Mouse camera navigation continues to work with the panels hidden.

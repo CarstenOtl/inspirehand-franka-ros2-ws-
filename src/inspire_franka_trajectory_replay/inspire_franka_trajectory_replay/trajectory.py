@@ -8,6 +8,12 @@ from typing import Optional
 import numpy as np
 
 from franka_trajectory_replay.limits import VELOCITY_MAX
+from inspire_hand_driver.command_overlays import (
+    THUMB_ABDUCTION_DOF,
+    THUMB_ABDUCTION_JOINT,
+    THUMB_ABDUCTION_ZERO_OPEN_RATIO,
+)
+from inspire_hand_driver import kinematics as hand_kinematics
 
 
 ARM_JOINTS = tuple(f"fr3_joint{i}" for i in range(1, 8))
@@ -26,6 +32,7 @@ FINGER_FLEXION_JOINTS = (
 FINGER_FLEXION_INDICES = tuple(
     HAND_JOINTS.index(name) for name in FINGER_FLEXION_JOINTS
 )
+THUMB_ABDUCTION_INDEX = HAND_JOINTS.index(THUMB_ABDUCTION_JOINT)
 FORGE_HAND_JOINTS = (
     "little_joint_0",
     "ring_joint_0",
@@ -87,6 +94,40 @@ def scale_finger_flexion(hand, scale):
         )
     scaled = np.array(hand, dtype=float, copy=True)
     scaled[..., list(FINGER_FLEXION_INDICES)] *= scale
+    return scaled
+
+
+def scale_thumb_abduction(
+    hand, zero_open_ratio=THUMB_ABDUCTION_ZERO_OPEN_RATIO
+):
+    """Apply the thumb-only abduction overlay to radian hand positions.
+
+    The replay artifacts and homing poses remain in their original radian
+    convention.  Only thumb yaw is rescaled here so that its eventual driver
+    command maps onto ``[zero_open_ratio, 1]``; every other hand coordinate is
+    copied unchanged.
+
+    The driver rescales in open-ratio space, ``p = f + (1 - f) * r``.  Carried
+    into the radian convention used here, that is an affine contraction toward
+    the joint's *open* pose, which is its ``lower`` limit::
+
+        radians_out = lower + (1 - f) * (radians_in - lower)
+
+    Doing it this way rather than round-tripping through
+    :func:`~inspire_hand_driver.kinematics.rad_to_open_ratio` is deliberate:
+    that conversion clamps to ``[0, 1]``, which would conceal malformed input
+    that ``_validate_hand`` must still reject.  The contraction preserves the
+    sign of ``radians_in - lower``, so an out-of-range angle stays out of range.
+    """
+    if not np.isfinite(zero_open_ratio) or not 0.0 <= zero_open_ratio <= 1.0:
+        raise ValueError("thumb abduction zero open ratio must be within [0, 1]")
+    if hand is None:
+        raise ValueError("thumb abduction scaling requires Inspire hand positions")
+    scaled = np.array(hand, dtype=float, copy=True)
+    open_pose_radians = hand_kinematics.DOFS[THUMB_ABDUCTION_DOF].lower
+    scaled[..., THUMB_ABDUCTION_INDEX] = open_pose_radians + (
+        1.0 - zero_open_ratio
+    ) * (scaled[..., THUMB_ABDUCTION_INDEX] - open_pose_radians)
     return scaled
 
 

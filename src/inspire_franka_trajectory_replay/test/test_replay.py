@@ -9,11 +9,16 @@ import yaml
 
 from inspire_franka_trajectory_replay.replay import (
     HAND_UPPER, SUPPORT_FINGER_INDICES, _close_support_fingers,
-    _hand_stream_native, _prepare_arm, _stream_hand, CoordinatedReplayClient,
-    PositionReplayClient,
+    _hand_stream_native, _prepare_arm, _prepare_cartesian, _stream_hand,
+    CoordinatedReplayClient, PositionReplayClient, main,
 )
 from inspire_franka_trajectory_replay.joint_trajectory_client import JointTrajectoryClient
+from franka_trajectory_replay.cartesian_replay_client import (
+    CONTROLLER_TYPE as CARTESIAN_CONTROLLER_TYPE, CartesianReplayClient,
+)
+from franka_trajectory_replay.kinematics import READY_POSE, flange_transform
 from franka_trajectory_replay.replay_client import ReplayClient, Rejected
+from franka_trajectory_replay.runconfig import load_config
 
 
 def test_support_finger_override_changes_only_requested_hand_channels():
@@ -84,6 +89,58 @@ def test_explicit_time_scale_stretches_arm_waypoint_timing(monkeypatch):
     prepared = _prepare_arm(trajectory, config, 120.0, time_scale=5.0)
 
     assert calls[0]["time_scale"] == 5.0
+    assert prepared.params["time_scale"] == 5.0
+
+
+def test_simulation_override_returns_requested_timing_without_auto_scaling(monkeypatch):
+    calls = []
+
+    def fake_prepare(_source, **arguments):
+        calls.append(arguments)
+        return SimpleNamespace(
+            report={"ok": False},
+            params={"time_scale": arguments["time_scale"]},
+        )
+
+    monkeypatch.setattr(
+        "inspire_franka_trajectory_replay.replay.prepare", fake_prepare
+    )
+    trajectory = SimpleNamespace(
+        time=np.array([0.0, 1.0]),
+        arm=np.zeros((2, 7)),
+        source="capture.npz",
+        duration=1.0,
+    )
+    config = {
+        "joint_names": [f"fr3_joint{i}" for i in range(1, 8)],
+        "prepare": {
+            "rate": 1000,
+            "cutoff_hz": 0.0,
+            "hold_start": 0.5,
+            "hold_end": 0.5,
+            "time_scale": 1.0,
+            "auto_scale": True,
+            "velocity_margin": 0.8,
+            "acceleration_margin": 0.5,
+            "jerk_margin": 0.5,
+            "lead_in": 0.5,
+            "lead_out": 0.5,
+            "lead_max_acceleration": 2.5,
+            "interpolation": "cubic",
+            "blend_time": 0.04,
+        },
+    }
+
+    prepared = _prepare_arm(
+        trajectory,
+        config,
+        120.0,
+        time_scale=5.0,
+        allow_limit_violations=True,
+    )
+
+    assert len(calls) == 1
+    assert prepared.report["ok"] is False
     assert prepared.params["time_scale"] == 5.0
 
 
@@ -297,6 +354,8 @@ def test_hand_stream_follows_the_arm_trajectory_clock_across_pause():
 @pytest.mark.parametrize("client_type", [CoordinatedReplayClient, PositionReplayClient])
 def test_wait_for_hand_republishes_home_command_until_feedback_arrives(client_type):
     """Hand homing uses wait_until's progress callback to recover a lost command."""
+    from inspire_franka_trajectory_replay.trajectory import scale_thumb_abduction
+
     node = client_type.__new__(client_type)
     node._hand_lock = threading.Lock()
     node._hand_position = np.ones(6)
@@ -305,7 +364,9 @@ def test_wait_for_hand_republishes_home_command_until_feedback_arrives(client_ty
     def command_hand(target):
         commands.append(np.asarray(target))
         with node._hand_lock:
-            node._hand_position = np.asarray(target)
+            # Emulate the driver's universal actuator-facing overlay while
+            # retaining the raw target received on its ROS command topic.
+            node._hand_position = scale_thumb_abduction(target)
 
     node.command_hand = command_hand
     target = np.zeros(6)
@@ -425,3 +486,177 @@ def test_home_from_a_different_task_config_is_refused_by_name():
         _check_home(home, first, "pickup.yaml", 0.1)
     # Worst joint first, so the message opens with the 2.62 rad wrist swing.
     assert caught.value.args[0].index("fr3_joint7") < caught.value.args[0].index("fr3_joint5")
+
+
+# --- Cartesian impedance path ---------------------------------------------------------
+
+CONFIG_DIR = Path(__file__).parents[1] / "config"
+
+
+def _replay_config():
+    return load_config(str(CONFIG_DIR / "replay.yaml"))
+
+
+def _gentle_capture(duration=3.0, rate=15.0, amplitude=0.05):
+    """A 15 Hz capture that starts at the ready pose and sways gently around it."""
+    time = np.arange(int(duration * rate) + 1) / rate
+    arm = np.tile(READY_POSE, (len(time), 1))
+    envelope = np.sin(np.pi * time / duration) ** 2
+    for joint in range(7):
+        arm[:, joint] += amplitude * envelope * np.sin(2 * np.pi * (0.2 + 0.05 * joint) * time)
+    hand = np.full((len(time), 6), 0.1)
+    return SimpleNamespace(time=time, arm=arm, hand=hand, source="synthetic.npz",
+                           duration=float(time[-1]), cycle=None, segment=None)
+
+
+def test_cartesian_stream_is_forward_kinematics_of_the_prepared_joint_stream():
+    config = _replay_config()
+    prepared = _prepare_arm(_gentle_capture(), config, 120.0)
+    stream = _prepare_cartesian(prepared, config)
+
+    assert stream.report["ok"], stream.report["violations"]
+    assert np.shares_memory(stream.q_null, prepared.q)
+    for index in (0, 900, len(prepared.t) - 1):
+        expected = flange_transform(prepared.q[index])[:3, 3]
+        assert stream.p[index] == pytest.approx(expected, abs=1e-12)
+    assert stream.t[-1] == pytest.approx(prepared.duration)
+    assert stream.tool == pytest.approx(np.eye(4))
+
+
+def test_cartesian_margin_overrides_replace_only_the_given_values():
+    config = _replay_config()
+    prepared = _prepare_arm(_gentle_capture(), config, 120.0)
+    stream = _prepare_cartesian(
+        prepared, config,
+        {"velocity_margin": 1e-6, "acceleration_margin": None, "jerk_margin": None},
+    )
+    assert not stream.report["ok"]
+    assert all("velocity" in text for text in stream.report["violations"])
+    assert stream.report["margins"]["acceleration"] == config["cartesian"]["acceleration_margin"]
+
+
+def test_cartesian_stream_requires_the_flange_tcp_frame():
+    config = _replay_config()
+    prepared = _prepare_arm(_gentle_capture(), config, 120.0)
+    config["tcp"]["frame"] = "hand_tcp"
+    with pytest.raises(ValueError, match="tcp.frame"):
+        _prepare_cartesian(prepared, config)
+
+
+def test_cartesian_controllers_yaml_keeps_the_joint_profile_and_adds_the_example_gains():
+    joint = yaml.safe_load((CONFIG_DIR / "controllers_joint_impedance.yaml").read_text())["/**"]
+    both = yaml.safe_load((CONFIG_DIR / "controllers_cartesian_impedance.yaml").read_text())["/**"]
+    manager = both["controller_manager"]["ros__parameters"]
+
+    assert manager["trajectory_replay_controller"] == (
+        joint["controller_manager"]["ros__parameters"]["trajectory_replay_controller"])
+    assert manager["cartesian_trajectory_replay_controller"]["type"] == CARTESIAN_CONTROLLER_TYPE
+    assert both["trajectory_replay_controller"] == joint["trajectory_replay_controller"]
+
+    cartesian = both["cartesian_trajectory_replay_controller"]["ros__parameters"]
+    assert cartesian["translational_stiffness"] == 150.0
+    assert cartesian["rotational_stiffness"] == 10.0
+    assert cartesian["nullspace_stiffness"] == 20.0
+    assert cartesian["stiffness_scale"] == 1.0
+    assert cartesian["target_filter"] == 0.005
+    assert cartesian["nullspace_target"] == "trajectory"
+    assert cartesian["coriolis_compensation"] is True
+    assert cartesian["torque_rate_limit"] == 0.0
+    assert cartesian["set_collision_behavior"] is False
+    assert cartesian["base_frame"] == _replay_config()["cartesian"]["base_frame"]
+
+
+def test_sim_impedance_yaml_runs_the_hardware_profiles_on_a_simulation_model():
+    sim = yaml.safe_load((CONFIG_DIR / "controllers_sim_impedance.yaml").read_text())
+    joint = yaml.safe_load((CONFIG_DIR / "controllers_joint_impedance.yaml").read_text())["/**"]
+    both = yaml.safe_load((CONFIG_DIR / "controllers_cartesian_impedance.yaml").read_text())["/**"]
+    manager = sim["controller_manager"]["ros__parameters"]
+
+    assert manager["trajectory_replay_controller"] == (
+        joint["controller_manager"]["ros__parameters"]["trajectory_replay_controller"])
+    assert manager["cartesian_trajectory_replay_controller"]["type"] == CARTESIAN_CONTROLLER_TYPE
+    assert "hand_position_forward_command_controller" in manager
+    # The joint controller is the hardware profile verbatim; it needs no robot model.
+    sim_joint = sim["trajectory_replay_controller"]["ros__parameters"]
+    assert sim_joint == joint["trajectory_replay_controller"]["ros__parameters"]
+    assert sim_joint["coriolis_compensation"] is False
+    assert sim_joint["set_collision_behavior"] is False
+    # The Cartesian controller differs only in its model source and the friction-driven gain.
+    sim_cart = sim["cartesian_trajectory_replay_controller"]["ros__parameters"]
+    hw_cart = both["cartesian_trajectory_replay_controller"]["ros__parameters"]
+    assert sim_cart["model_source"] == "dh"
+    assert "model_source" not in hw_cart
+    differences = {key for key in set(sim_cart) | set(hw_cart) if sim_cart.get(key) != hw_cart.get(key)}
+    assert differences == {"model_source", "stiffness_scale"}
+
+
+def test_cartesian_client_rejects_the_joint_controller_type_before_activation():
+    node = CartesianReplayClient.__new__(CartesianReplayClient)
+    node.controller = "cartesian_trajectory_replay_controller"
+    node.list_controllers = lambda: {
+        node.controller: SimpleNamespace(type="franka_trajectory_replay/TrajectoryReplayController")
+    }
+    with pytest.raises(Rejected, match="arm_controller:=cartesian-impedance"):
+        node.ensure_active()
+
+
+def test_cartesian_client_rejects_stale_feedback_and_tracking_faults():
+    node = CartesianReplayClient.__new__(CartesianReplayClient)
+    node._lock = threading.Lock()
+    node._status = {"phase_name": "idle", "completed_command_id": "1"}
+    node._status_stamp = time.monotonic() - 2.0
+    with pytest.raises(Rejected, match="feedback stopped"):
+        node.status()
+
+    node._status = {"phase_name": "idle", "tracking_fault": "true",
+                    "last_fault": "position error exceeded max_position_error"}
+    node._status_stamp = time.monotonic()
+    with pytest.raises(Rejected, match="max_position_error"):
+        node._check_fault()
+    node._status["tracking_fault"] = "false"
+    node._check_fault()
+
+
+def _write_capture(tmp_path):
+    capture = _gentle_capture()
+    npz = tmp_path / "capture.npz"
+    np.savez(npz, joint_pos_arm=capture.arm, joint_pos_hand=capture.hand,
+             sample_time_s=capture.time)
+    hand_names = [
+        "pinky_proximal_joint", "ring_proximal_joint", "middle_proximal_joint",
+        "index_proximal_joint", "thumb_proximal_pitch_joint", "thumb_proximal_yaw_joint",
+    ]
+    home = tmp_path / "homing.yaml"
+    home.write_text(yaml.safe_dump({
+        "joint_names": [f"fr3_joint{i}" for i in range(1, 8)] + hand_names,
+        "positions": [float(v) for v in capture.arm[0]] + [0.1] * 6,
+    }))
+    return npz, home
+
+
+def test_cartesian_dry_run_prints_both_summaries(tmp_path, capsys):
+    npz, home = _write_capture(tmp_path)
+    code = main([
+        str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+        "--arm-controller", "cartesian-impedance", "--time-scale", "2",
+        "--interactive-pause", "--dry-run",
+    ])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "time scale x2.000" in out
+    assert "arm controller: cartesian-impedance" in out
+    assert "cartesian:" in out and "within limits" in out
+    assert "dry run" in out
+
+
+def test_cartesian_only_flags_are_refused_on_the_other_paths(tmp_path):
+    npz, home = _write_capture(tmp_path)
+    base = [str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"), "--dry-run"]
+    with pytest.raises(SystemExit):
+        main(base + ["--stiffness-scale", "1.2"])
+    with pytest.raises(SystemExit):
+        main(base + ["--cartesian-velocity-margin", "0.5"])
+    with pytest.raises(SystemExit):
+        main(base + ["--arm-controller", "cartesian-impedance", "--no-arm"])
+    with pytest.raises(SystemExit):
+        main(base + ["--arm-controller", "cartesian-impedance", "--allow-unsafe-simulation"])

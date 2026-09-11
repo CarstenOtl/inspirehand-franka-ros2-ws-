@@ -8,9 +8,21 @@ executable, with an explicit selection of the legacy position controller:
     ros2 run inspire_franka_trajectory_replay replay_trajectory \\
         apps/traj_replay/demo_trajs/traj_1 --cycle 1 --arm-controller position-jtc
 
-This launch preserves the stock ``JointTrajectoryController`` position-based
-simulation. Hardware replay now defaults to the simple joint-impedance example's
-effort law; this simulation does not validate that hardware torque controller.
+By default this launch preserves the stock ``JointTrajectoryController``
+position-based simulation. ``arm_controller:=joint-impedance`` or
+``cartesian-impedance`` instead runs the hardware replay controllers over the
+simulated effort interfaces, in a gravity-free copy of the scene (libfranka
+compensates gravity underneath a torque controller on the real arm), with the
+Cartesian controller on its built-in DH model. That exercises the whole runner
+flow -- homing, the controller swap, the goto settle, the pose stream, pause and
+abort -- against MuJoCo's dynamics, not the FR3's:
+
+    ros2 launch inspire_franka_trajectory_replay sim_replay.launch.py \\
+        arm_controller:=cartesian-impedance
+    ros2 run inspire_franka_trajectory_replay replay_trajectory \\
+        apps/traj_replay/demo_trajs/traj_2_cycle3 \\
+        --home apps/traj_replay/demo_trajs/traj_2_cycle3/homing.yaml \\
+        --arm-controller cartesian-impedance --time-scale 5
 
 How the two devices get into the simulator
 ------------------------------------------
@@ -45,14 +57,33 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 CONTROLLER = "trajectory_replay_controller"
+CARTESIAN_CONTROLLER = "cartesian_trajectory_replay_controller"
 
 
 def generate_launch_description():
+    arm_controller = LaunchConfiguration("arm_controller")
+    is_torque = PythonExpression(["'", arm_controller, "' != 'position-jtc'"])
+    is_cartesian = PythonExpression(["'", arm_controller, "' == 'cartesian-impedance'"])
+    position_yaml = PathJoinSubstitution(
+        [FindPackageShare("inspire_franka_sim"), "config", "controllers_replay.yaml"]
+    )
+    torque_yaml = PathJoinSubstitution(
+        [FindPackageShare("inspire_franka_trajectory_replay"), "config",
+         "controllers_sim_impedance.yaml"]
+    )
+    controllers_yaml = PythonExpression(
+        ["'", torque_yaml, "' if ", is_torque, " else '", position_yaml, "'"]
+    )
+    # The torque scene is the flange scene without gravity; '' keeps the
+    # simulator's own default for the position stack.
+    mjcf = PythonExpression(
+        ["'inspire_franka_flange_torque_scene.xml' if ", is_torque, " else ''"]
+    )
     simulator = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -71,13 +102,8 @@ def generate_launch_description():
             # motion by the time the bridge forwards it, so a second
             # interpolator here would only add lag.
             "hand_command_interface": "position_direct",
-            "controllers_config_path": PathJoinSubstitution(
-                [
-                    FindPackageShare("inspire_franka_sim"),
-                    "config",
-                    "controllers_replay.yaml",
-                ]
-            ),
+            "controllers_config_path": controllers_yaml,
+            "mjcf": mjcf,
         }.items(),
     )
 
@@ -89,17 +115,27 @@ def generate_launch_description():
         arguments=[
             CONTROLLER,
             "--param-file",
-            PathJoinSubstitution(
-                [
-                    FindPackageShare("inspire_franka_sim"),
-                    "config",
-                    "controllers_replay.yaml",
-                ]
-            ),
+            controllers_yaml,
             "--controller-manager-timeout",
             "60",
         ],
         output="screen",
+    )
+    # Loaded inactive next to the joint controller; the runner homes with the
+    # joint controller and swaps, exactly as on hardware.
+    cartesian_controller = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            CARTESIAN_CONTROLLER,
+            "--inactive",
+            "--param-file",
+            controllers_yaml,
+            "--controller-manager-timeout",
+            "60",
+        ],
+        output="screen",
+        condition=IfCondition(is_cartesian),
     )
 
     hand_driver = IncludeLaunchDescription(
@@ -130,6 +166,16 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(
+                "arm_controller",
+                default_value="position-jtc",
+                choices=["position-jtc", "joint-impedance", "cartesian-impedance"],
+                description="position-jtc: the stock position trajectory controller "
+                "(runner --arm-controller position-jtc). joint-impedance / "
+                "cartesian-impedance: the hardware replay controllers over effort "
+                "interfaces in the gravity-free scene (runner default / "
+                "--arm-controller cartesian-impedance).",
+            ),
+            DeclareLaunchArgument(
                 "headless", default_value="true", description="Run MuJoCo without a viewer."
             ),
             DeclareLaunchArgument(
@@ -143,6 +189,7 @@ def generate_launch_description():
             ),
             simulator,
             replay_controller,
+            cartesian_controller,
             hand_driver,
             bridge,
         ]

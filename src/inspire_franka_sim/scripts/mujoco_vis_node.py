@@ -20,11 +20,86 @@ import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.executors import SingleThreadedExecutor
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
+
+
+# Viewer frame and label overlays, by the MuJoCo enum member they select.
+FRAME_OPTIONS = {
+    "none": "mjFRAME_NONE",
+    "body": "mjFRAME_BODY",
+    "geom": "mjFRAME_GEOM",
+    "site": "mjFRAME_SITE",
+    "camera": "mjFRAME_CAMERA",
+    "light": "mjFRAME_LIGHT",
+    "contact": "mjFRAME_CONTACT",
+    "world": "mjFRAME_WORLD",
+}
+LABEL_OPTIONS = {
+    "none": "mjLABEL_NONE",
+    "body": "mjLABEL_BODY",
+    "joint": "mjLABEL_JOINT",
+    "geom": "mjLABEL_GEOM",
+    "site": "mjLABEL_SITE",
+    "camera": "mjLABEL_CAMERA",
+    "actuator": "mjLABEL_ACTUATOR",
+    "tendon": "mjLABEL_TENDON",
+    "constraint": "mjLABEL_CONSTRAINT",
+    "contact": "mjLABEL_CONTACTPOINT",
+}
+SITE_GROUP_COUNT = 6
+
+
+@dataclass(frozen=True)
+class ViewerOptions:
+    """Overlay settings applied to the passive viewer once it exists."""
+
+    frame_name: str
+    label_name: str
+    site_groups: tuple[int, ...] | None  # None keeps the viewer's own default (0, 1, 2)
+    frame_scale: float
+
+
+def parse_viewer_options(
+    frame: str, label: str, site_groups: str, frame_scale: float = 1.0
+) -> ViewerOptions:
+    """Validate the overlay parameters before any window exists.
+
+    ``site_groups`` is a comma- or space-separated list of MuJoCo site groups
+    (0-5) to render; the flange ``attachment_site`` in fr3.xml sits in group 4,
+    which the viewer hides by default. Empty keeps the default.
+    """
+    frame_key = frame.strip().lower()
+    if frame_key not in FRAME_OPTIONS:
+        raise ValueError(
+            f"frame must be one of {sorted(FRAME_OPTIONS)}, got {frame!r}"
+        )
+    label_key = label.strip().lower()
+    if label_key not in LABEL_OPTIONS:
+        raise ValueError(
+            f"label must be one of {sorted(LABEL_OPTIONS)}, got {label!r}"
+        )
+    groups: tuple[int, ...] | None = None
+    text = site_groups.replace(",", " ").split()
+    if text:
+        parsed = []
+        for token in text:
+            if not token.isdigit() or not 0 <= int(token) < SITE_GROUP_COUNT:
+                raise ValueError(
+                    f"site_groups entries must be integers in [0, {SITE_GROUP_COUNT - 1}], "
+                    f"got {site_groups!r}"
+                )
+            parsed.append(int(token))
+        groups = tuple(sorted(set(parsed)))
+    if not math.isfinite(frame_scale) or frame_scale <= 0.0:
+        raise ValueError("frame_scale must be finite and positive")
+    return ViewerOptions(
+        FRAME_OPTIONS[frame_key], LABEL_OPTIONS[label_key], groups, float(frame_scale)
+    )
 
 
 @dataclass(frozen=True)
@@ -283,7 +358,29 @@ class MujocoVisNode(Node):
         self.declare_parameter("step_physics", False)
         self.declare_parameter("max_physics_steps_per_frame", 20)
         self.declare_parameter("clamp_to_joint_limits", False)
+        # Overlays: coordinate frames and labels drawn by the viewer, and which
+        # site groups it renders. Nothing here touches the model or the data.
+        self.declare_parameter("frame", "none")
+        self.declare_parameter("label", "none")
+        # Dynamically typed so `-p site_groups:=4` and `-p frame_scale:=2` on a
+        # ros2 run command line (parsed as integers) work like the launch
+        # arguments; the values are coerced below.
+        self.declare_parameter(
+            "site_groups", "", ParameterDescriptor(dynamic_typing=True)
+        )
+        self.declare_parameter(
+            "frame_scale", 1.0, ParameterDescriptor(dynamic_typing=True)
+        )
 
+        site_groups = self.get_parameter("site_groups").value
+        if isinstance(site_groups, (list, tuple)):
+            site_groups = " ".join(str(group) for group in site_groups)
+        self.viewer_options = parse_viewer_options(
+            str(self.get_parameter("frame").value),
+            str(self.get_parameter("label").value),
+            "" if site_groups is None else str(site_groups),
+            float(self.get_parameter("frame_scale").value),
+        )
         self.playback_speed = float(self.get_parameter("playback_speed").value)
         self.render_hz = float(self.get_parameter("render_hz").value)
         if not math.isfinite(self.playback_speed) or self.playback_speed <= 0.0:
@@ -576,6 +673,26 @@ class MujocoVisNode(Node):
         self._last_render_time = now
         self._apply_command(self._current_command(now))
 
+    def _apply_viewer_options(self, mujoco: Any, viewer: Any) -> None:
+        """Frame/label overlays and site-group visibility, under the viewer lock."""
+        options = self.viewer_options
+        viewer.opt.frame = getattr(mujoco.mjtFrame, options.frame_name)
+        viewer.opt.label = getattr(mujoco.mjtLabel, options.label_name)
+        if options.site_groups is not None:
+            for group in range(len(viewer.opt.sitegroup)):
+                viewer.opt.sitegroup[group] = 1 if group in options.site_groups else 0
+        if options.frame_scale != 1.0:
+            # Frame axes are drawn at model.vis.scale.framelength x meansize; the
+            # scale is visual-only and never enters the kinematics.
+            self.model.vis.scale.framelength *= options.frame_scale
+            self.model.vis.scale.framewidth *= options.frame_scale
+        self.get_logger().info(
+            "viewer overlays: frame=%s label=%s site_groups=%s frame_scale=%.2f"
+            % (options.frame_name, options.label_name,
+               "default" if options.site_groups is None else list(options.site_groups),
+               options.frame_scale)
+        )
+
     def run(self) -> None:
         """Spin ROS separately while this thread services MuJoCo and the UI."""
         executor = SingleThreadedExecutor()
@@ -601,6 +718,8 @@ class MujocoVisNode(Node):
                 show_left_ui=self.show_left_ui,
                 show_right_ui=self.show_right_ui,
             ) as viewer:
+                with viewer.lock():
+                    self._apply_viewer_options(mujoco, viewer)
                 while rclpy.ok() and viewer.is_running():
                     started = time.monotonic()
                     with viewer.lock():

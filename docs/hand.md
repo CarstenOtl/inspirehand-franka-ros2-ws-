@@ -178,6 +178,31 @@ of travel, nothing logged either way.
 Any subset may be addressed. A DOF that is not named holds its previous target
 rather than snapping to a default — which is what makes a partial command safe.
 
+As a final calibration overlay, thumb abduction (`thumb_proximal_yaw_joint`,
+channel `"6"`) is rescaled from the commanded `[0.0, 1.0]` onto the open-ratio
+range `[0.25, 1.0]`, because at `0.0` the thumb swings past the palm plane:
+
+```
+physical = 0.25 + 0.75 * commanded
+```
+
+The rescale happens after normal range validation; every other DOF keeps the
+unmodified `[0.0, 1.0]` command range unchanged. This is enforced at the
+driver's shared command boundary, so it applies equally to topic commands,
+`set_angles` service calls, trajectory replay, and future command publishers.
+
+Because it is a rescale rather than a floor, the map stays monotonic and no two
+commands collapse onto the same pose — but the whole range contracts, so a
+commanded `0.5` now reaches `0.625` rather than `0.5`.
+
+For example, this deliberately publishes the raw value `0.0`; the driver then
+writes `0.25` (register value `250`) for thumb abduction:
+
+```bash
+ros2 topic pub -1 /inspire_hand/command sensor_msgs/msg/JointState \
+  "{name: [thumb_proximal_yaw_joint], position: [0.0]}"
+```
+
 Channel order is the hand's own register order, and is used consistently
 everywhere including the simulation's controller config:
 

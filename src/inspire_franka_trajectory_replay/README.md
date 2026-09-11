@@ -184,6 +184,24 @@ That simulation validates the retained position path, not the new effort law's
 closed-loop performance. `controllers_internal_impedance.yaml` is retained only
 for explicitly selected position-JTC sessions; it is no longer the default.
 
+To inspect a trajectory that the FR3 safety preparation rejects, the MuJoCo
+position-JTC path has an explicit simulation-only override. The runner refuses
+this option with the hardware `joint-impedance` controller:
+
+```bash
+ros2 launch inspire_franka_trajectory_replay sim_replay.launch.py headless:=false
+
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_3 \
+  --home apps/traj_replay/demo_trajs/traj_3/homing.yaml \
+  --arm-controller position-jtc \
+  --time-scale 5 \
+  --allow-unsafe-simulation
+```
+
+This override is for visual diagnosis only. It does not make the trajectory
+hardware-safe, and interactive pause is unavailable on the position-JTC path.
+
 Everything in this package is in **radians** -- the Forge trajectories, the
 homing YAMLs, the tracking comparison against `joint_states`. The driver
 commands in **open ratios** (`1.0` fully open), running the opposite way.
@@ -323,6 +341,28 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
   --dry-run
 ```
 
+At open ratio `0.0` the thumb swings past the palm plane, so the bottom of its
+commanded range is unusable. The hand driver therefore treats `0.25` as the
+thumb's zero and universally rescales `thumb_proximal_yaw_joint` commands onto
+`[0.25, 1.0]` in its existing open-ratio convention (`1.0` is open):
+
+```
+physical = 0.25 + 0.75 * commanded
+```
+
+That is equivalent to contracting the yaw angle onto `[0, 0.981]` rad with the
+current kinematics — `0.981` rad is 56.2°, against 74.9° at a raw `0.0`. Because
+the map is a rescale rather than a floor, it stays monotonic and every commanded
+value remains distinct; a floor would collapse the bottom quarter of the range
+onto one pose. Note that the whole range contracts, so mid-travel commands close
+the thumb further than they used to: `0.5` now lands at 28.1° rather than 37.5°.
+
+Replay publishes its original commands without pre-scaling thumb abduction; only
+its feedback expectation uses the driver's shared setting so homing agrees with
+the physical target. Thus a raw ROS thumb-abduction command of `0.0` reaches the
+driver as `0.0`, and the driver sends `0.25` to the hand. Arm motion, thumb
+flexion, all other hand joints, and the source NPZ/YAML files remain unchanged.
+
 ### Pause, adjust the scene, and continue
 
 The hardware waypoint controller can pause a coordinated replay without losing
@@ -347,6 +387,123 @@ The arm remains actively torque-controlled while paused. `PAUSED` means the
 reference clock is stopped, not that power is removed or that the workspace is
 safe to enter; follow the lab's hardware access procedure when repositioning
 objects.
+
+## Cartesian impedance replay
+
+`--arm-controller cartesian-impedance` replays the same captures with the torque
+law of Franka's `CartesianImpedanceExampleController` (franka_ros2 v3.5.3):
+task-space stiffness and damping through the Jacobian transpose, a
+damped-pseudo-inverse nullspace term, and coriolis compensation, with the
+example's own first-order target filter. The law is lifted verbatim into
+`franka_trajectory_replay/cartesian_impedance.hpp` and unit-tested against a
+transcription of the upstream `update()`; the surrounding replay machinery
+(goto, trajectory, pause/resume/abort, status) is the joint controller's design
+in pose space. The full design, its settled decisions and the hardware
+validation ladder are in `docs/cartesian_replay_blueprint.md`.
+
+**Status: built and tested in the container, dry-run validated, and the full
+flow has run unattended in MuJoCo up to and including trajectory execution;
+not yet run on the arm.** Follow the blueprint's ladder (hold test, goto test,
+arm-only replay, coordinated replay) before treating it as a working mode.
+
+### Simulation first
+
+`sim_replay.launch.py arm_controller:=cartesian-impedance` runs both hardware
+replay controllers over MuJoCo's effort interfaces in a gravity-free copy of
+the flange scene (libfranka compensates gravity underneath a torque controller
+on the real arm; mujoco_ros2_control does not), with the Cartesian controller
+on its built-in DH model (`model_source: dh`) because the simulator has no
+`robot_model` or `cartesian_pose_state` interfaces. The runner sees that model
+source, prints that it is skipping the robot-frame preflight, and otherwise
+does exactly what it does on hardware: homes with the joint controller, swaps,
+settles onto the first pose, streams. One controller manager at a time: stop
+any hardware bringup before starting the simulator, and the simulator before
+bringing up the arm.
+
+```bash
+# Unattended: launch, wait, replay traj_2_cycle3 at 5x, print, shut down.
+# Refuses to start while any /controller_manager is on the graph.
+./apps/traj_replay/sim_replay_smoke.sh
+
+# Or by hand. Terminal 1 (headless:=false opens the MuJoCo viewer):
+ros2 launch inspire_franka_trajectory_replay sim_replay.launch.py \
+  arm_controller:=cartesian-impedance headless:=false
+# Terminal 2:
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_2_cycle3 \
+  --home apps/traj_replay/demo_trajs/traj_2_cycle3/homing.yaml \
+  --arm-controller cartesian-impedance --time-scale 5 --interactive-pause
+```
+
+What the simulation shows is the *flow* against MuJoCo's dynamics, not the
+FR3's: the Menagerie FR3 model carries 1.137 Nm of joint friction with nothing
+compensating it below the controller, so the example's 10 Nm/rad rotational
+stiffness cannot hold the wrist there and the first headless run at 2x tripped
+the 0.35 rad tracking fault after 8 s. `controllers_sim_impedance.yaml`
+therefore runs the simulation at `stiffness_scale: 4.0`; the hardware profile
+keeps the example's gains. The runner prints the peak position and orientation
+tracking error after every goto and trajectory, in the sim and on the arm.
+
+Everything that is not the arm's command type is unchanged: capture loading,
+`--cycle`/`--segment`, homing and `--max-home-delta`, `--time-scale`,
+`--finger-flexion-scale`, `--close-support-fingers`, the 50 Hz hand stream
+keyed on the controller's trajectory clock, `--interactive-pause`, `--dry-run`.
+
+```bash
+# Terminal 1: both replay controllers are loaded; the joint controller comes
+# up active and holding, the Cartesian one inactive.
+ros2 launch inspire_franka_trajectory_replay replay.launch.py \
+  arm_controller:=cartesian-impedance
+
+# Terminal 2: dry run first. Prints the joint-space summary, then the pose
+# stream's libfranka Cartesian limit check.
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_2_cycle3 \
+  --home apps/traj_replay/demo_trajs/traj_2_cycle3/homing.yaml \
+  --arm-controller cartesian-impedance \
+  --time-scale 5 --interactive-pause --dry-run
+```
+
+Live, the runner: homes the arm with the validated joint-impedance controller
+(the policy's home is a joint configuration, which a Cartesian controller with
+20 Nm/rad of nullspace stiffness cannot promise to reach); reads one
+`FrankaRobotState` and refuses to continue unless the robot's `F_T_EE` is the
+identity tool the pose stream assumes and forward kinematics of the measured
+joints agrees with the robot's `O_T_EE`; swaps to
+`cartesian_trajectory_replay_controller` (both claim the effort interfaces, so
+franka_hardware stays in torque control); ramps the Cartesian reference onto
+the stream's first pose and waits for the example's filter to settle; then
+sends the pose stream. Pause, resume and abort work as in joint mode, and the
+hand follows the same trajectory clock.
+
+The pose stream is forward kinematics of the *prepared* joint stream, so the
+FR3 velocity/acceleration/jerk check and the automatic time scaling apply
+unchanged and the joint stream itself is the nullspace target. The recorded
+`tcp_pos` in the Forge captures is the fingertip midpoint and is not used.
+
+Live tuning, while the Cartesian controller is active:
+
+```bash
+ros2 param set /cartesian_trajectory_replay_controller stiffness_scale 1.25
+ros2 param set /cartesian_trajectory_replay_controller rotational_stiffness 20.0
+ros2 param set /cartesian_trajectory_replay_controller nullspace_stiffness 30.0
+# 1.0 bypasses the example's 200 ms target filter; the replay reference is
+# already smooth, so compare both on the same artifact.
+ros2 param set /cartesian_trajectory_replay_controller target_filter 1.0
+```
+
+`--stiffness-scale N` sets the first of these before replay. Changes take
+effect through the example's own 0.005 filter. The status topic reports the
+applied gains, the reference pose, the position and orientation error, the
+smallest joint-limit margin, and `tracking_fault`: when the measured pose
+drifts more than `max_position_error` (8 cm) or `max_orientation_error`
+(0.35 rad) from the reference the controller ramps its clock to zero, holds,
+and the runner reports the fault instead of success.
+
+`~/cartesian_state` publishes, every cycle, the unfiltered target, the filtered
+reference, the measured pose, the law's six-vector error and the task,
+nullspace, coriolis and commanded torques separately, so a tracking problem can
+be attributed without re-deriving forward kinematics.
 
 ## One device at a time
 
@@ -411,13 +568,18 @@ legitimately long recording, but it does not disable any FR3 limit check.
 | `demo_trajs/traj_2_6x` | all six original cycles plus return home; supports runtime MCP scaling | one continuous run; use its colocated `homing.yaml` and optionally `--finger-flexion-scale N` |
 | `demo_trajs/traj_2_cycle3` | current-orientation single-cycle candidate; dry-run validated, physical validation pending | one continuous cycle plus return home; use its colocated `homing.yaml` |
 | `demo_trajs/traj_2_5x` | current-orientation five-cycle candidate; dry-run validated, physical validation pending | cycles 1–5 plus return home; use its colocated `homing.yaml`, `--time-scale 5`, `--max-prepared-duration 300`, and optionally `--interactive-pause` |
+| `demo_trajs/traj_3` | V2-policy source capture; raw arm replay is rejected because joint 5 reaches its position-dependent velocity boundary | 449-sample continuous rollout (the two-sample reset tail is ignored automatically); matching home is colocated, but do not bypass the FR3 safety guard |
+| `demo_trajs/traj_3_joint5_cap_2p8` | minimally retargeted `traj_3` hardware candidate; saturated joint-5 waypoints capped at 2.800 rad; physical validation pending | use its colocated `homing.yaml` and `--time-scale 5` |
+| `demo_trajs/traj_3_multi` | raw ten-cycle V2 source capture; cycles 1, 6, 7, and 8 reach the joint-5 braking boundary | preserve as source material; individual cycles can be inspected with `--cycle N`, but use the derived artifact for the complete run |
+| `demo_trajs/traj_3_multi_joint5_cap_2p8` | all ten V2 cycles plus return home; 171 saturated joint-5 waypoints capped at 2.800 rad; dry-run validated at 5x, physical validation pending | one continuous run; use its colocated `homing.yaml`, `--time-scale 5`, `--interactive-pause`, and `--max-prepared-duration 400` |
 | `demo_trajs/threading_cycle1_flange180` | **legacy-source hardware baseline**; validated 2026-09-09 with its historical joint-7 compensation | one continuous cycle; use its colocated `homing.yaml` |
 | `demo_trajs/traj_1` | source capture; **outdated for direct arm replay** because it uses the legacy mount convention | `--cycle 1`..`22`; raw `homing/threading.yaml`; safe for viewing, conversion, or `--no-arm` |
 | `demo_trajs/threading_5x` | generated intermediate; **outdated for current-mount arm replay** | raw `homing/threading.yaml` |
 | `demo_trajs/threading_5x_flange180` | **validated legacy-source extended run**; confirmed on hardware at 5x slowdown with interactive pause | five continuous cycles; use its colocated `homing.yaml`, `--time-scale 5`, and `--interactive-pause` |
 | `demo_trajs/pickup_1` | separate task; not part of the threading baseline | `--env 0`..`2`, `--segment`, and `homing/pickup_multi.yaml` |
 
-The source captures `traj_1`, `traj_2`, and `pickup_1` were recorded at 15 Hz.
+The source captures `traj_1`, `traj_2`, `traj_3`, `traj_3_multi`, and `pickup_1`
+were recorded at 15 Hz.
 Selected or derived runs are densified to the controller's 1 kHz by a clamped
 cubic spline through the waypoints (`prepare.rate`, `prepare.interpolation` in
 `config/replay.yaml`), then time-scaled until the FR3's velocity, acceleration,
@@ -471,6 +633,23 @@ ros2 run inspire_franka_trajectory_replay make_cycle_trajectory \
   --home apps/traj_replay/demo_trajs/traj_2/homing.yaml \
   --output /tmp/traj_2_5x
 ```
+
+If a reviewed source capture reaches the known joint-5 braking boundary, the
+generator can preserve the source and apply the same narrowly scoped cap used
+by the checked-in V2 candidates:
+
+```bash
+ros2 run inspire_franka_trajectory_replay make_cycle_trajectory \
+  apps/traj_replay/demo_trajs/traj_3_multi --first 1 --cycles 10 \
+  --home apps/traj_replay/demo_trajs/traj_3_multi/homing.yaml \
+  --joint5-cap 2.8 \
+  --output /tmp/traj_3_multi_joint5_cap_2p8
+```
+
+The output metadata records the cap, source maximum, number of affected
+samples, and maximum change. This option is an explicit waypoint retarget, not
+a way to bypass preparation: the generated artifact must still pass the normal
+FR3 limit check.
 
 That output is ready for preparation without another orientation step. New
 captures use the hardware joint convention and must not be passed through

@@ -100,7 +100,7 @@ def test_calibration_target_is_flat_2p3_mm_plate_at_measured_holder_pose():
                 0.270598050073099,
             )
         ),
-        (0.0417193000900063, -0.0417193000900063, 0.035),
+        (0.042426406871192853, -0.042426406871192853, 0.035),
     )
     np.testing.assert_allclose(
         flange_to_printed_tag,
@@ -117,7 +117,7 @@ def test_calibration_target_is_flat_2p3_mm_plate_at_measured_holder_pose():
         0.0,
         -0.382683432365090,
     )
-    assert _numbers(tag.get("pos"), ()) == (0.059, 0.0, 0.035)
+    assert _numbers(tag.get("pos"), ()) == (0.060, 0.0, 0.035)
     assert rz1 in list(flange)
     assert tag in list(rz1)
 

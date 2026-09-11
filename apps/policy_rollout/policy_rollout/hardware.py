@@ -19,7 +19,7 @@ def assess_hardware_readiness(
     blockers = list(calibration.hardware_blockers())
     blockers.extend(
         (
-            "a qualified FR3 DP3 student checkpoint has not been supplied",
+            "the supplied student checkpoint has not been multi-seed replay-qualified for this workcell",
             "live FR3 FK/Jacobian and 1 kHz OSC command transport are not implemented",
             "the cyclic release/return process-phase coordinator is not implemented",
             "the Forge official-hand to workspace RH56 command mapping is not validated",

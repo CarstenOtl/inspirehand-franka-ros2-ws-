@@ -117,3 +117,28 @@ def test_node_source_contains_no_ros_publisher():
     assert 'get_parameter("joint_map")' not in source
     # `_subscriptions` belongs to rclpy.Node; shadowing it corrupts shutdown.
     assert "self._subscriptions" not in source
+
+
+def test_viewer_options_parse_frames_labels_and_site_groups():
+    options = MODULE.parse_viewer_options("site", "Site", "0, 1,2 4", 1.5)
+    assert options.frame_name == "mjFRAME_SITE"
+    assert options.label_name == "mjLABEL_SITE"
+    assert options.site_groups == (0, 1, 2, 4)
+    assert options.frame_scale == 1.5
+    assert MODULE.parse_viewer_options("none", "none", "").site_groups is None
+    with pytest.raises(ValueError, match="frame must be"):
+        MODULE.parse_viewer_options("bodies", "none", "")
+    with pytest.raises(ValueError, match="label must be"):
+        MODULE.parse_viewer_options("body", "everything", "")
+    with pytest.raises(ValueError, match="site_groups"):
+        MODULE.parse_viewer_options("body", "none", "7")
+    with pytest.raises(ValueError, match="frame_scale"):
+        MODULE.parse_viewer_options("body", "none", "", 0.0)
+
+
+def test_viewer_option_names_exist_in_mujoco():
+    mujoco = pytest.importorskip("mujoco")
+    for name in MODULE.FRAME_OPTIONS.values():
+        assert hasattr(mujoco.mjtFrame, name), name
+    for name in MODULE.LABEL_OPTIONS.values():
+        assert hasattr(mujoco.mjtLabel, name), name

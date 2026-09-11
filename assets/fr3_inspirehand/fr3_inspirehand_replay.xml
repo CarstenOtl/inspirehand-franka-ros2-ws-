@@ -243,12 +243,12 @@
                             mesh="hand_adapter_flange_mesh" pos="0 0 0.005" material="flange_black"/>
                           <!-- Rz1 is the first tag-mount frame: rotate -45 deg
                                about fr3_link8 Z. The tag centre is then translated
-                               59 mm along Rz1 +X and 35 mm along Rz1 +Z. The tag
+                               60 mm along Rz1 +X and 35 mm along Rz1 +Z. The tag
                                face is vertical with zero in-plane print clocking.
                                The geom transform puts the printed surface at the
                                tag-body origin and cancels the OBJ's +90 deg UV yaw. -->
                           <body name="apriltag_rz1" quat="0.923879532511287 0 0 -0.382683432365090">
-                            <body name="apriltag_0" pos="0.059 0 0.035" quat="0.5 -0.5 0.5 -0.5">
+                            <body name="apriltag_0" pos="0.060 0 0.035" quat="0.5 -0.5 0.5 -0.5">
                               <geom name="apriltag_36h11_id0" type="mesh" mesh="hand_apriltag_36h11_id0_dorsal" material="apriltag_36h11_id0" pos="0 0 -0.0023" quat="0.707106781186548 0 0 -0.707106781186547" rgba="1 1 1 1" contype="0" conaffinity="0" group="2" density="0"/>
                               <site name="apriltag_0_frame" type="box" size="0.020 0.020 0.0006" rgba="0 0 0 0" group="4"/>
                             </body>

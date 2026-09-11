@@ -16,6 +16,13 @@ docker/certs/*.crt
 # MuJoCo writes this into whatever directory a model is loaded from.
 MUJOCO_LOG.TXT
 
+# Policy checkpoints and model weights are large binaries that never belong in
+# git. apps/policy_rollout/checkpoints/README.md records what should be there.
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
 __pycache__/
 *.py[cod]
 .pytest_cache/

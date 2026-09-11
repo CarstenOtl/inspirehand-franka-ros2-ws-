@@ -15,7 +15,7 @@ while keeping the complete tag visible.
 1. Print a supported AprilTag (default `tag36h11`, ID 0) and attach it to the
    2.3 mm flat flange-mounted holder—not to a moving finger. The asset places
    First rotate an intermediate mount frame `Rz1=-45 deg` about `fr3_link8` Z,
-   then place the printed face centre at `(59, 0, 35)` mm in `Rz1`. The print
+   then place the printed face centre at `(60, 0, 35)` mm in `Rz1`. The print
    has zero in-plane clocking within that frame.
 2. Measure the outer edge of the black square, excluding the white paper, in
    metres. Pose scale depends directly on this value.
@@ -145,9 +145,9 @@ timestamped `fr3_link0 -> fr3_link8` FK generated from the arm's `/joint_states`
 then applies the measured fixed `fr3_link8 -> apriltag_0` transform from the
 current physical asset, `assets/fr3_inspirehand/fr3_inspirehand.xml`. The MJCF
 first creates `apriltag_rz1` with `Rz=-45 deg` relative to
-`fr3_link8`, then places `apriltag_0` at `xyz=(0.059, 0, 0.035)` m in that
+`fr3_link8`, then places `apriltag_0` at `xyz=(0.060, 0, 0.035)` m in that
 intermediate frame. Consequently, the printed centre resolves to approximately
-`xyz=(0.0417193, -0.0417193, 0.035)` m in `fr3_link8`. Its origin is the printed
+`xyz=(0.0424264, -0.0424264, 0.035)` m in `fr3_link8`. Its origin is the printed
 face centre; the 2.3 mm backing plate extends behind it. The tag mount is not
 estimated; only the fixed camera pose is calibrated.
 

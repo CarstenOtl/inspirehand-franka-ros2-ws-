@@ -108,6 +108,34 @@ def test_generated_file_replays_without_cycle_or_segment_selection(tmp_path):
     assert report["cycles"] == [1, 2, 3]
 
 
+def test_optional_joint5_cap_changes_only_saturated_joint5_waypoints(tmp_path):
+    directory = _capture(tmp_path)
+    with np.load(directory / "replay_data.npz") as data:
+        fields = dict(data)
+    fields["joint_pos"][:, 0, 4] += 2.75
+    np.savez(directory / "replay_data.npz", **fields)
+
+    _, uncapped_arm, uncapped_hand, _ = build(
+        directory, directory / "home.yaml", 1, 3, 2.0, 0
+    )
+    _, capped_arm, capped_hand, report = build(
+        directory, directory / "home.yaml", 1, 3, 2.0, 0, joint5_cap=2.8
+    )
+
+    cycle_samples = report["cycle_samples"]
+    assert np.all(capped_arm[:cycle_samples, 4] <= 2.8)
+    assert np.allclose(
+        capped_arm[:cycle_samples, :4], uncapped_arm[:cycle_samples, :4]
+    )
+    assert np.allclose(
+        capped_arm[:cycle_samples, 5:], uncapped_arm[:cycle_samples, 5:]
+    )
+    assert np.allclose(capped_hand, uncapped_hand)
+    assert report["joint5_capped_samples"] == 34
+    assert report["joint5_recorded_max_rad"] == pytest.approx(2.868)
+    assert report["joint5_maximum_change_rad"] == pytest.approx(0.068)
+
+
 def test_a_capture_with_a_reset_inside_the_selection_is_refused(tmp_path):
     directory = _capture(tmp_path)
     with np.load(directory / "replay_data.npz") as data:

@@ -23,6 +23,26 @@ prepare:
   jerk_margin: 0.5
   send_rate: 1000
 
+# --arm-controller cartesian-impedance: the pose stream is forward kinematics
+# of the prepared joint stream through the tcp transform (identity: the flange,
+# which is O_T_EE when the robot's F_T_EE is identity). The margins scale the
+# libfranka FR3 Cartesian limits. The robot does not enforce them on a torque
+# controller's reference and the joint-space check already bounds the motion,
+# so the velocity margin is the datasheet limit itself. The preflight
+# tolerances gate the controller swap.
+cartesian:
+  controller_name: cartesian_trajectory_replay_controller
+  base_frame: fr3_link0
+  robot_state_topic: franka_robot_state_broadcaster/robot_state
+  velocity_margin: 1.0
+  acceleration_margin: 0.5
+  jerk_margin: 0.5
+  send_rate: 1000
+  tool_tolerance_m: 0.0001
+  tool_tolerance_rad: 0.0001
+  fk_tolerance_m: 0.003
+  fk_tolerance_deg: 0.5
+
 timing:
   settle_seconds: 1.0
   cycles: 1

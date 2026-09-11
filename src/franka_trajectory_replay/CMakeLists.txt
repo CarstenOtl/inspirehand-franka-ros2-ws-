@@ -16,6 +16,8 @@ find_package(control_msgs REQUIRED)
 find_package(controller_interface REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(franka_msgs REQUIRED)
+find_package(franka_trajectory_replay_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(franka_semantic_components REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
@@ -30,6 +32,7 @@ find_package(Eigen3 REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
     src/trajectory_replay_controller.cpp
+    src/cartesian_trajectory_replay_controller.cpp
 )
 
 target_include_directories(${PROJECT_NAME}
@@ -45,6 +48,8 @@ ament_target_dependencies(${PROJECT_NAME}
     diagnostic_msgs
     franka_msgs
     franka_semantic_components
+    franka_trajectory_replay_msgs
+    geometry_msgs
     hardware_interface
     pluginlib
     rclcpp
@@ -91,6 +96,14 @@ if(BUILD_TESTING)
     target_include_directories(${PROJECT_NAME}_test_joint_impedance PRIVATE
         include ${EIGEN3_INCLUDE_DIRS})
 
+    ament_add_gmock(${PROJECT_NAME}_test_cartesian_impedance test/test_cartesian_impedance.cpp)
+    target_include_directories(${PROJECT_NAME}_test_cartesian_impedance PRIVATE
+        include ${EIGEN3_INCLUDE_DIRS})
+
+    ament_add_gmock(${PROJECT_NAME}_test_fr3_kinematics test/test_fr3_kinematics.cpp)
+    target_include_directories(${PROJECT_NAME}_test_fr3_kinematics PRIVATE
+        include ${EIGEN3_INCLUDE_DIRS})
+
     ament_add_gmock(${PROJECT_NAME}_test_load test/test_load_controller.cpp)
     target_include_directories(${PROJECT_NAME}_test_load PRIVATE include)
     target_link_libraries(${PROJECT_NAME}_test_load ${PROJECT_NAME})
@@ -106,6 +119,6 @@ endif()
 
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME})
-ament_export_dependencies(controller_interface franka_semantic_components rcl_interfaces rclcpp_lifecycle)
+ament_export_dependencies(controller_interface franka_semantic_components franka_trajectory_replay_msgs geometry_msgs rcl_interfaces rclcpp_lifecycle)
 
 ament_package()

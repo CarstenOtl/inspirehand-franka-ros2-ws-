@@ -7,4 +7,12 @@
       effort mode (example joint impedance law), and publishes reference vs measured at 1 kHz.
     </description>
   </class>
+  <class name="franka_trajectory_replay/CartesianTrajectoryReplayController"
+         type="franka_trajectory_replay::CartesianTrajectoryReplayController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Replays a Cartesian pose trajectory on an FR3 with the torque law of Franka's
+      CartesianImpedanceExampleController, and publishes reference vs measured at 1 kHz.
+    </description>
+  </class>
 </library>

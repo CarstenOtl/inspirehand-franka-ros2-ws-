@@ -50,6 +50,19 @@ DEFAULTS = {
         'jerk_margin': 0.5,
         'send_rate': 1000,
     },
+    'cartesian': {
+        'controller_name': 'cartesian_trajectory_replay_controller',
+        'base_frame': 'fr3_link0',
+        'robot_state_topic': 'franka_robot_state_broadcaster/robot_state',
+        'velocity_margin': 1.0,
+        'acceleration_margin': 0.5,
+        'jerk_margin': 0.5,
+        'send_rate': 1000,
+        'tool_tolerance_m': 1e-4,
+        'tool_tolerance_rad': 1e-4,
+        'fk_tolerance_m': 0.003,
+        'fk_tolerance_deg': 0.5,
+    },
     'recording': {
         'storage_id': 'sqlite3',
         'topics': [

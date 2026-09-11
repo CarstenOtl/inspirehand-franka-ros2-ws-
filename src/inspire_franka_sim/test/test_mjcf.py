@@ -27,6 +27,7 @@ SCENES = (
     "inspire_hand_scene.xml",
     "inspire_franka_bench_scene.xml",
     "inspire_franka_flange_scene.xml",
+    "inspire_franka_flange_torque_scene.xml",
 )
 
 ARM_JOINTS = [f"fr3_joint{i}" for i in range(1, 8)]

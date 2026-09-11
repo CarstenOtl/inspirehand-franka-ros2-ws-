@@ -70,6 +70,7 @@ SCENES = {
 # the comment in inspire_franka_flange_scene.xml.
 KEYFRAMES = {
     "inspire_franka_flange_scene.xml": "start",
+    "inspire_franka_flange_torque_scene.xml": "start",
     "fr3_scene.xml": "home",
     "inspire_hand_scene.xml": "open",
 }

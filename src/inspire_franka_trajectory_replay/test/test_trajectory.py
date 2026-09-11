@@ -4,8 +4,12 @@ import json
 
 from inspire_franka_trajectory_replay.trajectory import (
     ARM_JOINTS, FINGER_FLEXION_INDICES, HAND_JOINTS, load_trajectory, resample,
+    THUMB_ABDUCTION_DOF, THUMB_ABDUCTION_INDEX,
+    THUMB_ABDUCTION_ZERO_OPEN_RATIO, scale_thumb_abduction,
     scale_finger_flexion,
 )
+from inspire_hand_driver import command_overlays
+from inspire_hand_driver import kinematics as hand_kinematics
 
 
 def test_finger_flexion_scale_changes_only_index_and_thumb_mcp_waypoints():
@@ -30,6 +34,99 @@ def test_finger_flexion_scale_rejects_nonpositive_or_nonfinite_values(scale):
 def test_finger_flexion_scale_requires_recorded_hand_positions():
     with pytest.raises(ValueError, match="requires Inspire hand positions"):
         scale_finger_flexion(None, 1.3)
+
+
+def test_thumb_abduction_overlay_rescales_only_thumb_yaw_onto_the_usable_travel():
+    hand = np.arange(24, dtype=float).reshape(4, 6) / 20.0
+    original = hand.copy()
+    open_pose_radians = hand_kinematics.DOFS[THUMB_ABDUCTION_DOF].lower
+
+    scaled = scale_thumb_abduction(hand)
+
+    untouched = [index for index in range(6) if index != THUMB_ABDUCTION_INDEX]
+    assert scaled[:, untouched] == pytest.approx(original[:, untouched])
+    assert scaled[:, THUMB_ABDUCTION_INDEX] == pytest.approx(
+        open_pose_radians
+        + (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO)
+        * (original[:, THUMB_ABDUCTION_INDEX] - open_pose_radians)
+    )
+    assert all(
+        hand_kinematics.rad_to_open_ratio(THUMB_ABDUCTION_DOF, radians)
+        >= THUMB_ABDUCTION_ZERO_OPEN_RATIO
+        for radians in scaled[:, THUMB_ABDUCTION_INDEX]
+    )
+    assert hand == pytest.approx(original)
+
+
+def test_thumb_abduction_overlay_maps_the_command_range_onto_the_driver_range():
+    """The radian contraction must agree with the driver's open-ratio rescale."""
+    for commanded_ratio in (0.0, 0.25, 0.5, 0.75, 1.0):
+        hand = np.zeros(6)
+        hand[THUMB_ABDUCTION_INDEX] = hand_kinematics.open_ratio_to_rad(
+            THUMB_ABDUCTION_DOF, commanded_ratio
+        )
+
+        scaled = scale_thumb_abduction(hand)
+
+        expected_ratio = command_overlays.apply_open_ratio_overlay(
+            THUMB_ABDUCTION_DOF, commanded_ratio
+        )
+        assert scaled[THUMB_ABDUCTION_INDEX] == pytest.approx(
+            hand_kinematics.open_ratio_to_rad(THUMB_ABDUCTION_DOF, expected_ratio)
+        )
+
+
+def test_thumb_abduction_overlay_is_monotonic_and_loses_no_distinct_commands():
+    """A floor collapsed the bottom of the range; the rescale must not."""
+    commanded = np.linspace(0.0, 1.0, 9)
+    hand = np.zeros((commanded.size, 6))
+    hand[:, THUMB_ABDUCTION_INDEX] = [
+        hand_kinematics.open_ratio_to_rad(THUMB_ABDUCTION_DOF, ratio)
+        for ratio in commanded
+    ]
+
+    yaw = scale_thumb_abduction(hand)[:, THUMB_ABDUCTION_INDEX]
+
+    assert np.all(np.diff(yaw) < 0.0)
+    assert np.unique(yaw).size == commanded.size
+
+
+def test_thumb_abduction_overlay_preserves_invalid_negative_radians_for_validation():
+    hand = np.zeros((1, 6))
+    hand[0, THUMB_ABDUCTION_INDEX] = -0.1
+
+    scaled = scale_thumb_abduction(hand)[0, THUMB_ABDUCTION_INDEX]
+
+    # Contracted, not clipped: _validate_hand must still see it as out of range.
+    assert scaled < hand_kinematics.DOFS[THUMB_ABDUCTION_DOF].lower
+    assert scaled == pytest.approx(-0.1 * (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO))
+
+
+def test_thumb_abduction_overlay_also_rescales_a_one_dimensional_homing_pose():
+    home = np.arange(6, dtype=float) / 10.0
+    home[THUMB_ABDUCTION_INDEX] = 1.2
+
+    scaled = scale_thumb_abduction(home)
+
+    open_pose_radians = hand_kinematics.DOFS[THUMB_ABDUCTION_DOF].lower
+    expected = open_pose_radians + (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO) * (
+        1.2 - open_pose_radians
+    )
+    assert scaled[THUMB_ABDUCTION_INDEX] == pytest.approx(expected)
+    assert np.delete(scaled, THUMB_ABDUCTION_INDEX) == pytest.approx(
+        np.delete(home, THUMB_ABDUCTION_INDEX)
+    )
+
+
+@pytest.mark.parametrize("zero", [-0.1, 1.1, np.nan, np.inf])
+def test_thumb_abduction_overlay_rejects_invalid_zero_open_ratio(zero):
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+        scale_thumb_abduction(np.zeros((2, 6)), zero)
+
+
+def test_thumb_abduction_overlay_requires_recorded_hand_positions():
+    with pytest.raises(ValueError, match="requires Inspire hand positions"):
+        scale_thumb_abduction(None)
 
 
 def test_load_and_resample_arm_only(tmp_path):

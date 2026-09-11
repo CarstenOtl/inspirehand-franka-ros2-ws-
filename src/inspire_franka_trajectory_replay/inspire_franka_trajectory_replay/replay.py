@@ -18,6 +18,9 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import JointState
 
+from franka_trajectory_replay import cartesian
+from franka_trajectory_replay.cartesian_replay_client import CartesianReplayClient
+from franka_trajectory_replay.kinematics import tool_transform
 from franka_trajectory_replay.prepare import prepare, summarize
 from franka_trajectory_replay import limits
 from franka_trajectory_replay.replay_client import Rejected, ReplayClient
@@ -30,6 +33,10 @@ from .trajectory import (
     ARM_JOINTS,
     FINGER_FLEXION_JOINTS,
     HAND_JOINTS,
+    THUMB_ABDUCTION_DOF,
+    THUMB_ABDUCTION_JOINT,
+    THUMB_ABDUCTION_ZERO_OPEN_RATIO,
+    scale_thumb_abduction,
     load_trajectory,
     scale_finger_flexion,
 )
@@ -94,7 +101,13 @@ def load_home(path):
     return arm, hand
 
 
-def _prepare_arm(trajectory, config, max_duration, time_scale=None):
+def _prepare_arm(
+    trajectory,
+    config,
+    max_duration,
+    time_scale=None,
+    allow_limit_violations=False,
+):
     settings = config["prepare"]
     requested_time_scale = (
         settings["time_scale"] if time_scale is None else float(time_scale)
@@ -122,7 +135,11 @@ def _prepare_arm(trajectory, config, max_duration, time_scale=None):
         blend_time=settings["blend_time"],
     )
     prepared = prepare(source, **arguments)
-    if prepared.report["ok"] or not settings["auto_scale"]:
+    if (
+        prepared.report["ok"]
+        or allow_limit_violations
+        or not settings["auto_scale"]
+    ):
         return prepared
 
     required = 1.02 * limits.required_time_scale(prepared.report)
@@ -149,6 +166,33 @@ def _prepare_arm(trajectory, config, max_duration, time_scale=None):
     arguments["time_scale"] = requested_time_scale * required
     arguments["auto_scale"] = True
     return prepare(source, **arguments)
+
+
+def _prepare_cartesian(prepared, config, margins=None):
+    """The pose stream for the Cartesian controller: FK of the prepared joint stream.
+
+    The joint-space preparation stays the first stage on purpose. It is the part
+    validated on hardware and where the FR3 limits and the automatic time scaling
+    live; forward kinematics of that stream through the configured tool describes
+    a motion the arm can make, and the stream itself is the nullspace target.
+    """
+    tcp = config["tcp"]
+    if tcp["frame"] != "fr3_link8":
+        raise ValueError(
+            f"tcp.frame is {tcp['frame']!r}; the pose stream is forward kinematics of "
+            "the flange (fr3_link8) through tcp.offset_xyz/offset_rpy"
+        )
+    tool = tool_transform(tcp["offset_xyz"], tcp["offset_rpy"])
+    settings = dict(config["cartesian"])
+    settings.update({key: value for key, value in (margins or {}).items() if value is not None})
+    stream = cartesian.from_joint_stream(prepared, tool)
+    cartesian.check_cartesian_limits(
+        stream,
+        settings["velocity_margin"],
+        settings["acceleration_margin"],
+        settings["jerk_margin"],
+    )
+    return stream
 
 
 def _hand_stream(trajectory, prepared, rate):
@@ -318,11 +362,16 @@ class HandReplayMixin:
 
     def wait_for_hand(self, target, timeout, tolerance):
         target = np.asarray(target, dtype=float)
+        # Publish the original target. Only the driver rescales thumb
+        # abduction onto its calibrated travel; feedback is compared with that
+        # effective physical target so homing does not wait for an intentionally
+        # unreachable pre-overlay position.
+        effective_target = scale_thumb_abduction(target)
 
         def arrived():
             with self._hand_lock:
                 return self._hand_position is not None and np.max(
-                    np.abs(self._hand_position - target)
+                    np.abs(self._hand_position - effective_target)
                 ) <= tolerance
 
         # The driver holds its last target, so repeating it costs nothing and
@@ -524,9 +573,30 @@ def main(argv=None):
     parser.add_argument("--home", default=None, help="homing YAML (default: threading.yaml)")
     parser.add_argument("--config", default=None, help="Franka replay configuration YAML")
     parser.add_argument(
-        "--arm-controller", choices=("joint-impedance", "position-jtc"),
+        "--arm-controller",
+        choices=("joint-impedance", "cartesian-impedance", "position-jtc"),
         default="joint-impedance",
-        help="joint-impedance: example effort law (default); position-jtc: legacy MuJoCo stack",
+        help="joint-impedance: example joint-impedance effort law (default); "
+             "cartesian-impedance: home with the joint controller, then replay the "
+             "pose stream with the example Cartesian impedance law; "
+             "position-jtc: legacy MuJoCo stack",
+    )
+    parser.add_argument(
+        "--cartesian-velocity-margin", type=float, default=None,
+        help="override replay.yaml's cartesian.velocity_margin (cartesian-impedance only)",
+    )
+    parser.add_argument(
+        "--cartesian-acceleration-margin", type=float, default=None,
+        help="override replay.yaml's cartesian.acceleration_margin",
+    )
+    parser.add_argument(
+        "--cartesian-jerk-margin", type=float, default=None,
+        help="override replay.yaml's cartesian.jerk_margin",
+    )
+    parser.add_argument(
+        "--stiffness-scale", type=float, default=None,
+        help="set the Cartesian controller's live stiffness_scale before replay "
+             "(cartesian-impedance only)",
     )
     parser.add_argument("--rate", type=float, default=None, help="input rate if absent")
     parser.add_argument("--env", type=int, default=0, help="environment in a batched Forge NPZ")
@@ -588,6 +658,12 @@ def main(argv=None):
         help="hand only: the arm is neither prepared nor commanded",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--allow-unsafe-simulation",
+        action="store_true",
+        help="send a trajectory that fails FR3 preparation only to the explicit "
+             "position-jtc MuJoCo path; never permitted with joint-impedance hardware",
+    )
     parser.add_argument("--yes", "-y", action="store_true", help="skip motion prompts")
     parser.add_argument(
         "--close-support-fingers",
@@ -641,8 +717,31 @@ def main(argv=None):
         parser.error("--finger-flexion-scale cannot be used with --no-hand")
     if args.interactive_pause and args.no_arm:
         parser.error("--interactive-pause requires the arm trajectory clock")
-    if args.interactive_pause and args.arm_controller != "joint-impedance":
-        parser.error("--interactive-pause requires the joint-impedance replay controller")
+    if args.interactive_pause and args.arm_controller == "position-jtc":
+        parser.error("--interactive-pause is unavailable on the position-jtc path")
+    cartesian_mode = args.arm_controller == "cartesian-impedance"
+    cartesian_margins = {
+        "velocity_margin": args.cartesian_velocity_margin,
+        "acceleration_margin": args.cartesian_acceleration_margin,
+        "jerk_margin": args.cartesian_jerk_margin,
+    }
+    for name, value in cartesian_margins.items():
+        if value is not None and not cartesian_mode:
+            parser.error(f"--cartesian-{name.replace('_', '-')} requires "
+                         "--arm-controller cartesian-impedance")
+        if value is not None and not (np.isfinite(value) and value > 0):
+            parser.error(f"--cartesian-{name.replace('_', '-')} must be finite and positive")
+    if args.stiffness_scale is not None:
+        if not cartesian_mode:
+            parser.error("--stiffness-scale requires --arm-controller cartesian-impedance")
+        if not np.isfinite(args.stiffness_scale) or args.stiffness_scale < 0:
+            parser.error("--stiffness-scale must be finite and non-negative")
+    if cartesian_mode and args.no_arm:
+        parser.error("--arm-controller cartesian-impedance needs the arm; drop --no-arm")
+    if args.allow_unsafe_simulation and args.arm_controller != "position-jtc":
+        parser.error(
+            "--allow-unsafe-simulation requires --arm-controller position-jtc"
+        )
     if args.hand_time_scale is not None and not args.no_arm:
         parser.error("--hand-time-scale only applies to --no-arm; the coordinated "
                      "hand stream follows the arm's prepared clock")
@@ -678,15 +777,24 @@ def main(argv=None):
             )
             trajectory = dataclasses.replace(trajectory, hand=overridden_hand)
         prepared = None
+        pose_stream = None
         if not args.no_arm:
             prepared = _prepare_arm(
                 trajectory,
                 load_config(config_path),
                 args.max_prepared_duration,
                 time_scale=args.time_scale,
+                allow_limit_violations=args.allow_unsafe_simulation,
             )
-            if not prepared.report["ok"]:
+            if not prepared.report["ok"] and not args.allow_unsafe_simulation:
                 raise ValueError("prepared arm trajectory violates FR3 limits")
+        if prepared is not None and cartesian_mode:
+            pose_stream = _prepare_cartesian(prepared, load_config(config_path), cartesian_margins)
+            if not pose_stream.report["ok"]:
+                raise ValueError(
+                    "prepared pose stream violates the Cartesian limits: "
+                    + "; ".join(pose_stream.report["violations"])
+                )
         if not args.no_arm:
             _check_home(home_arm, trajectory.arm[0], home_path, args.max_home_delta)
         if trajectory.hand is None and not args.no_hand:
@@ -721,11 +829,26 @@ def main(argv=None):
             for name, index in zip(SUPPORT_FINGER_JOINTS, SUPPORT_FINGER_INDICES)
         )
         print(f"hand-only override: {values}; no arm retarget applied")
+    if args.allow_unsafe_simulation:
+        print(
+            "WARNING: FR3 limit violations are being sent to the position-JTC "
+            "simulation path only; this trajectory must not be sent to hardware"
+        )
     if args.finger_flexion_scale != 1.0:
         joints = ", ".join(FINGER_FLEXION_JOINTS)
         print(
             f"hand waypoint flexion scale: {args.finger_flexion_scale:g}x "
             f"for {joints}; homing pose unchanged"
+        )
+    if not args.no_hand:
+        thumb_abduction_zero_rad = kin.open_ratio_to_rad(
+            THUMB_ABDUCTION_DOF, THUMB_ABDUCTION_ZERO_OPEN_RATIO
+        )
+        print(
+            "driver thumb abduction overlay: raw replay commands preserved; "
+            f"{THUMB_ABDUCTION_JOINT} rescaled onto open ratio "
+            f"[{THUMB_ABDUCTION_ZERO_OPEN_RATIO:g}, 1] "
+            f"(physical yaw [0, {thumb_abduction_zero_rad:g}] rad)"
         )
     print(
         f"coordinated source: {len(trajectory.time)} samples, "
@@ -734,6 +857,13 @@ def main(argv=None):
     if prepared is not None:
         replay_duration = prepared.duration
         print(summarize(prepared, config["joint_names"]))
+        if pose_stream is not None:
+            print(
+                "arm controller: cartesian-impedance; pose stream is forward kinematics "
+                f"of the prepared joint stream through tcp offset {pose_stream.tool[:3, 3]} m "
+                f"(frame {config['tcp']['frame']}); the joint stream is the nullspace target"
+            )
+            print(cartesian.summarize_cartesian(pose_stream))
         print(
             "home-to-first-source max arm delta: "
             f"{np.max(np.abs(home_arm - trajectory.arm[0])):.6f} rad"
@@ -757,15 +887,22 @@ def main(argv=None):
         return 0
 
     rclpy.init(args=None)
-    client_type = (CoordinatedReplayClient if args.arm_controller == "joint-impedance"
-                   else PositionReplayClient)
+    client_type = (PositionReplayClient if args.arm_controller == "position-jtc"
+                   else CoordinatedReplayClient)
     node = client_type(
         config,
         hand_topic,
         hand_state_topic,
     )
-    executor = MultiThreadedExecutor(num_threads=3)
+    # In Cartesian mode the joint client homes the arm and drives the hand; the
+    # Cartesian client takes the arm over for the trajectory. Whichever holds
+    # the arm right now is the one a pause or an abort has to reach.
+    arm = CartesianReplayClient(config) if cartesian_mode else None
+    active_arm = {"node": node}
+    executor = MultiThreadedExecutor(num_threads=4 if arm is not None else 3)
     executor.add_node(node)
+    if arm is not None:
+        executor.add_node(arm)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
     exit_code = 0
@@ -786,9 +923,31 @@ def main(argv=None):
             node.wait_for_hand(home_hand, args.hand_timeout, args.hand_tolerance)
         print("homing complete")
 
+        if arm is not None:
+            # Homed by the validated joint controller; now hand the arm to the
+            # Cartesian controller. Both claim the effort interfaces, so the
+            # swap keeps franka_hardware in torque control. The preflight refuses
+            # a robot whose end-effector frame is not the one the stream assumes.
+            if arm.uses_dh_model():
+                print(
+                    "SIMULATION MODEL: the Cartesian controller computes its pose and "
+                    "Jacobian from its built-in DH model (model_source dh), so there is "
+                    "no robot frame to check; skipping the F_T_EE / O_T_EE preflight. "
+                    "Never run the real arm with model_source dh."
+                )
+            else:
+                arm.preflight(node.current_joint_positions(), pose_stream.tool, print)
+            arm.ensure_active(print)
+            active_arm["node"] = arm
+            if args.stiffness_scale is not None:
+                arm.set_stiffness_scale(args.stiffness_scale)
+            # A millimetre-scale goto onto the stream's first pose absorbs the
+            # at-rest tracking offset of the compliant joint controller; the
+            # controller reports idle only once its reference filter has settled.
+            arm.goto(pose_stream.p[0], pose_stream.quat[0], pose_stream.q_null[0])
         # The prepared arm stream may start slightly before the source's first
         # point to blend a non-zero initial velocity without a discontinuity.
-        if prepared is not None and np.max(np.abs(prepared.q[0] - home_arm)) > 1e-6:
+        elif prepared is not None and np.max(np.abs(prepared.q[0] - home_arm)) > 1e-6:
             node.goto(prepared.q[0])
         if hand_positions is not None:
             node.command_hand(hand_positions[0])
@@ -801,7 +960,7 @@ def main(argv=None):
         hand_errors = []
         trajectory_progress = {"elapsed": 0.0, "command_id": None}
         def trajectory_clock():
-            status = node.status()
+            status = active_arm["node"].status()
             if status is not None and status.get("phase_name") == "trajectory":
                 trajectory_progress["command_id"] = int(status["active_command_id"])
                 trajectory_progress["elapsed"] = max(
@@ -830,23 +989,32 @@ def main(argv=None):
                     hand_positions,
                     hand_errors,
                     trajectory_clock
-                    if not args.no_arm and args.arm_controller == "joint-impedance"
+                    if not args.no_arm and args.arm_controller != "position-jtc"
                     else None,
                 ),
                 daemon=True,
             )
             hand_thread.start()
         if prepared is not None:
-            keyboard = (_InteractivePause(node, started, hand_stop)
+            keyboard = (_InteractivePause(active_arm["node"], started, hand_stop)
                         if args.interactive_pause else nullcontext())
             with keyboard as controls:
-                node.send_trajectory(
-                    prepared,
-                    config["prepare"]["send_rate"],
-                    timeout_margin=args.timeout_margin,
-                    on_accept=started.set,
-                    allow_pauses=args.interactive_pause,
-                )
+                if arm is not None:
+                    arm.send_trajectory(
+                        pose_stream,
+                        config["cartesian"]["send_rate"],
+                        timeout_margin=args.timeout_margin,
+                        on_accept=started.set,
+                        allow_pauses=args.interactive_pause,
+                    )
+                else:
+                    node.send_trajectory(
+                        prepared,
+                        config["prepare"]["send_rate"],
+                        timeout_margin=args.timeout_margin,
+                        on_accept=started.set,
+                        allow_pauses=args.interactive_pause,
+                    )
             if args.interactive_pause:
                 if controls.errors:
                     raise RuntimeError(f"interactive pause failed: {controls.errors[0]}")
@@ -867,7 +1035,7 @@ def main(argv=None):
         exit_code = 130
         hand_stop.set()
         if not args.no_arm:
-            node.abort()
+            active_arm["node"].abort()
             print("interrupted: arm abort sent; hand holds its last target")
         else:
             print("interrupted: hand holds its last target")
@@ -875,7 +1043,7 @@ def main(argv=None):
         exit_code = 1
         hand_stop.set()
         if not args.no_arm:
-            node.abort()
+            active_arm["node"].abort()
         print(f"ERROR: {exc}")
     finally:
         hand_stop.set()
@@ -884,5 +1052,7 @@ def main(argv=None):
         executor.shutdown()
         spin_thread.join(timeout=5.0)
         node.destroy_node()
+        if arm is not None:
+            arm.destroy_node()
         rclpy.shutdown()
     return exit_code

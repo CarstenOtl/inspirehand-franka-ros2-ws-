@@ -3,7 +3,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from policy_rollout.dp3 import RGBPointCloudDP3Encoder
-from policy_rollout.flow_matching import require_vendored_flow_matching
+from policy_rollout.flow_matching import require_vendored_flow_matching, sample_local_ode
 from policy_rollout.flow_policy import FlowActionChunkEnsembler
 
 
@@ -44,3 +44,27 @@ def test_action_chunk_ensemble_aligns_overlapping_predictions():
     torch.testing.assert_close(first, torch.tensor([[1.0]]))
     # newest t=0 and prior t=1 refer to the same absolute command tick
     torch.testing.assert_close(second, torch.tensor([[(10.0 + 0.5 * 2.0) / 1.5]]))
+
+
+class _ConstantVelocity(torch.nn.Module):
+    """u_t(x) = condition, so the exact flow is x(1) = x(0) + condition."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def forward(self, x_t, time, *, condition):
+        self.calls.append((tuple(x_t.shape), tuple(time.shape)))
+        return condition.expand_as(x_t)
+
+
+def test_sample_local_ode_drives_the_vendored_euler_solver_with_the_condition():
+    model = _ConstantVelocity()
+    x_init = torch.zeros(2, 3)
+    condition = torch.tensor([[1.0, -2.0, 0.5], [0.0, 0.25, 4.0]])
+    result = sample_local_ode(model, x_init, condition, steps=4)
+    torch.testing.assert_close(result, condition)
+    assert len(model.calls) == 4
+    assert all(call == ((2, 3), (2,)) for call in model.calls)
+    with pytest.raises(ValueError, match="positive"):
+        sample_local_ode(model, x_init, condition, steps=0)

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "data_file": "replay_data.npz",
+  "generated_by": "inspire_franka_trajectory_replay.make_cycles",
+  "description": "All ten traj_3_multi cycles, concatenated as recorded with only saturated fr3_joint5 waypoints capped at 2.800 rad, followed by a cubic Hermite return to the matching home. One continuous run: no --cycle or --segment needed.",
+  "units": "radians",
+  "recording_frequency_hz": 15.000000000000053,
+  "sample_count": 1112,
+  "arm_joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7"
+  ],
+  "hand_joint_names": [
+    "pinky_proximal_joint",
+    "ring_proximal_joint",
+    "middle_proximal_joint",
+    "index_proximal_joint",
+    "thumb_proximal_pitch_joint",
+    "thumb_proximal_yaw_joint"
+  ],
+  "cycles": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "cycle_samples": 1082,
+  "ramp_samples": 30,
+  "rate_hz": 15.000000000000053,
+  "start_from_home": 0.0,
+  "recorded_end_from_home": 0.009217411279678345,
+  "final_from_home": 0.0,
+  "source": "../traj_3_multi/replay_data.npz",
+  "home": "homing.yaml",
+  "environment": 0,
+  "joint5_cap_rad": 2.8,
+  "joint5_recorded_max_rad": 2.806506872177124,
+  "joint5_capped_samples": 171,
+  "joint5_maximum_change_rad": 0.006506872177124201,
+  "hardware_replay_status": "candidate_passes_5x_preparation_physical_validation_pending",
+  "hardware_orientation": {
+    "joint": "fr3_joint7",
+    "offset_rad": 0.0,
+    "note": "The V2 policy uses the current hardware joint orientation; no artificial flange-clock compensation is applied."
+  },
+  "hardware_waypoint_retargeting": {
+    "operation": "minimum(fr3_joint5, 2.8 rad)",
+    "joint": "fr3_joint5",
+    "recorded_max_rad": 2.806506872177124,
+    "cap_rad": 2.8,
+    "capped_samples": 171,
+    "maximum_change_rad": 0.006506872177124201,
+    "note": "Only saturated joint-5 waypoints are capped. All other arm and hand waypoints and timing are unchanged before the appended return-home ramp."
+  }
+}

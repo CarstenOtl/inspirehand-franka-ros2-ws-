@@ -79,6 +79,51 @@ def test_five_cycle_current_mount_artifact_is_a_validated_extended_run():
     assert metadata["hardware_validation"]["interactive_pause"] is True
 
 
+def test_traj_3_multi_candidate_is_continuous_capped_and_returns_home():
+    source_dir = APP_DIR / "demo_trajs" / "traj_3_multi"
+    candidate_dir = APP_DIR / "demo_trajs" / "traj_3_multi_joint5_cap_2p8"
+    metadata = json.loads(
+        (candidate_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    source_metadata = json.loads(
+        (source_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    with (candidate_dir / "homing.yaml").open(encoding="utf-8") as stream:
+        home = yaml.safe_load(stream)
+    with np.load(source_dir / "replay_data.npz", allow_pickle=False) as source:
+        source_positions = np.asarray(source["joint_pos"][:, 0, :])
+    with np.load(candidate_dir / "replay_data.npz", allow_pickle=False) as candidate:
+        arm = np.asarray(candidate["joint_pos_arm"])
+        hand = np.asarray(candidate["joint_pos_hand"])
+        time = np.asarray(candidate["sample_time_s"])
+
+    cycle_samples = metadata["cycle_samples"]
+    source_columns = {
+        name: index for index, name in enumerate(source_metadata["joint_names"])
+    }
+    source_arm = source_positions[:, [source_columns[name] for name in ARM_JOINTS]]
+    forge_hand_names = (
+        "little_joint_0",
+        "ring_joint_0",
+        "middle_joint_0",
+        "index_joint_0",
+        "thumb_joint_1",
+        "thumb_joint_0",
+    )
+    source_hand = source_positions[:, [source_columns[name] for name in forge_hand_names]]
+    assert metadata["cycles"] == list(range(1, 11))
+    assert metadata["hardware_replay_status"].endswith("physical_validation_pending")
+    assert metadata["joint5_capped_samples"] == 171
+    assert len(time) == len(arm) == len(hand) == metadata["sample_count"] == 1112
+    assert np.all(np.diff(time) > 0)
+    assert arm[:cycle_samples, 4] == pytest.approx(np.minimum(source_arm[:, 4], 2.8))
+    assert arm[:cycle_samples, :4] == pytest.approx(source_arm[:, :4])
+    assert arm[:cycle_samples, 5:] == pytest.approx(source_arm[:, 5:])
+    assert hand[:cycle_samples] == pytest.approx(source_hand)
+    assert arm[-1] == pytest.approx(home["positions"][:7], abs=1e-12)
+    assert hand[-1] == pytest.approx(home["positions"][7:], abs=1e-12)
+
+
 @pytest.mark.parametrize("filename", EXPECTED_ARM_POSITIONS)
 def test_homing_pose_matches_franka_chi_and_local_joint_contract(filename):
     with (HOMING_DIR / filename).open(encoding="utf-8") as stream:

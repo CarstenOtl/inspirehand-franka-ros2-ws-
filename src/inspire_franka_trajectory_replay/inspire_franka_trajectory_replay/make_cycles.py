@@ -114,7 +114,7 @@ def return_to_home(arm, hand, home_arm, home_hand, seconds, dt):
     )
 
 
-def build(source, home_path, first, count, seconds, environment):
+def build(source, home_path, first, count, seconds, environment, joint5_cap=None):
     """Assemble the cycles and the ramp; returns time, arm, hand and a report."""
     npz_path = resolve_trajectory(str(source))
     metadata = json.loads((npz_path.parent / "metadata.json").read_text(encoding="utf-8"))
@@ -140,6 +140,21 @@ def build(source, home_path, first, count, seconds, environment):
 
     arm = selected[:, [names.index(name) for name in ARM_JOINTS]]
     hand = selected[:, [names.index(name) for name in FORGE_HAND_JOINTS]]
+
+    cap_report = {}
+    if joint5_cap is not None:
+        joint5_cap = float(joint5_cap)
+        if not np.isfinite(joint5_cap):
+            raise ValueError("--joint5-cap must be finite")
+        recorded = arm[:, 4].copy()
+        arm[:, 4] = np.minimum(recorded, joint5_cap)
+        changed = np.flatnonzero(arm[:, 4] != recorded)
+        cap_report = {
+            "joint5_cap_rad": joint5_cap,
+            "joint5_recorded_max_rad": float(recorded.max()),
+            "joint5_capped_samples": int(len(changed)),
+            "joint5_maximum_change_rad": float(np.abs(arm[:, 4] - recorded).max()),
+        }
 
     # The recorded cycles are only worth concatenating if their seams really are
     # continuous. Checked here rather than assumed, against the same FR3
@@ -169,6 +184,7 @@ def build(source, home_path, first, count, seconds, environment):
         "source": str(npz_path),
         "home": str(home_path),
         "environment": environment,
+        **cap_report,
     }
     return time, arm, hand, report
 
@@ -193,7 +209,7 @@ def write(output, time, arm, hand, report):
                 "generated_by": "inspire_franka_trajectory_replay.make_cycles",
                 "description": (
                     f"Cycles {report['cycles'][0]}-{report['cycles'][-1]} of the source "
-                    f"capture, concatenated as recorded, followed by a quintic ramp onto "
+                    f"capture, concatenated as recorded, followed by a cubic Hermite ramp onto "
                     f"the homing pose. One continuous run: no --cycle or --segment needed."
                 ),
                 "units": "radians",
@@ -220,6 +236,12 @@ def main(argv=None):
     parser.add_argument("--first", type=int, default=1, help="first cycle to take")
     parser.add_argument("--env", type=int, default=0, help="environment in a batched capture")
     parser.add_argument(
+        "--joint5-cap",
+        type=float,
+        default=None,
+        help="cap only fr3_joint5 waypoints at this upper value in radians",
+    )
+    parser.add_argument(
         "--return-seconds",
         type=float,
         default=2.0,
@@ -238,7 +260,7 @@ def main(argv=None):
     try:
         time, arm, hand, report = build(
             args.trajectory, home_path, args.first, args.cycles,
-            args.return_seconds, args.env,
+            args.return_seconds, args.env, args.joint5_cap,
         )
         directory = write(args.output, time, arm, hand, report)
     except (OSError, ValueError, KeyError) as exc:
@@ -256,6 +278,12 @@ def main(argv=None):
         f"{report['recorded_end_from_home']:.4f} rad short, and the ramp closes that "
         f"to {report['final_from_home']:.2e} rad"
     )
+    if "joint5_cap_rad" in report:
+        print(
+            f"joint 5: capped {report['joint5_capped_samples']} samples at "
+            f"{report['joint5_cap_rad']:.4f} rad (largest change "
+            f"{report['joint5_maximum_change_rad']:.6f} rad)"
+        )
     print(f"{len(time)} samples over {time[-1]:.2f} s -> {directory}")
     print(
         "\nValidate it against the FR3's limits before running it:\n"
