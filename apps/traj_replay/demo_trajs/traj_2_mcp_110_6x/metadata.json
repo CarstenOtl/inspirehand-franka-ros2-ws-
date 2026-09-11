@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "data_file": "replay_data.npz",
+  "generated_by": "inspire_franka_trajectory_replay.make_cycles",
+  "description": "All six cycles of traj_2 with 10% more index- and thumb-MCP flexion, concatenated as recorded and followed by a smooth return to the homing pose. One continuous run: no --cycle or --segment needed.",
+  "units": "radians",
+  "recording_frequency_hz": 15.000000000000053,
+  "sample_count": 560,
+  "arm_joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7"
+  ],
+  "hand_joint_names": [
+    "pinky_proximal_joint",
+    "ring_proximal_joint",
+    "middle_proximal_joint",
+    "index_proximal_joint",
+    "thumb_proximal_pitch_joint",
+    "thumb_proximal_yaw_joint"
+  ],
+  "cycles": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "cycle_samples": 530,
+  "ramp_samples": 30,
+  "rate_hz": 15.000000000000053,
+  "start_from_home": 7.152557373046875e-07,
+  "recorded_end_from_home": 0.010286197066307068,
+  "final_from_home": 0.0,
+  "source": "../traj_2_mcp_110/replay_data.npz",
+  "home": "homing.yaml",
+  "hand_waypoint_retargeting": {
+    "operation": "multiply flexion angle by 1.10",
+    "scale": 1.1,
+    "joints": [
+      "index_proximal_joint",
+      "thumb_proximal_pitch_joint"
+    ]
+  },
+  "environment": 0
+}

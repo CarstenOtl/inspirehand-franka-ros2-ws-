@@ -26,7 +26,13 @@ from franka_trajectory_replay.trajectory_io import Trajectory as ArmTrajectory
 from inspire_hand_driver import kinematics as kin
 
 from .joint_trajectory_client import JointTrajectoryClient
-from .trajectory import ARM_JOINTS, HAND_JOINTS, load_trajectory
+from .trajectory import (
+    ARM_JOINTS,
+    FINGER_FLEXION_JOINTS,
+    HAND_JOINTS,
+    load_trajectory,
+    scale_finger_flexion,
+)
 
 
 # Where each commanded hand joint sits in the driver's own DOF table. Resolved
@@ -590,6 +596,13 @@ def main(argv=None):
              "homing and replay; arm waypoints are unchanged",
     )
     parser.add_argument(
+        "--finger-flexion-scale",
+        type=float,
+        default=1.0,
+        help="multiply only the index- and thumb-MCP waypoint flexion; "
+             "1.3 commands 30%% more and 1.5 commands 50%% more (default: 1.0)",
+    )
+    parser.add_argument(
         "--interactive-pause",
         action="store_true",
         help="during replay, SPACE pauses/resumes both devices and q aborts",
@@ -614,6 +627,8 @@ def main(argv=None):
         parser.error("--time-scale must be positive")
     if args.hand_time_scale is not None and args.hand_time_scale <= 0:
         parser.error("--hand-time-scale must be positive")
+    if not np.isfinite(args.finger_flexion_scale) or args.finger_flexion_scale <= 0:
+        parser.error("--finger-flexion-scale must be finite and positive")
     if args.max_home_delta < 0:
         parser.error("--max-home-delta must not be negative")
     if args.timeout_margin < 0:
@@ -622,6 +637,8 @@ def main(argv=None):
         parser.error("--no-arm and --no-hand together leave nothing to replay")
     if args.close_support_fingers and args.no_hand:
         parser.error("--close-support-fingers cannot be used with --no-hand")
+    if args.finger_flexion_scale != 1.0 and args.no_hand:
+        parser.error("--finger-flexion-scale cannot be used with --no-hand")
     if args.interactive_pause and args.no_arm:
         parser.error("--interactive-pause requires the arm trajectory clock")
     if args.interactive_pause and args.arm_controller != "joint-impedance":
@@ -648,6 +665,13 @@ def main(argv=None):
             args.trajectory, args.rate, args.env, args.cycle, args.segment
         )
         home_arm, home_hand = load_home(home_path)
+        if args.finger_flexion_scale != 1.0:
+            trajectory = dataclasses.replace(
+                trajectory,
+                hand=scale_finger_flexion(
+                    trajectory.hand, args.finger_flexion_scale
+                ),
+            )
         if args.close_support_fingers:
             overridden_hand, home_hand = _close_support_fingers(
                 trajectory.hand, home_hand
@@ -697,6 +721,12 @@ def main(argv=None):
             for name, index in zip(SUPPORT_FINGER_JOINTS, SUPPORT_FINGER_INDICES)
         )
         print(f"hand-only override: {values}; no arm retarget applied")
+    if args.finger_flexion_scale != 1.0:
+        joints = ", ".join(FINGER_FLEXION_JOINTS)
+        print(
+            f"hand waypoint flexion scale: {args.finger_flexion_scale:g}x "
+            f"for {joints}; homing pose unchanged"
+        )
     print(
         f"coordinated source: {len(trajectory.time)} samples, "
         f"{trajectory.duration:.2f} s, hand={'yes' if hand_positions is not None else 'no'}"

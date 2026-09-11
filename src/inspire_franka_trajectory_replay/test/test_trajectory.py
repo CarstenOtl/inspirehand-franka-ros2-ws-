@@ -3,8 +3,33 @@ import pytest
 import json
 
 from inspire_franka_trajectory_replay.trajectory import (
-    ARM_JOINTS, HAND_JOINTS, load_trajectory, resample,
+    ARM_JOINTS, FINGER_FLEXION_INDICES, HAND_JOINTS, load_trajectory, resample,
+    scale_finger_flexion,
 )
+
+
+def test_finger_flexion_scale_changes_only_index_and_thumb_mcp_waypoints():
+    hand = np.arange(18, dtype=float).reshape(3, 6) / 20.0
+    original = hand.copy()
+
+    scaled = scale_finger_flexion(hand, 1.3)
+
+    flexion = list(FINGER_FLEXION_INDICES)
+    untouched = [index for index in range(6) if index not in flexion]
+    assert scaled[:, flexion] == pytest.approx(original[:, flexion] * 1.3)
+    assert scaled[:, untouched] == pytest.approx(original[:, untouched])
+    assert hand == pytest.approx(original)
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0, np.nan, np.inf])
+def test_finger_flexion_scale_rejects_nonpositive_or_nonfinite_values(scale):
+    with pytest.raises(ValueError, match="finite and positive"):
+        scale_finger_flexion(np.zeros((2, 6)), scale)
+
+
+def test_finger_flexion_scale_requires_recorded_hand_positions():
+    with pytest.raises(ValueError, match="requires Inspire hand positions"):
+        scale_finger_flexion(None, 1.3)
 
 
 def test_load_and_resample_arm_only(tmp_path):

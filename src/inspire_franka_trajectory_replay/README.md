@@ -305,6 +305,24 @@ The runner prompts before homing and again before replay. `--yes` disables the
 prompts, `--no-hand` keeps the original arm-only behavior, and `--no-arm` is
 the mirror of it.
 
+Scale only the index- and thumb-MCP flexion waypoints at replay time with
+`--finger-flexion-scale`. The scale is applied to the loaded trajectory before
+interpolation; the YAML homing pose, all seven arm joints, the three support
+fingers, and thumb yaw remain unchanged. `1.3` means 30% more flexion than the
+stored waypoints, while `1.5` means 50% more. The runner rejects a scale that
+would exceed an Inspire joint limit. Use an original, unscaled artifact such as
+`traj_2_6x` so the factor is relative to the original recording:
+
+```bash
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_2_6x \
+  --home apps/traj_replay/demo_trajs/traj_2_6x/homing.yaml \
+  --finger-flexion-scale 1.3 \
+  --time-scale 5 \
+  --max-prepared-duration 300 \
+  --dry-run
+```
+
 ### Pause, adjust the scene, and continue
 
 The hardware waypoint controller can pause a coordinated replay without losing
@@ -390,6 +408,7 @@ legitimately long recording, but it does not disable any FR3 limit check.
 | artifact | status | selection / matching home |
 |---|---|---|
 | `demo_trajs/traj_2` | source capture using the **current hardware joint orientation**; joint-7 offset is zero | `--cycle 1`..`6`; use its colocated `homing.yaml` |
+| `demo_trajs/traj_2_6x` | all six original cycles plus return home; supports runtime MCP scaling | one continuous run; use its colocated `homing.yaml` and optionally `--finger-flexion-scale N` |
 | `demo_trajs/traj_2_cycle3` | current-orientation single-cycle candidate; dry-run validated, physical validation pending | one continuous cycle plus return home; use its colocated `homing.yaml` |
 | `demo_trajs/traj_2_5x` | current-orientation five-cycle candidate; dry-run validated, physical validation pending | cycles 1–5 plus return home; use its colocated `homing.yaml`, `--time-scale 5`, `--max-prepared-duration 300`, and optionally `--interactive-pause` |
 | `demo_trajs/threading_cycle1_flange180` | **legacy-source hardware baseline**; validated 2026-09-09 with its historical joint-7 compensation | one continuous cycle; use its colocated `homing.yaml` |

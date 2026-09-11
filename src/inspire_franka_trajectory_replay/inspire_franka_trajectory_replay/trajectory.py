@@ -19,6 +19,13 @@ HAND_JOINTS = (
     "thumb_proximal_pitch_joint",
     "thumb_proximal_yaw_joint",
 )
+FINGER_FLEXION_JOINTS = (
+    "index_proximal_joint",
+    "thumb_proximal_pitch_joint",
+)
+FINGER_FLEXION_INDICES = tuple(
+    HAND_JOINTS.index(name) for name in FINGER_FLEXION_JOINTS
+)
 FORGE_HAND_JOINTS = (
     "little_joint_0",
     "ring_joint_0",
@@ -68,6 +75,19 @@ class CoordinatedTrajectory:
     @property
     def duration(self) -> float:
         return float(self.time[-1] - self.time[0])
+
+
+def scale_finger_flexion(hand, scale):
+    """Scale only index- and thumb-MCP waypoint angles from their open pose."""
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("finger flexion scale must be finite and positive")
+    if hand is None:
+        raise ValueError(
+            "--finger-flexion-scale requires Inspire hand positions in the trajectory"
+        )
+    scaled = np.array(hand, dtype=float, copy=True)
+    scaled[..., list(FINGER_FLEXION_INDICES)] *= scale
+    return scaled
 
 
 def resolve_trajectory(path: str) -> Path:
