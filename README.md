@@ -14,10 +14,8 @@ tracked as pinned Git submodules.
 docker/                          dev image, compose, entrypoint
 docs/hand.md                     RS485 wiring, bring-up, and the driver's interface
 docs/network.md                  network layout and FCI access
-docs/cartesian_replay_blueprint.md  design for Cartesian-impedance waypoint replay (not yet implemented)
 apps/camera_calibration/         calibration entry scripts, utilities, and hardware tests
 apps/operations/                 one-shot hand-zero and FR3-home commands
-apps/policy_rollout/             portable DP3 distilled-policy inspection and dry-run tooling
 .gitmodules                     external ROS repositories
 src/
   inspire_hand_msgs/             service definitions for the hand
@@ -26,8 +24,7 @@ src/
   inspire_franka_description/    FR3 + hand composed into one description
   inspire_franka_sim/            MJCF models, controller config, MuJoCo launch
   inspire_franka_bringup/        real hardware: arm, hand, or both
-  franka_trajectory_replay/      guarded FR3 replay controllers (joint and Cartesian impedance) and preparation
-  franka_trajectory_replay_msgs/ Cartesian waypoint, goto and state messages for the Cartesian controller
+  franka_trajectory_replay/      guarded FR3 replay controller and preparation
   inspire_franka_trajectory_replay/ coordinated FR3 + Inspire replay runner
   camera_calibration/            D415 eye-to-hand calibration: automated runner, passive recorder
   franka_ros2/                   submodule - Franka's stack
@@ -98,23 +95,13 @@ ros2 launch inspire_franka_trajectory_replay replay.launch.py
 ros2 launch inspire_franka_trajectory_replay replay.launch.py \
     arm:=false
 
-# In another sourced shell: run the hardware-validated legacy traj_1 baseline.
-# This already-generated artifact contains the historical +90-degree joint-7
-# retarget. Do not add or remove that offset from this retained baseline.
+# In another sourced shell: run the hardware-validated threading baseline.
+# This artifact includes the +90-degree joint-7 retarget required by the
+# physical 180-degree flange mount. Do not substitute raw traj_1 for the arm.
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
     apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
     --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
     --close-support-fingers
-
-# traj_2 and every later policy capture use the current hardware orientation:
-# replay joint 7 exactly as recorded and never apply the legacy +90-degree step.
-# This five-cycle candidate has passed dry-run preparation; remove --dry-run
-# only for an intentional hardware validation run.
-ros2 run inspire_franka_trajectory_replay replay_trajectory \
-    apps/traj_replay/demo_trajs/traj_2_5x \
-    --home apps/traj_replay/demo_trajs/traj_2_5x/homing.yaml \
-    --time-scale 5 --interactive-pause \
-    --max-prepared-duration 300 --dry-run
 
 # Pickup rollout with live scene-adjustment pauses. During replay, SPACE
 # smoothly pauses and holds both devices; SPACE resumes and q aborts.
@@ -122,21 +109,6 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
     apps/traj_replay/demo_trajs/pickup_1 --env 0 --segment 1 \
     --home apps/traj_replay/demo_trajs/homing/pickup_multi.yaml \
     --interactive-pause
-
-# Cartesian impedance replay (Franka's example law; runs end to end in MuJoCo,
-# not yet run on the arm - see docs/cartesian_replay_blueprint.md). Simulation
-# first, with one controller manager on the graph at a time:
-./apps/traj_replay/sim_replay_smoke.sh          # unattended headless smoke test
-ros2 launch inspire_franka_trajectory_replay sim_replay.launch.py \
-    arm_controller:=cartesian-impedance headless:=false
-# Hardware: the launch loads both replay controllers; the runner homes in
-# joint mode and swaps to the Cartesian controller for the trajectory.
-ros2 launch inspire_franka_trajectory_replay replay.launch.py \
-    arm_controller:=cartesian-impedance
-ros2 run inspire_franka_trajectory_replay replay_trajectory \
-    apps/traj_replay/demo_trajs/traj_2_cycle3 \
-    --home apps/traj_replay/demo_trajs/traj_2_cycle3/homing.yaml \
-    --arm-controller cartesian-impedance --time-scale 5 --dry-run
 
 # Slow every recorded waypoint interval (and the interpolated stream) by 5x.
 # The coordinated hand follows the same scaled trajectory clock.
@@ -221,21 +193,6 @@ The passive viewer now hides both MuJoCo sidebars by default. Press `Tab` for th
 left panel or `Shift+Tab` for the right panel, or launch with
 `show_left_ui:=true` and/or `show_right_ui:=true`. Camera navigation remains
 available with the mouse while the panels are hidden.
-
-To see the model's coordinate frames, ask for them at launch instead of
-digging through the rendering panel. `frame:=body` draws every body frame,
-`label:=body` names them, and `site_groups:=4` reveals the flange
-`attachment_site`, which fr3.xml keeps in the hidden group 4 and which is the
-point the Cartesian replay controller targets:
-
-```bash
-# every link frame, labelled, on the live or simulated /joint_states
-ros2 launch inspire_franka_sim passive_viewer.launch.py frame:=body label:=body
-
-# only the flange frame, drawn larger
-ros2 launch inspire_franka_sim passive_viewer.launch.py \
-    frame:=site label:=site site_groups:=4 frame_scale:=2
-```
 
 The current `mujoco_ros2_control` window opened by `sim.launch.py` has no slider
 panel either; setting a command interface to `none` merely leaves those joints
@@ -557,34 +514,12 @@ no error at all — just a robot that quietly does the wrong thing.
   for build and arm-only test commands. The retained MuJoCo replay launch needs
   `--arm-controller position-jtc` on the runner.
   On 2026-09-09, coordinated threading cycle 1 was confirmed on hardware with
-  the correct tool orientation and a good replay using the legacy-source
-  180-degree flange baseline: a `+90 deg` retarget of `fr3_joint7`, its matching
-  retargeted home, and `--close-support-fingers`. The checked-in
+  the correct tool orientation and a good replay using the 180-degree flange
+  baseline: a `+90 deg` retarget of `fr3_joint7`, its matching retargeted home,
+  and `--close-support-fingers`. The checked-in
   `demo_trajs/threading_cycle1_flange180` artifact is the default hardware
   baseline. Raw `traj_1`, raw `homing/threading.yaml`, and the unretargeted
   `threading_5x` artifact are outdated for arm replay with the current mount.
-  This compensation is historical, not the current capture workflow. `traj_2`
-  and all later policy trajectories are developed with the hardware joint
-  orientation already correct: joint 7 is replayed unchanged with a zero
-  offset, and `retarget_flange_mount.py` must not be applied. The checked-in
-  `traj_2_cycle3` and `traj_2_5x` candidates follow that rule and pass dry-run
-  preparation; physical validation is still recorded separately.
-- **Cartesian impedance replay — runs in MuJoCo, not yet run on the arm.** A
-  second replay controller plays 6-DOF pose waypoints with the torque law of
-  Franka's `CartesianImpedanceExampleController`, fed by forward kinematics of
-  the same prepared joint stream, with homing, time scaling, interactive pause
-  and hand coordination unchanged. The law is unit-tested against a
-  transcription of the upstream controller over 5000 cycles. In a gravity-free
-  MuJoCo scene with the controller on its built-in DH model the whole runner
-  flow ran unattended through homing, the controller swap, the settle goto and
-  trajectory execution; at the example's gains the sim's uncompensated joint
-  friction tripped the orientation tracking fault, so the sim profile runs at
-  four times the stiffness. `docs/cartesian_replay_blueprint.md` holds the
-  design and the hardware validation ladder that still has to be climbed. The
-  impedance acts about the Inspire hand's grasp centre, 172.7 mm from the
-  flange, which is the thumb/index fingertip midpoint the policy itself
-  controlled; the controller applies that offset to its own pose and Jacobian,
-  so the robot's own end-effector frame stays at identity.
 - **Simulation — verified end to end.** MuJoCo runs headless with
   `MujocoSystemInterface` active at 1 kHz, all three controllers active, sim
   clock advancing. Arm and hand trajectories sent *simultaneously* both report
