@@ -16,6 +16,7 @@ docs/hand.md                     RS485 wiring, bring-up, and the driver's interf
 docs/network.md                  network layout and FCI access
 apps/camera_calibration/         calibration entry scripts, utilities, and hardware tests
 apps/operations/                 one-shot hand-zero and FR3-home commands
+apps/policy_rollout/             portable DP3 distilled-policy inspection and dry-run tooling
 .gitmodules                     external ROS repositories
 src/
   inspire_hand_msgs/             service definitions for the hand
