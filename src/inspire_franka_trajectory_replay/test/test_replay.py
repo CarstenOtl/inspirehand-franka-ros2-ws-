@@ -516,11 +516,13 @@ def test_cartesian_stream_is_forward_kinematics_of_the_prepared_joint_stream():
 
     assert stream.report["ok"], stream.report["violations"]
     assert np.shares_memory(stream.q_null, prepared.q)
+    # Through the configured tool: the grasp centre, not the flange.
     for index in (0, 900, len(prepared.t) - 1):
-        expected = flange_transform(prepared.q[index])[:3, 3]
+        expected = (flange_transform(prepared.q[index]) @ stream.tool)[:3, 3]
         assert stream.p[index] == pytest.approx(expected, abs=1e-12)
     assert stream.t[-1] == pytest.approx(prepared.duration)
-    assert stream.tool == pytest.approx(np.eye(4))
+    assert stream.tool[:3, 3] == pytest.approx(config["tcp"]["offset_xyz"])
+    assert stream.tool[:3, :3] == pytest.approx(np.eye(3))
 
 
 def test_cartesian_margin_overrides_replace_only_the_given_values():
@@ -660,3 +662,29 @@ def test_cartesian_only_flags_are_refused_on_the_other_paths(tmp_path):
         main(base + ["--arm-controller", "cartesian-impedance", "--no-arm"])
     with pytest.raises(SystemExit):
         main(base + ["--arm-controller", "cartesian-impedance", "--allow-unsafe-simulation"])
+
+
+def test_controlled_point_is_the_grasp_centre_in_every_config():
+    """replay.yaml's tcp block and both controller profiles name one frame."""
+    config = _replay_config()
+    hardware = yaml.safe_load(
+        (CONFIG_DIR / "controllers_cartesian_impedance.yaml").read_text()
+    )["/**"]["cartesian_trajectory_replay_controller"]["ros__parameters"]
+    sim = yaml.safe_load(
+        (CONFIG_DIR / "controllers_sim_impedance.yaml").read_text()
+    )["cartesian_trajectory_replay_controller"]["ros__parameters"]
+
+    assert config["tcp"]["frame"] == "fr3_link8"
+    assert config["tcp"]["offset_xyz"] == hardware["tool_offset_xyz"] == sim["tool_offset_xyz"]
+    assert config["tcp"]["offset_rpy"] == hardware["tool_offset_rpy"] == sim["tool_offset_rpy"]
+    # The Inspire grasp centre, 172.7 mm from the flange.
+    assert np.linalg.norm(config["tcp"]["offset_xyz"]) == pytest.approx(0.1727, abs=5e-4)
+
+
+def test_prepared_pose_stream_follows_the_configured_tool():
+    config = _replay_config()
+    prepared = _prepare_arm(_gentle_capture(), config, 120.0)
+    stream = _prepare_cartesian(prepared, config)
+    expected = flange_transform(prepared.q[0]) @ stream.tool
+    assert stream.p[0] == pytest.approx(expected[:3, 3], abs=1e-12)
+    assert stream.tool[:3, 3] == pytest.approx(config["tcp"]["offset_xyz"])

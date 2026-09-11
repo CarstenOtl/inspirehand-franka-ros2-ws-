@@ -123,6 +123,33 @@ inline void example_gain_filter(double alpha, const Matrix6d& stiffness_target,
   nullspace_stiffness = alpha * nullspace_target + (1.0 - alpha) * nullspace_stiffness;
 }
 
+/// Skew-symmetric matrix of a vector: skew(a) * b == a.cross(b).
+inline Eigen::Matrix3d skew_symmetric(const Eigen::Vector3d& v) {
+  Eigen::Matrix3d s;
+  s << 0.0, -v.z(), v.y(),
+       v.z(), 0.0, -v.x(),
+       -v.y(), v.x(), 0.0;
+  return s;
+}
+
+/// Rotation from roll-pitch-yaw in the URDF convention: Rz(yaw) * Ry(pitch) * Rx(roll).
+inline Eigen::Matrix3d rpy_to_rotation(const Eigen::Vector3d& rpy) {
+  return (Eigen::AngleAxisd(rpy.z(), Eigen::Vector3d::UnitZ()) *
+          Eigen::AngleAxisd(rpy.y(), Eigen::Vector3d::UnitY()) *
+          Eigen::AngleAxisd(rpy.x(), Eigen::Vector3d::UnitX()))
+      .toRotationMatrix();
+}
+
+/// Moves a base-frame geometric Jacobian from a frame's origin to a point rigidly attached to
+/// it. ``offset_base`` is the origin-to-point vector expressed in the base frame. The point's
+/// velocity is v + omega x offset, so the linear rows pick up -skew(offset) times the angular
+/// rows; the angular rows are unchanged, a rigid body having one angular velocity.
+inline Matrix6x7d shift_jacobian(const Matrix6x7d& jacobian, const Eigen::Vector3d& offset_base) {
+  Matrix6x7d shifted = jacobian;
+  shifted.topRows(3) -= skew_symmetric(offset_base) * jacobian.bottomRows(3);
+  return shifted;
+}
+
 /// Angle of the rotation between two unit quaternions, in [0, pi].
 inline double quaternion_angle(const Eigen::Quaterniond& a, const Eigen::Quaterniond& b) {
   const double dot = std::min(1.0, std::abs(a.coeffs().dot(b.coeffs())));

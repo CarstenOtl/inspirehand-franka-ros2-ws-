@@ -67,6 +67,13 @@ namespace franka_trajectory_replay {
  *    ``~/set_cartesian_stiffness`` service. Gain changes take effect through the example's
  *    first-order filter.
  *
+ * ``tool_offset_xyz`` / ``tool_offset_rpy`` move the controlled point off the flange, so the
+ * impedance acts about a tool frame (for this robot, the Inspire hand's grasp centre) rather
+ * than the flange. The controller applies that transform to the measured pose and to the
+ * Jacobian itself, which keeps the robot's own ``F_T_EE`` at identity and makes hardware and
+ * simulation behave alike. The pose stream has to be generated for the same tool; the runner's
+ * preflight refuses a mismatch.
+ *
  * ``model_source`` selects where the pose and Jacobian come from: ``franka`` reads
  * franka_hardware's cartesian_pose_state and robot_model interfaces (the real arm);
  * ``dh`` computes both from the built-in FR3 DH model with an identity F_T_EE and no coriolis
@@ -180,6 +187,9 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   std::string arm_id_;
   std::string arm_prefix_;
   std::string base_frame_;
+  Eigen::Vector3d tool_translation_{Eigen::Vector3d::Zero()};
+  Eigen::Matrix3d tool_rotation_{Eigen::Matrix3d::Identity()};
+  bool tool_active_{false};
   bool model_from_dh_{false};
   bool nullspace_follows_trajectory_{true};
   bool coriolis_compensation_{true};

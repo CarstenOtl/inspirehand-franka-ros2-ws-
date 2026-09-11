@@ -858,10 +858,13 @@ def main(argv=None):
         replay_duration = prepared.duration
         print(summarize(prepared, config["joint_names"]))
         if pose_stream is not None:
+            offset = pose_stream.tool[:3, 3]
             print(
-                "arm controller: cartesian-impedance; pose stream is forward kinematics "
-                f"of the prepared joint stream through tcp offset {pose_stream.tool[:3, 3]} m "
-                f"(frame {config['tcp']['frame']}); the joint stream is the nullspace target"
+                "arm controller: cartesian-impedance; the impedance acts about "
+                f"{np.array2string(offset, precision=4)} m in {config['tcp']['frame']} "
+                f"({1000.0 * float(np.linalg.norm(offset)):.1f} mm from the flange); the pose "
+                "stream is forward kinematics of the prepared joint stream through that frame "
+                "and the joint stream is the nullspace target"
             )
             print(cartesian.summarize_cartesian(pose_stream))
         print(
@@ -928,6 +931,9 @@ def main(argv=None):
             # Cartesian controller. Both claim the effort interfaces, so the
             # swap keeps franka_hardware in torque control. The preflight refuses
             # a robot whose end-effector frame is not the one the stream assumes.
+            # The controlled point is checked in both worlds; the robot's own frames only
+            # exist on hardware.
+            arm.check_tool(pose_stream.tool, print)
             if arm.uses_dh_model():
                 print(
                     "SIMULATION MODEL: the Cartesian controller computes its pose and "
@@ -936,7 +942,7 @@ def main(argv=None):
                     "Never run the real arm with model_source dh."
                 )
             else:
-                arm.preflight(node.current_joint_positions(), pose_stream.tool, print)
+                arm.preflight(node.current_joint_positions(), print)
             arm.ensure_active(print)
             active_arm["node"] = arm
             if args.stiffness_scale is not None:

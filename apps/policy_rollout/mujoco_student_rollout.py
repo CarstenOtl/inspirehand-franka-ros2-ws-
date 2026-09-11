@@ -57,6 +57,10 @@ def main(argv=None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--record-rgbd", action="store_true")
     parser.add_argument("--preview-every", type=int, default=0, help="save a render every N steps")
+    parser.add_argument("--video", action="store_true", help="record an MP4 of the rollout")
+    parser.add_argument("--video-camera", default="policy_replay_front", help="MJCF camera for the video")
+    parser.add_argument("--video-size", default="960x540")
+    parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--dead-zone", choices=["none", "default"], default="none")
     args = parser.parse_args(argv)
 
@@ -73,6 +77,11 @@ def main(argv=None) -> int:
     scene = ThreadingScene(nut_quat_wxyz=nut_quat0, camera=lambda spec: add_policy_camera(spec, profile))
     width, height = profile.source_intrinsics.width, profile.source_intrinsics.height
     renderer = mujoco.Renderer(scene.model, height, width)
+    video_renderer = None
+    video_frames = []
+    if args.video:
+        vw, vh = (int(v) for v in args.video_size.lower().split("x"))
+        video_renderer = mujoco.Renderer(scene.model, vh, vw)
 
     runner = FlowPolicyRunner(args.checkpoint, device=args.device, seed=args.seed)
     output = Path(args.output_dir)
@@ -186,6 +195,9 @@ def main(argv=None) -> int:
         log["filtered_action"].append(filtered)
         if args.preview_every and step % args.preview_every == 0:
             previews.append((step, rgb))
+        if video_renderer is not None:
+            video_renderer.update_scene(scene.data, camera=args.video_camera)
+            video_frames.append(video_renderer.render().copy())
         if step % 50 == 0:
             print(f"step {step:4d} t={scene.sim_time:6.2f}s phase={phase:16s} cycles={coordinator.completed_cycles} turn={np.degrees(scene.turn_progress_rad):6.1f} deg grasp={grasp.pos.round(3)} nut_z={fo.BOLT_TIP_POSITION[2]+scene.axial_position:.4f} wall={time.perf_counter()-start_wall:.0f}s", flush=True)
         if coordinator.limit_reached:
@@ -209,6 +221,27 @@ def main(argv=None) -> int:
                 Image.fromarray(rgb).save(output / f"preview_{step:04d}.png")
         except ImportError:
             pass
+    video_path = None
+    if video_frames:
+        video_path = output / "rollout.mp4"
+        try:
+            import imageio.v2 as imageio
+
+            imageio.mimsave(video_path, video_frames, fps=args.video_fps, macro_block_size=1)
+        except ImportError:
+            import subprocess
+
+            raw = output / "frames"
+            raw.mkdir(exist_ok=True)
+            from PIL import Image
+
+            for index, frame in enumerate(video_frames):
+                Image.fromarray(frame).save(raw / f"{index:05d}.png")
+            subprocess.run(
+                ["ffmpeg", "-y", "-framerate", str(args.video_fps), "-i", str(raw / "%05d.png"),
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video_path)],
+                check=True, capture_output=True,
+            )
     report = {
         "status": status,
         "steps": len(log["sim_time_s"]),
@@ -219,6 +252,7 @@ def main(argv=None) -> int:
         "final_nut_twist_deg": float(np.degrees(scene.twist_angle)),
         "rollout_data": str(artifact.data_path),
         "wall_time_s": time.perf_counter() - start_wall,
+        "video": None if video_path is None else str(video_path),
     }
     (output / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))

@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <franka_trajectory_replay/fr3_kinematics.hpp>
+#include <franka_trajectory_replay/cartesian_impedance.hpp>
 
 using franka_trajectory_replay::fr3_flange_transform;
 using franka_trajectory_replay::fr3_zero_jacobian;
@@ -91,4 +92,53 @@ TEST(Fr3Kinematics, jacobian_is_the_derivative_of_the_forward_kinematics) {
       EXPECT_NEAR(jacobian(3 + r, j), angular(r), 1e-6) << "joint " << j << " angular " << r;
     }
   }
+}
+
+
+TEST(Fr3Kinematics, shifted_jacobian_is_the_derivative_of_the_tool_point) {
+  using franka_trajectory_replay::rpy_to_rotation;
+  using franka_trajectory_replay::shift_jacobian;
+  using franka_trajectory_replay::skew_symmetric;
+
+  // The Inspire hand's grasp centre in the flange frame.
+  const Eigen::Vector3d tool(-0.0874, -0.0327, 0.1453);
+  const Vector7d q = joints(0.3, -0.6, 0.2, -2.0, 0.4, 1.8, 0.9);
+
+  const Eigen::Matrix4d flange = fr3_flange_transform(q);
+  const Eigen::Vector3d offset_base = flange.block<3, 3>(0, 0) * tool;
+  const auto shifted = shift_jacobian(fr3_zero_jacobian(q), offset_base);
+
+  const double step = 1e-6;
+  for (int j = 0; j < 7; ++j) {
+    Vector7d forward = q;
+    Vector7d backward = q;
+    forward(j) += step;
+    backward(j) -= step;
+    const auto tool_point = [&tool](const Vector7d& value) {
+      const Eigen::Matrix4d t = fr3_flange_transform(value);
+      return Eigen::Vector3d(t.block<3, 1>(0, 3) + t.block<3, 3>(0, 0) * tool);
+    };
+    const Eigen::Vector3d linear = (tool_point(forward) - tool_point(backward)) / (2 * step);
+    for (int r = 0; r < 3; ++r) {
+      EXPECT_NEAR(shifted(r, j), linear(r), 1e-6) << "joint " << j << " linear " << r;
+    }
+    // A rigid body has one angular velocity: the angular rows never move.
+    for (int r = 3; r < 6; ++r) {
+      EXPECT_DOUBLE_EQ(shifted(r, j), fr3_zero_jacobian(q)(r, j));
+    }
+  }
+  // A zero offset changes nothing.
+  EXPECT_TRUE(shift_jacobian(fr3_zero_jacobian(q), Eigen::Vector3d::Zero())
+                  .isApprox(fr3_zero_jacobian(q), 1e-15));
+  // skew(a) b == a x b, and rpy follows the URDF convention Rz*Ry*Rx.
+  const Eigen::Vector3d a(0.2, -0.5, 0.9);
+  const Eigen::Vector3d b(-0.3, 0.7, 0.1);
+  EXPECT_TRUE((skew_symmetric(a) * b).isApprox(a.cross(b), 1e-15));
+  const Eigen::Vector3d rpy(0.3, -0.2, 1.1);
+  const Eigen::Matrix3d expected =
+      (Eigen::AngleAxisd(rpy.z(), Eigen::Vector3d::UnitZ()) *
+       Eigen::AngleAxisd(rpy.y(), Eigen::Vector3d::UnitY()) *
+       Eigen::AngleAxisd(rpy.x(), Eigen::Vector3d::UnitX())).toRotationMatrix();
+  EXPECT_TRUE(rpy_to_rotation(rpy).isApprox(expected, 1e-15));
+  EXPECT_TRUE(rpy_to_rotation(Eigen::Vector3d::Zero()).isIdentity(1e-15));
 }

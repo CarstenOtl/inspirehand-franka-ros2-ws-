@@ -117,3 +117,38 @@ def test_trajectory_message_packs_the_stream():
     goto = cartesian.goto_message(stream.p[0], stream.quat[0], stream.q_null[0], 0.0)
     assert len(goto.nullspace_positions) == 7
     assert goto.pose.orientation.w == pytest.approx(stream.quat[0][3])
+
+
+GRASP_CENTRE = [-0.0874, -0.0327, 0.1453]
+
+
+def test_end_effector_frame_check_expects_the_bare_flange_by_default():
+    cartesian.check_end_effector_frame(np.eye(4))
+    with pytest.raises(ValueError, match="bare flange"):
+        cartesian.check_end_effector_frame(kinematics.tool_transform(GRASP_CENTRE))
+
+
+def test_controller_tool_check_matches_the_stream_tool():
+    tool = kinematics.tool_transform(GRASP_CENTRE, [0.0, 0.0, 0.0])
+    actual = cartesian.check_controller_tool(GRASP_CENTRE, [0.0, 0.0, 0.0], tool)
+    np.testing.assert_allclose(actual, tool, atol=1e-12)
+    with pytest.raises(ValueError, match="does not match the tool"):
+        cartesian.check_controller_tool([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], tool)
+    with pytest.raises(ValueError, match="does not match the tool"):
+        cartesian.check_controller_tool(GRASP_CENTRE, [0.0, 0.0, 0.5], tool)
+    with pytest.raises(ValueError, match="does not expose"):
+        cartesian.check_controller_tool(None, None, tool)
+
+
+def test_pose_stream_through_the_grasp_centre_tool():
+    prepared = prepare(synthetic(amplitude=0.2), rate=1000)
+    tool = kinematics.tool_transform(GRASP_CENTRE)
+    stream = cartesian.from_joint_stream(prepared, tool)
+    flange = cartesian.from_joint_stream(prepared)
+    # Same orientation, and every sample is the grasp centre offset from the flange.
+    np.testing.assert_allclose(stream.quat, flange.quat, atol=1e-12)
+    np.testing.assert_allclose(
+        np.linalg.norm(stream.p - flange.p, axis=1), np.linalg.norm(GRASP_CENTRE), atol=1e-12)
+    for k in (0, 1500, len(prepared.t) - 1):
+        expected = (kinematics.flange_transform(prepared.q[k]) @ tool)[:3, 3]
+        np.testing.assert_allclose(stream.p[k], expected, atol=1e-12)

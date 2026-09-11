@@ -91,14 +91,29 @@ The Franka submodule stays unchanged, exactly as it did for joint impedance.
 
 ## 3. Frames: what a "6-DOF waypoint" is
 
-The pose the law measures is libfranka's `O_T_EE`: the end effector frame in
-the base frame `fr3_link0`, where the end effector is defined by `F_T_EE`, the
-flange-to-EE transform the robot holds (set in Desk, or over the
-`service_server/set_tcp_frame` service). The Inspire hand is not a Franka end
-effector, so on this arm `F_T_EE` is expected to be identity and `O_T_EE` is
-the flange `fr3_link8`. That is not guaranteed by anything in this repository;
-it is whatever Desk last set, which is why the runner has to verify it (section
+**The controlled point is the Inspire hand's grasp centre**, `[-0.0874,
+-0.0327, 0.1453]` m in `fr3_link8`, 172.7 mm from the flange: the thumb/index
+fingertip midpoint at the threading grip, which is the point the policy itself
+controlled. The Forge captures' `tcp_pos` is that same midpoint on the training
+hand (it matches the model to 1-3 mm), and on the physical RH56 the URDF and
+the MuJoCo model agree on the offset to 0.1 mm. Across `traj_3`'s 423 grip
+samples it moves by only 1 to 2 mm.
+
+The controller reaches it *itself*: it applies the tool transform to its own
+copy of the measured pose and of the Jacobian (`shift_jacobian`, unit-tested as
+the derivative of the tool-point kinematics), instead of going through the
+robot's `F_T_EE`. Hardware and simulation then behave identically, nothing
+persists on the robot, and the same `tcp` block feeds both the pose stream and
+the controller. The robot's own `F_T_EE` must therefore stay at identity, or
+the offset would be applied twice; that is what the preflight checks (section
 7.3).
+
+The pose the law measures is otherwise libfranka's `O_T_EE`: the end effector
+frame in the base frame `fr3_link0`, where the end effector is defined by
+`F_T_EE`, the flange-to-EE transform the robot holds (set in Desk, or over the
+`service_server/set_tcp_frame` service). The Inspire hand is not a Franka end
+effector, so that transform is expected to be identity and `O_T_EE` is the
+flange `fr3_link8`.
 
 Waypoint sources, in order of preference:
 
@@ -106,11 +121,13 @@ Waypoint sources, in order of preference:
 |---|---|---|
 | **FK of the recorded joint waypoints** (`kinematics.flange_transform`, tested against pinocchio on the URDF) | flange in base, `F_T_EE = I` | **default.** Consistent with the joint replay already validated on hardware; also supplies the nullspace target. |
 | explicit `ee_pos` / `ee_quat` arrays in a capture (`trajectory_io` already reads them) | must be base-frame, `xyzw` | phase 2, for policies that emit pose targets. No joint data means no nullspace path and no FR3 joint-limit check; needs its own opt-in flag. |
-| Forge `tcp_pos` / `tcp_quat` in `replay_data.npz` | environment-relative, TCP = thumb/index fingertip midpoint, `wxyz` | **not a rigid tool point.** Expressed in the flange frame it wanders by 12 mm (`traj_3`) to 57 mm (`traj_2`) and 27 to 64 degrees across one capture, because the midpoint moves with the fingers. It is the recording's task marker, not a controller target. Keep for cross-checking the FK stream, nothing more. |
+| Forge `tcp_pos` / `tcp_quat` in `replay_data.npz` | environment-relative (origin at the robot base), TCP = thumb/index fingertip midpoint, `wxyz` | **defines the controlled point, but is not replayed as a stream.** It is the same midpoint the model computes, to 1-3 mm, which is how the grasp centre above was identified and cross-checked. As a per-sample target it is not a rigid frame, because the midpoint moves with the fingers, so the stream comes from FK through the fixed grasp-centre tool instead. |
 
-A `tcp` block already exists in `replay.yaml` (`frame`, `offset_xyz`,
-`offset_rpy`); the Cartesian path uses it as the flange-to-target transform the
-stream is generated for, and requires the robot's `F_T_EE` to match it.
+The `tcp` block in `replay.yaml` (`frame`, `offset_xyz`, `offset_rpy`) is the
+single definition of that frame: it generates the pose stream, it is what the
+TCP tracking metrics are computed for, and it must equal the controller's
+`tool_offset_xyz` / `tool_offset_rpy`. Zeroing all three controls the flange
+again.
 
 ## 4. The controller: `CartesianTrajectoryReplayController`
 
@@ -268,6 +285,7 @@ robot's own limit reflexes remain the hard stop.
 | `stiffness_scale` | 1.0 | live, multiplies translational and rotational |
 | `target_filter` | 0.005 | the example's `filter_params_`, a first-order low-pass on the target pose with a 200 ms time constant; 1.0 bypasses it (the replay reference is already C1 at 1 kHz). Live, so it can be compared without a relaunch |
 | `nullspace_target` | `trajectory` | `trajectory`: follow the waypoints' configuration; `fixed`: freeze at activation, exactly the example |
+| `tool_offset_xyz`, `tool_offset_rpy` | grasp centre, zero rotation | the controlled point in the flange frame; the controller moves the measured pose and the Jacobian onto it |
 | `coriolis_compensation` | true | the example adds coriolis |
 | `torque_rate_limit` | 0.0 | as the validated joint profile; franka_hardware's limiter stays |
 | `goto_max_velocity`, `goto_max_angular_velocity`, `goto_min_duration` | 0.10 m/s, 0.50 rad/s, 3.0 s | |
@@ -415,13 +433,16 @@ prompts and `--yes`, abort on Ctrl-C.
 
 ### 7.3 Preflight, before the switch
 
-- **`F_T_EE` matches the tool the stream was generated for.** Read one
-  `franka_robot_state_broadcaster/robot_state` message; `f_t_ee` must equal
-  the configured `tcp` transform within 1e-4 m / 1e-4 rad (identity for the
-  flange). Otherwise refuse with the measured transform in the message and
-  point at `set_tcp_frame`. A mismatch here would put every waypoint in the
-  wrong place by the offset; the controller's tracking fault is the second
-  line of defence, not the first.
+- **The controller's tool is the stream's tool.** `tool_offset_xyz` /
+  `tool_offset_rpy` read back from the controller must equal the `tcp` block
+  the pose stream was generated for. Checked in simulation as well as on
+  hardware, since it is about the two halves of the configuration agreeing.
+- **`F_T_EE` is identity.** Read one
+  `franka_robot_state_broadcaster/robot_state` message; `f_t_ee` must be the
+  bare flange within 1e-4 m / 1e-4 rad, because the controller already carries
+  the tool. An offset left in Desk would be applied twice, putting every
+  waypoint wrong by it; the controller's tracking fault is the second line of
+  defence, not the first.
 - **FK agrees with the robot.** At the home pose, `flange_transform(q_measured)
   @ tool` versus `o_t_ee`: refuse above 3 mm or 0.5 deg. This catches a stale
   DH table or a wrong `tool`, independently of the first check.
@@ -651,3 +672,29 @@ deviations and additions:
 
 Not done: the hardware ladder (section 10), `cartesian_state` in the bag
 analysis, pose-only captures.
+
+## 15. Controlled point moved to the hand's grasp centre (2026-09-11)
+
+The plan controlled the flange. The controller now regulates the Inspire hand's
+grasp centre instead, `[-0.0874, -0.0327, 0.1453]` m in `fr3_link8`
+(172.7 mm), with the reasoning and the measurement in section 3.
+
+- **Controller.** `tool_offset_xyz` / `tool_offset_rpy` parameters; `update()`
+  moves the flange pose and the Jacobian onto the tool before the law runs
+  (`shift_jacobian`, `rpy_to_rotation`, `skew_symmetric` in
+  `cartesian_impedance.hpp`). The rotation is identity, so with the example's
+  isotropic gains only the point changes.
+- **Configuration.** One value in three places, checked against each other:
+  `tcp` in `config/replay.yaml`, and `tool_offset_*` in the hardware and
+  simulation controller profiles.
+- **Preflight.** Split in two: the controller's tool must equal the stream's
+  tool (checked in simulation too), and the robot's `F_T_EE` must be identity
+  (hardware only), because the controller carries the tool itself.
+- **Tests.** The shifted Jacobian against finite differences of the tool-point
+  kinematics, the rpy convention against Eigen, the tool checks, the pose
+  stream through the tool, and the three configs agreeing.
+- **Dry run.** `traj_2_cycle3` at 5x: the grasp-centre path is 0.731 m where
+  the flange path was 0.786 m, with peak linear velocity 0.058 m/s.
+
+Still to confirm: a MuJoCo run and then the hardware ladder with the new
+controlled point.

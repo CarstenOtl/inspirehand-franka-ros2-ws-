@@ -681,6 +681,18 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
     }
   }
 
+  // Move the controlled point from the flange onto the tool. The measured pose, the Jacobian
+  // the law differentiates through, and therefore the whole impedance, all refer to the tool
+  // frame from here on; the robot's own F_T_EE stays at identity.
+  if (tool_active_) {
+    const Eigen::Matrix3d flange_rotation = orientation.toRotationMatrix();
+    const Eigen::Vector3d offset_base = flange_rotation * tool_translation_;
+    position += offset_base;
+    orientation = Eigen::Quaterniond(flange_rotation * tool_rotation_);
+    orientation.normalize();
+    jacobian = shift_jacobian(jacobian, offset_base);
+  }
+
   const double dt = period.seconds();
   if (!std::isfinite(dt) || dt < 0.0) {
     return controller_interface::return_type::ERROR;
@@ -949,6 +961,8 @@ CartesianTrajectoryReplayController::CallbackReturn CartesianTrajectoryReplayCon
     auto_declare<std::string>("arm_prefix", "");
     auto_declare<std::string>("base_frame", "fr3_link0");
     auto_declare<std::string>("model_source", "franka");
+    auto_declare<std::vector<double>>("tool_offset_xyz", {0.0, 0.0, 0.0});
+    auto_declare<std::vector<double>>("tool_offset_rpy", {0.0, 0.0, 0.0});
     auto_declare<double>("translational_stiffness", 150.0);
     auto_declare<double>("rotational_stiffness", 10.0);
     auto_declare<double>("nullspace_stiffness", 20.0);
@@ -997,6 +1011,31 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
   arm_prefix_ = node->get_parameter("arm_prefix").as_string();
   arm_prefix_ = arm_prefix_.empty() ? "" : arm_prefix_ + "_";
   base_frame_ = node->get_parameter("base_frame").as_string();
+
+  std::array<double, 3> tool_xyz{};
+  std::array<double, 3> tool_rpy{};
+  {
+    const auto read3 = [&node](const char* name, std::array<double, 3>& destination) {
+      const auto values = node->get_parameter(name).as_double_array();
+      if (values.size() != 3) {
+        RCLCPP_FATAL(node->get_logger(), "%s must have 3 entries, got %zu", name, values.size());
+        return false;
+      }
+      if (!std::all_of(values.begin(), values.end(),
+                       [](double value) { return std::isfinite(value); })) {
+        RCLCPP_FATAL(node->get_logger(), "%s must be finite", name);
+        return false;
+      }
+      std::copy(values.begin(), values.end(), destination.begin());
+      return true;
+    };
+    if (!read3("tool_offset_xyz", tool_xyz) || !read3("tool_offset_rpy", tool_rpy)) {
+      return false;
+    }
+  }
+  tool_translation_ = Eigen::Vector3d(tool_xyz.data());
+  tool_rotation_ = rpy_to_rotation(Eigen::Vector3d(tool_rpy.data()));
+  tool_active_ = !tool_translation_.isZero(0.0) || !tool_rotation_.isIdentity(0.0);
 
   const auto model_source = node->get_parameter("model_source").as_string();
   if (model_source == "franka") {
@@ -1259,9 +1298,13 @@ CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State&
       cartesian_publisher);
 
   RCLCPP_INFO(get_node()->get_logger(),
-              "Configured: Cartesian impedance (example law, %s model)%s, nullspace target %s, "
-              "target filter %.4f, goto <= %.2f m/s / %.2f rad/s, max goto step %.2f m / %.2f rad.",
+              "Configured: Cartesian impedance (example law, %s model) about %s%s, nullspace "
+              "target %s, target filter %.4f, goto <= %.2f m/s / %.2f rad/s, max goto step "
+              "%.2f m / %.2f rad.",
               model_from_dh_ ? "built-in DH" : "franka_hardware",
+              tool_active_ ? format_pose(tool_translation_,
+                                         Eigen::Quaterniond(tool_rotation_)).c_str()
+                           : "the flange",
               (coriolis_compensation_ && !model_from_dh_) ? " with coriolis compensation" : "",
               nullspace_follows_trajectory_ ? "follows the trajectory" : "fixed at activation",
               get_node()->get_parameter("target_filter").as_double(), goto_max_velocity_,

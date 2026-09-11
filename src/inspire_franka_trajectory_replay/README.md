@@ -444,6 +444,27 @@ therefore runs the simulation at `stiffness_scale: 4.0`; the hardware profile
 keeps the example's gains. The runner prints the peak position and orientation
 tracking error after every goto and trajectory, in the sim and on the arm.
 
+### The controlled point: the hand's grasp centre
+
+The impedance acts about the Inspire hand's grasp centre, `[-0.0874, -0.0327,
+0.1453]` m in `fr3_link8`, 172.7 mm from the flange. That is the thumb/index
+fingertip midpoint at the threading grip, and it is the point the policy itself
+controlled: the Forge captures' recorded `tcp_pos` is the same midpoint on the
+training hand, matching the model to 1-3 mm of scatter. The value is measured on
+the physical RH56, where the URDF and the MuJoCo model agree on it to 0.1 mm.
+Its scatter across the 423 grip samples of `traj_3` is 1 to 2 mm, so a fixed
+frame describes it well; an open hand sits about 25 mm away, and the older
+threading and pickup captures grip 10 to 25 mm differently.
+
+The controller applies that offset itself, to its own copy of the measured pose
+and of the Jacobian, rather than through the robot's `F_T_EE`. That keeps
+hardware and simulation identical, leaves no state on the robot, and is why the
+preflight insists the robot still reports the bare flange: an offset set in Desk
+would be applied twice. Three places have to agree and the preflight checks
+them: `tcp` in `config/replay.yaml` (which generates the pose stream and the TCP
+tracking metrics), and `tool_offset_xyz` / `tool_offset_rpy` in the hardware and
+simulation controller profiles. Zero all three to control the flange again.
+
 Everything that is not the arm's command type is unchanged: capture loading,
 `--cycle`/`--segment`, homing and `--max-home-delta`, `--time-scale`,
 `--finger-flexion-scale`, `--close-support-fingers`, the 50 Hz hand stream
@@ -469,7 +490,8 @@ Live, the runner: homes the arm with the validated joint-impedance controller
 20 Nm/rad of nullspace stiffness cannot promise to reach); reads one
 `FrankaRobotState` and refuses to continue unless the robot's `F_T_EE` is the
 identity tool the pose stream assumes and forward kinematics of the measured
-joints agrees with the robot's `O_T_EE`; swaps to
+joints agrees with the robot's `O_T_EE` (both checks are about the flange, since
+the controller carries the tool itself); swaps to
 `cartesian_trajectory_replay_controller` (both claim the effort interfaces, so
 franka_hardware stays in torque control); ramps the Cartesian reference onto
 the stream's first pose and waits for the example's filter to settle; then

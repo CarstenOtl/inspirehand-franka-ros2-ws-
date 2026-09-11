@@ -112,7 +112,7 @@ class CartesianReplayClient(ReplayClient):
             'torque_rate_limit', 'max_trajectory_start_error_m', 'max_trajectory_start_error_rad',
             'goto_max_velocity', 'goto_max_angular_velocity', 'pause_ramp_duration',
             'max_position_error', 'max_orientation_error', 'base_frame',
-            'set_collision_behavior', 'model_source'])
+            'set_collision_behavior', 'model_source', 'tool_offset_xyz', 'tool_offset_rpy'])
 
     def ensure_active(self, log=print):
         controllers = self.list_controllers()
@@ -141,6 +141,18 @@ class CartesianReplayClient(ReplayClient):
                parameters['nullspace_stiffness'], parameters.get('stiffness_scale', 1.0),
                parameters['target_filter'], parameters['nullspace_target'],
                parameters.get('model_source', 'franka')))
+        return parameters
+
+    def check_tool(self, tool, log=print):
+        """The controlled point: the controller's tool offset must be the stream's."""
+        parameters = self.controller_parameters()
+        cartesian.check_controller_tool(
+            parameters.get('tool_offset_xyz'), parameters.get('tool_offset_rpy'), tool)
+        offset = np.asarray(parameters['tool_offset_xyz'], dtype=float)
+        distance = float(np.linalg.norm(offset))
+        log('controlled point: %s in the flange frame, %.1f mm from it'
+            % ('the flange itself' if distance == 0.0
+               else np.array2string(offset, precision=4) + ' m', 1000.0 * distance))
         return parameters
 
     def uses_dh_model(self):
@@ -222,17 +234,22 @@ class CartesianReplayClient(ReplayClient):
             self.get_logger().warning('could not confirm arm hold: %s' % exc)
 
     # --- preflight --------------------------------------------------------------------------
-    def preflight(self, q_measured, tool, log=print):
-        """Refuse to switch unless the robot's frames agree with the pose stream's."""
+    def preflight(self, q_measured, log=print):
+        """Refuse to switch unless the robot still reports the bare flange.
+
+        The controller applies the tool offset itself, so an F_T_EE set in Desk would be
+        applied twice. ``check_tool`` covers the other half: that the controller's tool is the
+        one the pose stream was generated for.
+        """
         state = self.robot_state_once()
         f_t_ee = cartesian.pose_to_matrix(state.f_t_ee)
         o_t_ee = cartesian.pose_to_matrix(state.o_t_ee)
         cartesian.check_end_effector_frame(
-            f_t_ee, tool, self.settings['tool_tolerance_m'], self.settings['tool_tolerance_rad'])
+            f_t_ee, np.eye(4), self.settings['tool_tolerance_m'],
+            self.settings['tool_tolerance_rad'])
         position, angle = cartesian.check_forward_kinematics(
-            q_measured, o_t_ee, tool, self.settings['fk_tolerance_m'],
+            q_measured, o_t_ee, np.eye(4), self.settings['fk_tolerance_m'],
             self.settings['fk_tolerance_deg'])
-        log('preflight: F_T_EE matches the tool (translation %s m); FK agrees with O_T_EE to '
-            '%.2f mm / %.3f deg' % (np.array2string(f_t_ee[:3, 3], precision=4),
-                                    1000.0 * position, np.degrees(angle)))
+        log('preflight: the robot reports the bare flange (F_T_EE identity); FK agrees with '
+            'O_T_EE to %.2f mm / %.3f deg' % (1000.0 * position, np.degrees(angle)))
         return o_t_ee

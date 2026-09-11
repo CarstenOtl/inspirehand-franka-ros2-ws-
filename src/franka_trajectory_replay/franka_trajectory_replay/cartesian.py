@@ -221,30 +221,61 @@ def transform_error(a, b):
     return position, angle
 
 
-def check_end_effector_frame(f_t_ee, tool, tolerance_m=1e-4, tolerance_rad=1e-4):
-    """The robot's F_T_EE must be the tool the stream was generated for.
+def check_end_effector_frame(f_t_ee, expected=None, tolerance_m=1e-4, tolerance_rad=1e-4):
+    """The robot's F_T_EE must be ``expected`` (identity: the bare flange).
 
-    A mismatch would put every waypoint in the wrong place by the offset, so this refuses
-    rather than compensates: the fix is ``set_tcp_frame`` (or a matching ``tcp`` block), not
-    a silent correction here.
+    The Cartesian controller applies the tool offset itself, to its own copy of the measured
+    pose and of the Jacobian, so that hardware and simulation behave alike and the robot keeps
+    no hidden state. That only works if the robot still reports the flange: an F_T_EE set in
+    Desk would be applied a second time, moving every waypoint by that offset. Refuse rather
+    than compensate.
     """
-    position, angle = transform_error(f_t_ee, tool)
+    expected = np.eye(4) if expected is None else np.asarray(expected, dtype=float)
+    position, angle = transform_error(f_t_ee, expected)
     if position > tolerance_m or angle > tolerance_rad:
         raise ValueError(
-            "the robot's end-effector frame F_T_EE (translation %s m) differs from the tool the "
-            "pose stream assumes (%s m) by %.4f m / %.4f rad; set the robot's TCP frame with "
-            "service_server/set_tcp_frame or point replay.yaml's tcp block at the configured "
-            "end effector" % (np.array2string(np.asarray(f_t_ee)[:3, 3], precision=4),
-                              np.array2string(np.asarray(tool)[:3, 3], precision=4),
-                              position, angle))
+            "the robot's end-effector frame F_T_EE (translation %s m) is not the expected %s m: "
+            "it differs by %.4f m / %.4f rad. The Cartesian controller applies the tool offset "
+            "itself (tool_offset_xyz / tool_offset_rpy), so the robot must report the bare "
+            "flange; reset it with service_server/set_tcp_frame."
+            % (np.array2string(np.asarray(f_t_ee)[:3, 3], precision=4),
+               np.array2string(expected[:3, 3], precision=4), position, angle))
     return position, angle
 
 
-def check_forward_kinematics(q_measured, o_t_ee, tool, tolerance_m=0.003, tolerance_deg=0.5):
+def check_controller_tool(offset_xyz, offset_rpy, tool, tolerance_m=1e-6, tolerance_rad=1e-6):
+    """The controller's tool offset must be the one the pose stream was generated for.
+
+    The stream's poses and the point the impedance acts about have to be the same frame. Both
+    come from ``replay.yaml``'s ``tcp`` block, so a mismatch means the controller was launched
+    with a different profile than the runner is preparing for.
+    """
+    if offset_xyz is None or offset_rpy is None:
+        raise ValueError(
+            "the controller does not expose tool_offset_xyz / tool_offset_rpy; rebuild "
+            "franka_trajectory_replay so the Cartesian controller supports a tool frame")
+    actual = kinematics.tool_transform(offset_xyz, offset_rpy)
+    position, angle = transform_error(actual, tool)
+    if position > tolerance_m or angle > tolerance_rad:
+        raise ValueError(
+            "the controller's tool offset %s m / %s rad does not match the tool the pose stream "
+            "was generated for (%s m): %.4f m / %.4f rad apart. Point the controller yaml and "
+            "replay.yaml's tcp block at the same frame."
+            % (np.array2string(np.asarray(offset_xyz, dtype=float), precision=4),
+               np.array2string(np.asarray(offset_rpy, dtype=float), precision=4),
+               np.array2string(np.asarray(tool, dtype=float)[:3, 3], precision=4),
+               position, angle))
+    return actual
+
+
+def check_forward_kinematics(q_measured, o_t_ee, tool=None, tolerance_m=0.003,
+                             tolerance_deg=0.5):
     """FK of the measured joints, through ``tool``, must agree with the robot's O_T_EE.
 
-    Independent of the F_T_EE check: a stale DH table or a wrong tool shows up here.
+    Independent of the F_T_EE check: a stale DH table or a wrong joint state shows up here.
+    With the robot at identity F_T_EE, ``tool`` is identity too and this compares flanges.
     """
+    tool = np.eye(4) if tool is None else np.asarray(tool, dtype=float)
     predicted = kinematics.flange_transform(q_measured) @ np.asarray(tool, dtype=float)
     position, angle = transform_error(predicted, o_t_ee)
     if position > tolerance_m or angle > np.radians(tolerance_deg):

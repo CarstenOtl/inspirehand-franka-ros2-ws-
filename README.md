@@ -580,7 +580,11 @@ no error at all — just a robot that quietly does the wrong thing.
   trajectory execution; at the example's gains the sim's uncompensated joint
   friction tripped the orientation tracking fault, so the sim profile runs at
   four times the stiffness. `docs/cartesian_replay_blueprint.md` holds the
-  design and the hardware validation ladder that still has to be climbed.
+  design and the hardware validation ladder that still has to be climbed. The
+  impedance acts about the Inspire hand's grasp centre, 172.7 mm from the
+  flange, which is the thumb/index fingertip midpoint the policy itself
+  controlled; the controller applies that offset to its own pose and Jacobian,
+  so the robot's own end-effector frame stays at identity.
 - **Simulation — verified end to end.** MuJoCo runs headless with
   `MujocoSystemInterface` active at 1 kHz, all three controllers active, sim
   clock advancing. Arm and hand trajectories sent *simultaneously* both report

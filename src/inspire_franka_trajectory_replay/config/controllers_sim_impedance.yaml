@@ -74,6 +74,14 @@ cartesian_trajectory_replay_controller:
     arm_id: fr3
     arm_prefix: ""
     base_frame: fr3_link0
+    # The controlled point, in the flange frame: the Inspire hand's grasp
+    # centre (thumb/index fingertip midpoint at the threading grip), 173 mm
+    # from the flange. The controller moves the measured pose and the Jacobian
+    # onto this frame, so the impedance acts about the grasp point and the
+    # robot's own F_T_EE stays at identity. Must equal replay.yaml's tcp
+    # block; the runner's preflight refuses a mismatch.
+    tool_offset_xyz: [-0.0874, -0.0327, 0.1453]
+    tool_offset_rpy: [0.0, 0.0, 0.0]
     # Simulation: pose and Jacobian from the built-in FR3 DH model, no coriolis.
     model_source: dh
     ## The example's defaults. All four are live parameters; changes take
