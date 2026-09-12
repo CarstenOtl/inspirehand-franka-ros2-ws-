@@ -19,6 +19,13 @@
         type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
       trajectory_replay_controller:
         type: franka_trajectory_replay/TrajectoryReplayController
+      # Declared so --intervene can load it on demand without a second launch.
+      # It is not spawned: it stays unconfigured until an intervention hands it
+      # the arm, and the replay controller takes the effort interfaces back at
+      # the handback. Both command torque, so franka_hardware stays in torque
+      # control across the swap and the arm is never left unclaimed.
+      gravity_compensation_example_controller:
+        type: franka_example_controllers/GravityCompensationExampleController
       cartesian_trajectory_replay_controller:
         type: franka_trajectory_replay/CartesianTrajectoryReplayController
 

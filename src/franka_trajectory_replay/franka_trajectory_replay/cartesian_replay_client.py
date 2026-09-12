@@ -113,7 +113,8 @@ class CartesianReplayClient(ReplayClient):
             'goto_max_velocity', 'goto_max_angular_velocity', 'pause_ramp_duration',
             'max_position_error', 'max_orientation_error', 'base_frame',
             'set_collision_behavior', 'model_source', 'tool_offset_xyz', 'tool_offset_rpy',
-            'max_policy_step_m', 'max_policy_step_rad', 'policy_command_timeout'])
+            'max_policy_step_m', 'max_policy_step_rad', 'policy_command_timeout',
+            'state_publish_rate'])
 
     def ensure_active(self, log=print):
         controllers = self.list_controllers()

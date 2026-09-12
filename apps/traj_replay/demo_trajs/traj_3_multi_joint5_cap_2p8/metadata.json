@@ -38,6 +38,79 @@
   "cycle_samples": 1082,
   "ramp_samples": 30,
   "rate_hz": 15.000000000000053,
+  "release_phase": "follow_waypoints",
+  "cycle_index": [
+    {
+      "cycle": 1,
+      "start_sample": 0,
+      "end_sample": 102,
+      "release_sample": 56,
+      "release_time_s": 3.73333333333332
+    },
+    {
+      "cycle": 2,
+      "start_sample": 103,
+      "end_sample": 201,
+      "release_sample": 155,
+      "release_time_s": 10.333333333333297
+    },
+    {
+      "cycle": 3,
+      "start_sample": 202,
+      "end_sample": 292,
+      "release_sample": 246,
+      "release_time_s": 16.39999999999994
+    },
+    {
+      "cycle": 4,
+      "start_sample": 293,
+      "end_sample": 376,
+      "release_sample": 330,
+      "release_time_s": 21.999999999999922
+    },
+    {
+      "cycle": 5,
+      "start_sample": 377,
+      "end_sample": 473,
+      "release_sample": 427,
+      "release_time_s": 28.466666666666566
+    },
+    {
+      "cycle": 6,
+      "start_sample": 474,
+      "end_sample": 668,
+      "release_sample": 622,
+      "release_time_s": 41.46666666666652
+    },
+    {
+      "cycle": 7,
+      "start_sample": 669,
+      "end_sample": 791,
+      "release_sample": 745,
+      "release_time_s": 49.666666666666494
+    },
+    {
+      "cycle": 8,
+      "start_sample": 792,
+      "end_sample": 897,
+      "release_sample": 851,
+      "release_time_s": 56.733333333333135
+    },
+    {
+      "cycle": 9,
+      "start_sample": 898,
+      "end_sample": 994,
+      "release_sample": 948,
+      "release_time_s": 63.199999999999775
+    },
+    {
+      "cycle": 10,
+      "start_sample": 995,
+      "end_sample": 1081,
+      "release_sample": 1034,
+      "release_time_s": 68.9333333333331
+    }
+  ],
   "start_from_home": 0.0,
   "recorded_end_from_home": 0.009217411279678345,
   "final_from_home": 0.0,

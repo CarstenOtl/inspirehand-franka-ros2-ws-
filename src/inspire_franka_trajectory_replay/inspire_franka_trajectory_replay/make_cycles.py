@@ -39,6 +39,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from .release_phase import RELEASE_PHASE, releases_from_fields
 from .trajectory import (
     ARM_JOINTS,
     FORGE_HAND_JOINTS,
@@ -137,6 +138,15 @@ def build(source, home_path, first, count, seconds, environment, joint5_cap=None
         rows = select_cycles(cycle_field, first, count)
         selected = positions[rows, environment, :]
         time = np.asarray(data["sample_time_s"], dtype=float)[rows]
+        # Per-sample phases, for the release flag. Rows are contiguous and the
+        # output keeps their order, so a row's position within the selection is
+        # already its sample index in the artifact being written.
+        selected_cycles = cycle_field[rows]
+        selected_phases = (
+            np.asarray(data["replay_phase"]).ravel().astype(str)[rows]
+            if "replay_phase" in data
+            else None
+        )
 
     arm = selected[:, [names.index(name) for name in ARM_JOINTS]]
     hand = selected[:, [names.index(name) for name in FORGE_HAND_JOINTS]]
@@ -173,11 +183,24 @@ def build(source, home_path, first, count, seconds, environment, joint5_cap=None
     hand = np.vstack([hand, ramp_hand])
     time = np.arange(len(arm), dtype=float) * dt
 
+    # The release point of every cycle, resolved from the source's per-sample
+    # phases into this artifact's own sample numbering. Without it an
+    # intervention has nothing to hand back to, so it is written now rather
+    # than recovered from the source later: the artifact is what gets replayed.
+    release_report = {}
+    if selected_phases is not None:
+        releases = releases_from_fields(selected_cycles, selected_phases)
+        release_report = {
+            "release_phase": RELEASE_PHASE,
+            "cycle_index": [entry.as_metadata(1.0 / dt) for entry in releases],
+        }
+
     report = {
         "cycles": list(range(first, first + count)),
         "cycle_samples": int(len(rows)),
         "ramp_samples": int(len(ramp_arm)),
         "rate_hz": 1.0 / dt,
+        **release_report,
         "start_from_home": float(np.abs(arm[0] - home_arm).max()),
         "recorded_end_from_home": float(np.abs(arm[len(rows) - 1] - home_arm).max()),
         "final_from_home": float(np.abs(arm[-1] - home_arm).max()),
@@ -283,6 +306,20 @@ def main(argv=None):
             f"joint 5: capped {report['joint5_capped_samples']} samples at "
             f"{report['joint5_cap_rad']:.4f} rad (largest change "
             f"{report['joint5_maximum_change_rad']:.6f} rad)"
+        )
+    if "cycle_index" in report:
+        first_release = report["cycle_index"][0]
+        print(
+            f"release flag: {len(report['cycle_index'])} cycles carry a "
+            f"{report['release_phase']!r} phase; cycle "
+            f"{first_release['cycle']} releases at sample "
+            f"{first_release['release_sample']} "
+            f"({first_release['release_time_s']:.2f} s). --intervene rejoins there."
+        )
+    else:
+        print(
+            "release flag: the source has no replay_phase field, so no cycle_index "
+            "was written and --intervene will refuse this artifact"
         )
     print(f"{len(time)} samples over {time[-1]:.2f} s -> {directory}")
     print(

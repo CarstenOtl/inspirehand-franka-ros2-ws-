@@ -1,3 +1,5 @@
+import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -193,6 +195,23 @@ def test_impedance_client_rejects_a_running_position_controller_before_activatio
     }
     with pytest.raises(Rejected, match="waypoint effort controller"):
         node.ensure_active()
+
+
+def test_impedance_client_delegates_gravity_controller_switch(monkeypatch):
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    node.controller = "trajectory_replay_controller"
+    calls = []
+
+    def switch(_self, log=print, controller=None):
+        calls.append(controller)
+        return ["trajectory_replay_controller"]
+
+    monkeypatch.setattr(ReplayClient, "ensure_active", switch)
+
+    stopped = node.ensure_active(controller="gravity_compensation_example_controller")
+
+    assert calls == ["gravity_compensation_example_controller"]
+    assert stopped == ["trajectory_replay_controller"]
 
 
 def test_impedance_client_rejects_stale_completion_feedback():
@@ -688,3 +707,278 @@ def test_prepared_pose_stream_follows_the_configured_tool():
     expected = flange_transform(prepared.q[0]) @ stream.tool
     assert stream.p[0] == pytest.approx(expected[:3, 3], abs=1e-12)
     assert stream.tool[:3, 3] == pytest.approx(config["tcp"]["offset_xyz"])
+
+
+# -- --duration --------------------------------------------------------------
+
+
+def test_duration_scales_a_capture_to_the_length_asked_for():
+    from inspire_franka_trajectory_replay.replay import time_scale_for_duration
+
+    assert time_scale_for_duration(30.0, 12.0) == pytest.approx(2.5)
+    assert time_scale_for_duration(12.0, 12.0) == pytest.approx(1.0)
+
+
+def test_duration_refuses_to_speed_a_recording_up():
+    """Only slowing down is supported, and the message says what was asked for."""
+    from inspire_franka_trajectory_replay.replay import time_scale_for_duration
+
+    with pytest.raises(ValueError, match="would speed it up"):
+        time_scale_for_duration(5.0, 12.0)
+
+
+@pytest.mark.parametrize("target", [0.0, -1.0, float("nan"), float("inf")])
+def test_duration_rejects_a_nonsensical_target(target):
+    from inspire_franka_trajectory_replay.replay import time_scale_for_duration
+
+    with pytest.raises(ValueError):
+        time_scale_for_duration(target, 12.0)
+
+
+def test_duration_needs_a_trajectory_with_a_length():
+    from inspire_franka_trajectory_replay.replay import time_scale_for_duration
+
+    with pytest.raises(ValueError, match="no duration"):
+        time_scale_for_duration(30.0, 0.0)
+
+
+def test_duration_and_time_scale_are_mutually_exclusive():
+    from inspire_franka_trajectory_replay.replay import main
+
+    with pytest.raises(SystemExit):
+        main(["traj", "--duration", "30", "--time-scale", "5"])
+
+
+def test_duration_and_hand_time_scale_are_mutually_exclusive():
+    from inspire_franka_trajectory_replay.replay import main
+
+    with pytest.raises(SystemExit):
+        main(["traj", "--duration", "30", "--hand-time-scale", "5", "--no-arm"])
+
+
+@pytest.mark.parametrize("target", ["0", "-3", "nan"])
+def test_a_nonpositive_duration_is_refused_on_the_command_line(target):
+    from inspire_franka_trajectory_replay.replay import main
+
+    with pytest.raises(SystemExit):
+        main(["traj", "--duration", target])
+
+
+# --- --intervene: what it refuses before anything is sent ---------------------------------
+
+
+def _write_flagged_capture(tmp_path, release_sample=10):
+    """A capture directory carrying release flags, as make_cycles writes them."""
+    capture = _gentle_capture()
+    directory = tmp_path / "flagged"
+    directory.mkdir()
+    np.savez(directory / "replay_data.npz", joint_pos_arm=capture.arm,
+             joint_pos_hand=capture.hand, sample_time_s=capture.time)
+    rate = 1.0 / float(np.median(np.diff(capture.time)))
+    last = len(capture.time) - 1
+    (directory / "metadata.json").write_text(json.dumps({
+        "schema_version": 1,
+        "data_file": "replay_data.npz",
+        "rate_hz": rate,
+        "release_phase": "follow_waypoints",
+        "cycle_index": [{
+            "cycle": 1, "start_sample": 0, "end_sample": last,
+            "release_sample": release_sample,
+            "release_time_s": release_sample / rate,
+        }],
+    }))
+    hand_names = [
+        "pinky_proximal_joint", "ring_proximal_joint", "middle_proximal_joint",
+        "index_proximal_joint", "thumb_proximal_pitch_joint", "thumb_proximal_yaw_joint",
+    ]
+    home = tmp_path / "flagged_home.yaml"
+    home.write_text(yaml.safe_dump({
+        "joint_names": [f"fr3_joint{i}" for i in range(1, 8)] + hand_names,
+        "positions": [float(v) for v in capture.arm[0]] + [0.1] * 6,
+    }))
+    return directory, home
+
+
+def test_intervene_prints_the_release_flags_it_would_rejoin_at(tmp_path, capsys):
+    directory, home = _write_flagged_capture(tmp_path)
+
+    code = main([
+        str(directory), "--home", str(home),
+        "--config", str(CONFIG_DIR / "replay.yaml"), "--intervene", "--dry-run",
+    ])
+
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "1 cycles, each releasing in its 'follow_waypoints' phase" in out
+    # The flag is in the artifact's own samples; what the operator needs is
+    # where that lands on the controller's clock.
+    assert "release at 10" in out and "prepared stream" in out
+    assert "nothing to do in a dry run" in out
+
+
+def test_intervene_refuses_a_trajectory_with_no_release_flags(tmp_path, capsys):
+    npz, home = _write_capture(tmp_path)
+
+    code = main([
+        str(npz), "--home", str(home),
+        "--config", str(CONFIG_DIR / "replay.yaml"), "--intervene", "--dry-run",
+    ])
+
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "carries no release flags" in out
+    assert "make_cycle_trajectory" in out
+
+
+def test_intervene_refuses_flags_that_do_not_describe_the_npz(tmp_path, capsys):
+    directory, home = _write_flagged_capture(tmp_path)
+    document = json.loads((directory / "metadata.json").read_text())
+    document["cycle_index"][0]["end_sample"] = 10_000
+    (directory / "metadata.json").write_text(json.dumps(document))
+
+    code = main([
+        str(directory), "--home", str(home),
+        "--config", str(CONFIG_DIR / "replay.yaml"), "--intervene", "--dry-run",
+    ])
+
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "does not describe this NPZ" in out
+
+
+def test_intervene_needs_both_devices_and_the_validated_controller(tmp_path):
+    directory, home = _write_flagged_capture(tmp_path)
+    base = [str(directory), "--home", str(home),
+            "--config", str(CONFIG_DIR / "replay.yaml"), "--intervene", "--dry-run"]
+
+    for extra in (
+        ["--no-arm"],                                   # nothing to hand-guide
+        ["--no-hand"],                                  # no hand state to record
+        ["--arm-controller", "cartesian-impedance"],    # not the validated path
+        ["--arm-controller", "position-jtc"],
+        ["--cycle", "1"],                               # renumbers the samples
+        ["--segment", "1"],
+        ["--max-release-delta", "-0.1"],
+        ["--correction-dwell", "0"],
+        ["--correction-peak-speed", "-1"],
+    ):
+        with pytest.raises(SystemExit):
+            main(base + extra)
+
+
+def test_intervene_implies_interactive_pause(tmp_path, capsys):
+    directory, home = _write_flagged_capture(tmp_path)
+
+    # --interactive-pause is refused with --no-arm, so if --intervene did not
+    # set it, this would fail on the --no-arm check instead of the arm one.
+    code = main([
+        str(directory), "--home", str(home),
+        "--config", str(CONFIG_DIR / "replay.yaml"), "--intervene", "--dry-run",
+    ])
+
+    assert code == 0, capsys.readouterr().out
+
+
+# --- the keyboard: one press to step in ---------------------------------------------------
+
+
+class _KeyboardNode:
+    """Records what the keyboard asks of the arm, and in what order."""
+
+    def __init__(self, elapsed=83.0):
+        self.calls = []
+        self._elapsed = elapsed
+
+    def status(self):
+        self.calls.append("status")
+        return {"elapsed": self._elapsed, "phase_name": "trajectory",
+                "active_command_id": "2", "completed_command_id": "1"}
+
+    def pause(self):
+        self.calls.append("pause")
+
+    def resume(self):
+        self.calls.append("resume")
+
+    def abort(self):
+        self.calls.append("abort")
+
+
+def _drive_keyboard(keys, allow_intervene=True, timeout=3.0):
+    """Run _InteractivePause against a pty and feed it keys."""
+    import os
+
+    from inspire_franka_trajectory_replay.replay import _InteractivePause
+
+    node = _KeyboardNode()
+    master, slave = os.openpty()
+    saved = sys.stdin
+    sys.stdin = os.fdopen(slave, "r", buffering=1)
+    try:
+        started = threading.Event()
+        started.set()
+        controls = _InteractivePause(node, started, allow_intervene=allow_intervene)
+        with controls:
+            controls.segment_started()
+            for key in keys:
+                os.write(master, key.encode())
+                time.sleep(0.15)
+            deadline = time.monotonic() + timeout
+            while (controls.thread.is_alive()
+                   and not controls.intervene_requested.is_set()
+                   and time.monotonic() < deadline):
+                time.sleep(0.02)
+        return node, controls
+    finally:
+        sys.stdin.close()
+        sys.stdin = saved
+        os.close(master)
+
+
+@pytest.mark.parametrize("key", ["\r", "\n"])
+def test_enter_steps_in_with_one_press(key):
+    """Enter stops the trajectory and frees the arm without a separate pause key.
+
+    One keystroke, but a sequenced one: the clock is ramped to zero and
+    node.pause() has returned -- which only happens once the controller reports
+    the trajectory actually stopped -- before the arm is handed over.
+    """
+    node, controls = _drive_keyboard([key])
+
+    assert controls.intervene_requested.is_set()
+    assert node.calls.index("pause") < node.calls.index("abort")
+    # The paused clock is read before the abort replaces it with the stop ramp's.
+    assert node.calls.index("status") < node.calls.index("abort")
+    assert controls.intervene_elapsed == pytest.approx(83.0)
+
+
+def test_space_still_pauses_without_freeing_the_arm():
+    node, controls = _drive_keyboard([" "], timeout=0.3)
+
+    assert node.calls.count("pause") == 1
+    assert "abort" not in node.calls
+    assert not controls.intervene_requested.is_set()
+
+
+def test_i_steps_in_only_after_space():
+    node, controls = _drive_keyboard(["i"], timeout=0.3)
+    assert not controls.intervene_requested.is_set()
+    assert "abort" not in node.calls
+
+    node, controls = _drive_keyboard([" ", "i"])
+    assert controls.intervene_requested.is_set()
+    assert node.calls.index("pause") < node.calls.index("abort")
+
+
+def test_enter_does_nothing_without_intervene_enabled():
+    node, controls = _drive_keyboard(["\r"], allow_intervene=False, timeout=0.3)
+
+    assert not controls.intervene_requested.is_set()
+    assert node.calls == []
+
+
+def test_q_aborts_whether_or_not_interventions_are_enabled():
+    for allow in (True, False):
+        node, controls = _drive_keyboard(["q"], allow_intervene=allow, timeout=0.5)
+        assert controls.aborted.is_set()
+        assert "abort" in node.calls

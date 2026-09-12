@@ -544,6 +544,7 @@ class FlowPolicyRunner:
             "checkpoint": str(self.path),
             "sha256": digest,
             "weight_source": self.weight_source,
+            "integration_steps": self.integration_steps,
             "epoch": self.payload.get("epoch"),
             "config": self.config.to_dict(),
             "dataset_contract": self.payload.get("dataset_contract"),

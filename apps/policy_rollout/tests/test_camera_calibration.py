@@ -18,11 +18,11 @@ STUDENT_CHECKPOINT = (
     / "checkpoint.pt"
 )
 
-# /camera/camera/color/camera_info as published by this workcell's RealSense
-# node at 1280x720 on 2026-09-11.
-LIVE_1280X720_K = (
-    903.0774536132812, 0.0, 621.9632568359375,
-    0.0, 901.0401000976562, 356.8915100097656,
+# /camera/camera/color/camera_info as published by this workcell's D415
+# (serial 349222064041) at 640x480 on 2026-09-12.
+LIVE_640X480_K = (
+    602.0516357421875, 0.0, 307.9754943847656,
+    0.0, 600.6934204101562, 237.92767333984375,
     0.0, 0.0, 1.0,
 )
 
@@ -51,32 +51,33 @@ def test_checked_in_camera_profile_derives_policy_view_from_640x480_calibration(
         (profile.source_intrinsics.camera_matrix[5] - 60.0) / 2.0
     )
     assert profile.training_world_pose.parent_frame_id == "fr3_link0"
+    assert profile.rgbd_topic == "/camera/camera/rgbd"
 
 
-def test_checked_in_camera_profile_is_not_hardware_ready():
+def test_checked_in_camera_profile_is_hardware_ready():
     profile = load_camera_calibration()
-    assert not profile.hardware_ready
+    assert profile.hardware_ready
     blockers = profile.hardware_blockers()
-    assert any("serial number" in item for item in blockers)
-    assert any("not validated" in item and "measured" in item for item in blockers)
+    assert profile.serial_number == "349222064041"
+    assert blockers == ()
 
 
-def test_live_1280x720_camera_info_maps_onto_the_policy_view():
+def test_live_640x480_camera_info_maps_onto_the_policy_view():
     profile = load_camera_calibration()
-    assert profile.physical_stream_size == (1280, 720)
+    assert profile.physical_stream_size == (640, 480)
     assert profile.physical_stream_crop == CropRectangle(
-        x=160, y=90, width=960, height=540
+        x=0, y=60, width=640, height=360
     )
-    view = profile.assert_live_camera_info(1280, 720, LIVE_1280X720_K)
+    view = profile.assert_live_camera_info(640, 480, LIVE_640X480_K)
     assert view.camera_matrix == pytest.approx(
         profile.policy_intrinsics.camera_matrix, abs=1e-3
     )
-    with pytest.raises(ValueError, match="640x480"):
-        profile.assert_live_camera_info(640, 480, LIVE_1280X720_K)
-    shifted = list(LIVE_1280X720_K)
-    shifted[2] += 6.0  # two policy pixels
+    with pytest.raises(ValueError, match="1280x720"):
+        profile.assert_live_camera_info(1280, 720, LIVE_640X480_K)
+    shifted = list(LIVE_640X480_K)
+    shifted[2] += 4.0  # two policy pixels
     with pytest.raises(ValueError, match="px error"):
-        profile.assert_live_camera_info(1280, 720, shifted)
+        profile.assert_live_camera_info(640, 480, shifted)
 
 
 def test_hardware_ready_requires_a_validated_matching_pose_and_camera_model():
@@ -121,10 +122,7 @@ def test_prepare_rgbd_converts_units_layout_and_invalid_depth():
 
 @pytest.mark.parametrize(
     ("shape", "crop"),
-    [
-        ((480, 640), CropRectangle(x=0, y=60, width=640, height=360)),
-        ((720, 1280), CropRectangle(x=160, y=90, width=960, height=540)),
-    ],
+    [((480, 640), CropRectangle(x=0, y=60, width=640, height=360))],
 )
 def test_prepare_rgbd_crops_full_frames_before_resizing(shape, crop):
     profile = load_camera_calibration()

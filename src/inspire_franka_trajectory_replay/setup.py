@@ -26,6 +26,10 @@ setup(
         "console_scripts": [
             "replay_trajectory = inspire_franka_trajectory_replay.replay:main",
             "make_cycle_trajectory = inspire_franka_trajectory_replay.make_cycles:main",
+            "capture_demo = inspire_franka_trajectory_replay.capture:main",
+            "extract_demo = inspire_franka_trajectory_replay.extract:main",
+            "extract_waypoints = inspire_franka_trajectory_replay.waypoints:main",
+            "splice_intervention = inspire_franka_trajectory_replay.splice_intervention:main",
         ],
     },
 )

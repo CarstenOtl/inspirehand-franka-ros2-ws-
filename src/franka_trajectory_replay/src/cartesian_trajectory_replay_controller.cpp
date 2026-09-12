@@ -991,7 +991,14 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
   policy_command_age_.store(rt_policy_command_age_, std::memory_order_relaxed);
   processed_command_id_.store(rt_command_id_);
 
-  if (state_publisher_ && state_publisher_->trylock()) {
+  rt_state_publish_elapsed_ += dt;
+  const double state_publish_period = 1.0 / state_publish_rate_;
+  const bool publish_state = rt_state_publish_elapsed_ >= state_publish_period;
+  if (publish_state) {
+    rt_state_publish_elapsed_ = std::fmod(rt_state_publish_elapsed_, state_publish_period);
+  }
+
+  if (publish_state && state_publisher_ && state_publisher_->trylock()) {
     auto& msg = state_publisher_->msg_;
     msg.header.stamp = time;
     for (int i = 0; i < kNumJoints; ++i) {
@@ -1009,7 +1016,7 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
     msg.output.time_from_start = rclcpp::Duration::from_seconds(static_cast<double>(rt_phase_));
     state_publisher_->unlockAndPublish();
   }
-  if (cartesian_state_publisher_ && cartesian_state_publisher_->trylock()) {
+  if (publish_state && cartesian_state_publisher_ && cartesian_state_publisher_->trylock()) {
     auto& msg = cartesian_state_publisher_->msg_;
     msg.header.stamp = time;
     msg.header.frame_id = base_frame_;
@@ -1063,6 +1070,7 @@ CartesianTrajectoryReplayController::CallbackReturn CartesianTrajectoryReplayCon
     auto_declare<double>("max_policy_step_m", 0.036);
     auto_declare<double>("max_policy_step_rad", 0.18);
     auto_declare<double>("policy_command_timeout", 0.25);
+    auto_declare<double>("state_publish_rate", 100.0);
     auto_declare<double>("goto_settle_tolerance_m", 0.0005);
     auto_declare<double>("goto_settle_tolerance_rad", 0.002);
     auto_declare<double>("goto_settle_timeout", 2.0);
@@ -1155,6 +1163,7 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
   max_policy_step_m_ = node->get_parameter("max_policy_step_m").as_double();
   max_policy_step_rad_ = node->get_parameter("max_policy_step_rad").as_double();
   policy_command_timeout_ = node->get_parameter("policy_command_timeout").as_double();
+  state_publish_rate_ = node->get_parameter("state_publish_rate").as_double();
   goto_settle_tolerance_m_ = node->get_parameter("goto_settle_tolerance_m").as_double();
   goto_settle_tolerance_rad_ = node->get_parameter("goto_settle_tolerance_rad").as_double();
   goto_settle_timeout_ = node->get_parameter("goto_settle_timeout").as_double();
@@ -1171,10 +1180,11 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
       !positive(goto_settle_timeout_) || !positive(trajectory_velocity_scale_) ||
       !positive(max_position_error_) || !positive(max_orientation_error_) ||
       !positive(max_policy_step_m_) || !positive(max_policy_step_rad_) ||
-      !positive(policy_command_timeout_)) {
+      !positive(policy_command_timeout_) || !positive(state_publish_rate_)) {
     RCLCPP_FATAL(node->get_logger(),
                  "goto_*, pause_ramp_duration, abort_stop_duration, trajectory_velocity_scale and "
-                 "max_*_error must all be finite and > 0");
+                 "max_*_error, policy_command_timeout and state_publish_rate must all be finite "
+                 "and > 0");
     return false;
   }
 
@@ -1432,6 +1442,9 @@ CartesianTrajectoryReplayController::on_activate(const rclcpp_lifecycle::State& 
   policy_command_age_.store(0.0);
   policy_watchdog_stop_.store(false);
   rt_policy_command_age_ = 0.0;
+  // Publish state on the first control update, then at the configured
+  // non-realtime consumer rate. The impedance law itself remains at 1 kHz.
+  rt_state_publish_elapsed_ = 1.0 / state_publish_rate_;
   rt_trajectory_.reset();
   command_buffer_.writeFromNonRT(Command{});
   last_rejection_.clear();

@@ -91,5 +91,8 @@
       max_policy_step_m: 0.036
       max_policy_step_rad: 0.18
       policy_command_timeout: 0.5
+      # Keep Python policy subscribers out of the 1 kHz real-time stream. The
+      # controller update and watchdog remain at controller_manager's 1 kHz.
+      state_publish_rate: 50.0
       status_rate: 50.0
       set_collision_behavior: false

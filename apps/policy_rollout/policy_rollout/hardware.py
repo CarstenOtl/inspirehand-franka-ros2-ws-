@@ -39,6 +39,49 @@ POLICY_HAND_JOINTS = (
 )
 
 
+def physical_hand_state_to_policy(
+    hand_position, hand_velocity
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map physical RH56 feedback into the checkpoint's logical coordinates.
+
+    The driver contracts thumb-yaw commands into the physically usable final
+    75 percent of travel. Its joint-state topic correctly reports that physical
+    pose for TF, but the checkpoint was trained on the pre-overlay logical
+    coordinate. Only the policy scalar and its derivative are inverted here;
+    the physical TF tree remains untouched.
+    """
+
+    from inspire_hand_driver import command_overlays
+    from inspire_hand_driver import kinematics as kin
+
+    positions = np.asarray(hand_position, dtype=float).reshape(-1)
+    velocities = np.asarray(hand_velocity, dtype=float).reshape(-1)
+    if positions.shape != (len(HAND_JOINTS),) or velocities.shape != (
+        len(HAND_JOINTS),
+    ):
+        raise ValueError("physical hand state must contain all six driven joints")
+    if not np.isfinite(positions).all() or not np.isfinite(velocities).all():
+        raise ValueError("physical hand state contains non-finite values")
+    columns = {name: index for index, name in enumerate(HAND_JOINTS)}
+    indices = [columns[name] for name in POLICY_HAND_JOINTS]
+    q_policy = positions[indices].copy()
+    dq_policy = velocities[indices].copy()
+
+    thumb_dof = kin.dof_index(command_overlays.THUMB_ABDUCTION_JOINT)
+    physical_ratio = kin.rad_to_open_ratio(thumb_dof, q_policy[0])
+    logical_ratio = command_overlays.invert_open_ratio_overlay(
+        thumb_dof, physical_ratio
+    )
+    if not -1.0e-3 <= logical_ratio <= 1.0 + 1.0e-3:
+        raise ValueError(
+            "physical thumb-yaw feedback is outside the overlaid policy range"
+        )
+    q_policy[0] = kin.open_ratio_to_rad(thumb_dof, logical_ratio)
+    travel_scale = 1.0 - command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO
+    dq_policy[0] /= travel_scale
+    return q_policy, dq_policy
+
+
 @dataclass(frozen=True)
 class HardwareReadiness:
     ready: bool
@@ -81,6 +124,141 @@ def _stamp_seconds(message) -> float:
     return float(stamp.sec) + 1.0e-9 * float(stamp.nanosec)
 
 
+def assert_policy_camera_frames(rgb, depth, camera_info, expected_frame_id: str) -> None:
+    """Require every RGB-D input to use the calibrated colour pixel frame."""
+
+    frames = {
+        "RGB": str(rgb.header.frame_id),
+        "depth": str(depth.header.frame_id),
+        "CameraInfo": str(camera_info.header.frame_id),
+    }
+    mismatches = [
+        f"{label}={frame_id!r}"
+        for label, frame_id in frames.items()
+        if frame_id != expected_frame_id
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "policy RGB-D is not registered to the calibrated colour frame "
+            f"{expected_frame_id!r}: " + ", ".join(mismatches)
+        )
+
+
+def policy_tool_transform(config) -> np.ndarray:
+    """Build the configured flange-to-tool transform through the kinematics API."""
+
+    from franka_trajectory_replay import kinematics
+
+    return kinematics.tool_transform(
+        config["tcp"]["offset_xyz"], config["tcp"]["offset_rpy"]
+    )
+
+
+def limit_cartesian_step(
+    target_position,
+    target_quaternion,
+    reference_position,
+    reference_quaternion,
+    *,
+    max_position_step_m: float,
+    max_orientation_step_rad: float,
+    margin: float = 0.98,
+):
+    """Contract a target to the controller's norm-based policy-step guard."""
+
+    if not 0.0 < margin < 1.0:
+        raise ValueError("Cartesian step margin must be in (0, 1)")
+    if max_position_step_m <= 0.0 or max_orientation_step_rad <= 0.0:
+        raise ValueError("Cartesian step limits must be positive")
+    position = np.asarray(target_position, dtype=float).copy()
+    reference_p = np.asarray(reference_position, dtype=float)
+    if (
+        position.shape != (3,)
+        or reference_p.shape != (3,)
+        or not np.isfinite(position).all()
+        or not np.isfinite(reference_p).all()
+    ):
+        raise ValueError("Cartesian positions must contain three finite values")
+    delta = position - reference_p
+    distance = float(np.linalg.norm(delta))
+    position_limit = float(max_position_step_m) * margin
+    position_limited = distance > position_limit
+    if position_limited:
+        position = reference_p + delta * (position_limit / distance)
+
+    quaternion = np.asarray(target_quaternion, dtype=float).copy()
+    reference_q = np.asarray(reference_quaternion, dtype=float).copy()
+    quaternion_norm = float(np.linalg.norm(quaternion))
+    reference_norm = float(np.linalg.norm(reference_q))
+    if (
+        quaternion.shape != (4,)
+        or reference_q.shape != (4,)
+        or not np.isfinite(quaternion).all()
+        or not np.isfinite(reference_q).all()
+        or quaternion_norm < 1.0e-8
+        or reference_norm < 1.0e-8
+    ):
+        raise ValueError("Cartesian quaternions must contain four finite values")
+    quaternion /= quaternion_norm
+    reference_q /= reference_norm
+    dot = float(np.dot(reference_q, quaternion))
+    if dot < 0.0:
+        quaternion = -quaternion
+        dot = -dot
+    dot = float(np.clip(dot, -1.0, 1.0))
+    angle = 2.0 * math.acos(dot)
+    orientation_limit = float(max_orientation_step_rad) * margin
+    orientation_limited = angle > orientation_limit
+    if orientation_limited:
+        fraction = orientation_limit / angle
+        half_angle = math.acos(dot)
+        if half_angle < 1.0e-8:
+            quaternion = reference_q
+        else:
+            quaternion = (
+                math.sin((1.0 - fraction) * half_angle) * reference_q
+                + math.sin(fraction * half_angle) * quaternion
+            ) / math.sin(half_angle)
+            quaternion /= np.linalg.norm(quaternion)
+    return position, quaternion, position_limited, orientation_limited
+
+
+class RgbdFrameSynchronizer:
+    """Keep recent camera messages and return the closest timestamped pair."""
+
+    def __init__(self, max_skew_s: float, queue_size: int = 8) -> None:
+        if max_skew_s <= 0.0 or queue_size < 1:
+            raise ValueError("RGB-D synchronization settings must be positive")
+        self.max_skew_s = float(max_skew_s)
+        self.queue_size = int(queue_size)
+        self._queues = {"rgb": [], "depth": []}
+
+    def add(self, stream: str, message, receive_time_s: float) -> None:
+        if stream not in self._queues:
+            raise ValueError(f"unknown camera stream {stream!r}")
+        queue = self._queues[stream]
+        queue.append((_stamp_seconds(message), float(receive_time_s), message))
+        del queue[:-self.queue_size]
+
+    def latest_pair(self):
+        candidates = []
+        for rgb in self._queues["rgb"]:
+            for depth in self._queues["depth"]:
+                skew = abs(rgb[0] - depth[0])
+                if skew <= self.max_skew_s:
+                    candidates.append((skew, min(rgb[0], depth[0]), rgb, depth))
+        if not candidates:
+            return None
+        # Prefer the newest complete pair. Use the smaller skew as the
+        # tie-breaker when two candidates share the same older timestamp; that
+        # avoids selecting a new RGB frame with the previous depth frame while
+        # its exact partner is still between callbacks.
+        _skew, _stamp, rgb, depth = max(
+            candidates, key=lambda item: (item[1], -item[0])
+        )
+        return rgb[2], depth[2], rgb[1], depth[1]
+
+
 class TrainingFrameAdapter:
     """Convert between the policy's training world and the physical FR3 base."""
 
@@ -112,9 +290,18 @@ class TrainingFrameAdapter:
         *,
         grasp_position_base,
         grasp_quaternion_base,
-        flange_quaternion_base,
+        controlled_position_base,
+        controlled_quaternion_base,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Decode Forge's grasp target to base-frame tool position/flange attitude."""
+        """Decode Forge's grasp target into the controller's fixed tool frame.
+
+        Forge controls the live midpoint between the thumb and index tips.  The
+        Cartesian controller instead differentiates its impedance law at a
+        fixed flange-relative tool transform.  Preserve the measured transform
+        from the grasp frame to that controlled frame when retargeting; sending
+        the grasp origin directly as the tool origin creates a centimetre-scale
+        translation error whenever those frames do not coincide.
+        """
 
         grasp_world_position, grasp_world_quaternion = self.pose_base_to_world(
             grasp_position_base, grasp_quaternion_base
@@ -130,15 +317,72 @@ class TrainingFrameAdapter:
         target_position_base, target_grasp_quaternion_base = self.pose_world_to_base(
             target.pos, target.quat
         )
-        flange_to_grasp = fo.quat_mul(
-            fo.quat_conjugate(np.asarray(flange_quaternion_base, dtype=float)),
-            np.asarray(grasp_quaternion_base, dtype=float),
+        return retarget_grasp_pose_to_controlled_pose(
+            grasp_position_base=grasp_position_base,
+            grasp_quaternion_base=grasp_quaternion_base,
+            controlled_position_base=controlled_position_base,
+            controlled_quaternion_base=controlled_quaternion_base,
+            target_grasp_position_base=target_position_base,
+            target_grasp_quaternion_base=target_grasp_quaternion_base,
         )
-        target_flange_quaternion = fo.quat_mul(
-            target_grasp_quaternion_base, fo.quat_conjugate(flange_to_grasp)
+
+
+def retarget_grasp_pose_to_controlled_pose(
+    *,
+    grasp_position_base,
+    grasp_quaternion_base,
+    controlled_position_base,
+    controlled_quaternion_base,
+    target_grasp_position_base,
+    target_grasp_quaternion_base,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Preserve the live grasp-to-controlled transform at a new grasp pose."""
+
+    positions = tuple(
+        np.asarray(value, dtype=float)
+        for value in (
+            grasp_position_base,
+            controlled_position_base,
+            target_grasp_position_base,
         )
-        target_flange_quaternion /= np.linalg.norm(target_flange_quaternion)
-        return target_position_base, target_flange_quaternion
+    )
+    quaternions = [
+        np.asarray(value, dtype=float).copy()
+        for value in (
+            grasp_quaternion_base,
+            controlled_quaternion_base,
+            target_grasp_quaternion_base,
+        )
+    ]
+    if any(value.shape != (3,) or not np.isfinite(value).all() for value in positions):
+        raise ValueError("grasp/control positions must contain three finite values")
+    if any(
+        value.shape != (4,)
+        or not np.isfinite(value).all()
+        or np.linalg.norm(value) < 1.0e-8
+        for value in quaternions
+    ):
+        raise ValueError("grasp/control quaternions must contain four finite values")
+    for value in quaternions:
+        value /= np.linalg.norm(value)
+
+    grasp_position, controlled_position, target_grasp_position = positions
+    grasp_quaternion, controlled_quaternion, target_grasp_quaternion = quaternions
+    base_to_grasp_quaternion = fo.quat_conjugate(grasp_quaternion)
+    controlled_in_grasp_position = fo.quat_rotate(
+        base_to_grasp_quaternion, controlled_position - grasp_position
+    )
+    controlled_in_grasp_quaternion = fo.quat_mul(
+        base_to_grasp_quaternion, controlled_quaternion
+    )
+    target_controlled_position = target_grasp_position + fo.quat_rotate(
+        target_grasp_quaternion, controlled_in_grasp_position
+    )
+    target_controlled_quaternion = fo.quat_mul(
+        target_grasp_quaternion, controlled_in_grasp_quaternion
+    )
+    target_controlled_quaternion /= np.linalg.norm(target_controlled_quaternion)
+    return target_controlled_position, target_controlled_quaternion
 
 
 class GripCycleCoordinator:
@@ -237,6 +481,10 @@ class LiveSample:
     rgb: np.ndarray
     depth: np.ndarray
     depth_units: str
+    controller_target_position: np.ndarray
+    controller_target_quaternion: np.ndarray
+    controller_measured_position: np.ndarray
+    controller_measured_quaternion: np.ndarray
     sample_time_s: float
 
 
@@ -257,9 +505,11 @@ def _hardware_node_class():
             max_frame_skew_s,
         ):
             from control_msgs.msg import JointTrajectoryControllerState
+            from diagnostic_msgs.msg import DiagnosticArray
             from franka_trajectory_replay_msgs.msg import CartesianGoto, CartesianReplayState
+            from realsense2_camera_msgs.msg import RGBD
             from rclpy.qos import qos_profile_sensor_data
-            from sensor_msgs.msg import CameraInfo, Image, JointState
+            from sensor_msgs.msg import JointState
             from std_msgs.msg import Empty
             import tf2_ros
 
@@ -268,6 +518,7 @@ def _hardware_node_class():
             self.config = config
             self.max_state_age_s = float(max_state_age_s)
             self.max_frame_skew_s = float(max_frame_skew_s)
+            self._rgbd = RgbdFrameSynchronizer(self.max_frame_skew_s)
             controller = "/" + config["cartesian"]["controller_name"].strip("/")
             self.policy_publisher = self.create_publisher(
                 CartesianGoto, controller + "/policy_command", 1
@@ -279,8 +530,8 @@ def _hardware_node_class():
                 JointState, hand_command_topic, 10
             )
             self._lock = threading.Lock()
-            self._arm = self._hand = self._rgb = self._depth = None
-            self._camera_info = self._cartesian = None
+            self._arm = self._hand = None
+            self._camera_info = self._cartesian = self._controller_status = None
             self._receive_time = {}
             self.create_subscription(
                 JointTrajectoryControllerState,
@@ -295,27 +546,21 @@ def _hardware_node_class():
                 qos_profile_sensor_data,
             )
             self.create_subscription(
+                DiagnosticArray,
+                controller + "/status",
+                self._put_controller_status,
+                10,
+            )
+            self.create_subscription(
                 JointState,
                 hand_state_topic,
                 lambda message: self._put("hand", message),
                 qos_profile_sensor_data,
             )
-            self.create_subscription(
-                Image,
-                calibration.color_topic,
-                lambda message: self._put("rgb", message),
-                qos_profile_sensor_data,
-            )
-            self.create_subscription(
-                Image,
-                calibration.depth_topic,
-                lambda message: self._put("depth", message),
-                qos_profile_sensor_data,
-            )
-            self.create_subscription(
-                CameraInfo,
-                calibration.camera_info_topic,
-                lambda message: self._put("camera_info", message),
+            self.rgbd_subscription = self.create_subscription(
+                RGBD,
+                calibration.rgbd_topic,
+                self._put_rgbd,
                 qos_profile_sensor_data,
             )
             self.tf_buffer = tf2_ros.Buffer()
@@ -327,17 +572,35 @@ def _hardware_node_class():
                 setattr(self, "_" + name, message)
                 self._receive_time[name] = time.monotonic()
 
+        def _put_rgbd(self, message):
+            received = time.monotonic()
+            with self._lock:
+                self._rgbd.add("rgb", message.rgb, received)
+                self._rgbd.add("depth", message.depth, received)
+                self._camera_info = message.rgb_camera_info
+                self._receive_time["camera_info"] = received
+
+        def _put_controller_status(self, message):
+            if not message.status:
+                return
+            values = {item.key: item.value for item in message.status[0].values}
+            with self._lock:
+                self._controller_status = values
+                self._receive_time["status"] = time.monotonic()
+
         def ready(self) -> bool:
             with self._lock:
-                return all(
-                    value is not None
-                    for value in (
-                        self._arm,
-                        self._cartesian,
-                        self._hand,
-                        self._rgb,
-                        self._depth,
-                        self._camera_info,
+                return (
+                    self._rgbd.latest_pair() is not None
+                    and all(
+                        value is not None
+                        for value in (
+                            self._arm,
+                            self._cartesian,
+                            self._hand,
+                            self._camera_info,
+                            self._controller_status,
+                        )
                     )
                 )
 
@@ -347,22 +610,32 @@ def _hardware_node_class():
                 if self.ready() and self.policy_publisher.get_subscription_count() > 0:
                     return
                 time.sleep(0.02)
+            if self.rgbd_subscription.get_publisher_count() == 0:
+                raise TimeoutError(
+                    f"no composite RGB-D publisher on {self.calibration.rgbd_topic}; "
+                    "start RealSense with enable_rgbd:=true, enable_sync:=true, "
+                    "and align_depth.enable:=true"
+                )
             raise TimeoutError("policy inputs/controller subscription did not become ready")
 
         def sample(self) -> LiveSample:
             with self._lock:
+                pair = self._rgbd.latest_pair()
                 messages = {
                     name: getattr(self, "_" + name)
                     for name in (
                         "arm",
                         "cartesian",
                         "hand",
-                        "rgb",
-                        "depth",
                         "camera_info",
                     )
                 }
                 receive = dict(self._receive_time)
+                if pair is not None:
+                    messages["rgb"], messages["depth"] = pair[:2]
+                    receive["rgb"], receive["depth"] = pair[2:]
+                else:
+                    messages["rgb"] = messages["depth"] = None
             now = time.monotonic()
             missing = [name for name, value in messages.items() if value is None]
             if missing:
@@ -383,6 +656,9 @@ def _hardware_node_class():
                 )
             if not self._camera_checked:
                 info = messages["camera_info"]
+                assert_policy_camera_frames(
+                    messages["rgb"], messages["depth"], info, self.calibration.frame_id
+                )
                 self.calibration.assert_live_camera_info(info.width, info.height, info.k)
                 self._camera_checked = True
 
@@ -402,13 +678,95 @@ def _hardware_node_class():
             dq_hand = np.array([hand_velocities.get(name, 0.0) for name in HAND_JOINTS])
             rgb, _ = image_message_to_numpy(messages["rgb"])
             depth, depth_units = image_message_to_numpy(messages["depth"])
-            return LiveSample(q_arm, dq_arm, q_hand, dq_hand, rgb, depth, depth_units, now)
+            controller_pose = messages["cartesian"].target
+            controller_target_position = np.array(
+                [
+                    controller_pose.position.x,
+                    controller_pose.position.y,
+                    controller_pose.position.z,
+                ],
+                dtype=float,
+            )
+            controller_target_quaternion = np.array(
+                [
+                    controller_pose.orientation.w,
+                    controller_pose.orientation.x,
+                    controller_pose.orientation.y,
+                    controller_pose.orientation.z,
+                ],
+                dtype=float,
+            )
+            controller_measured_pose = messages["cartesian"].measured
+            controller_measured_position = np.array(
+                [
+                    controller_measured_pose.position.x,
+                    controller_measured_pose.position.y,
+                    controller_measured_pose.position.z,
+                ],
+                dtype=float,
+            )
+            controller_measured_quaternion = np.array(
+                [
+                    controller_measured_pose.orientation.w,
+                    controller_measured_pose.orientation.x,
+                    controller_measured_pose.orientation.y,
+                    controller_measured_pose.orientation.z,
+                ],
+                dtype=float,
+            )
+            return LiveSample(
+                arm_position=q_arm,
+                arm_velocity=dq_arm,
+                hand_position=q_hand,
+                hand_velocity=dq_hand,
+                rgb=rgb,
+                depth=depth,
+                depth_units=depth_units,
+                controller_target_position=controller_target_position,
+                controller_target_quaternion=controller_target_quaternion,
+                controller_measured_position=controller_measured_position,
+                controller_measured_quaternion=controller_measured_quaternion,
+                sample_time_s=now,
+            )
+
+        def wait_for_fresh_sample(self, timeout_s: float) -> LiveSample:
+            """Wait through transient callback gaps without hiding contract errors."""
+
+            deadline = time.monotonic() + timeout_s
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    return self.sample()
+                except RuntimeError as exc:
+                    message = str(exc)
+                    if not message.startswith(("missing live inputs:", "stale live inputs:")):
+                        raise
+                    last_error = exc
+                    time.sleep(0.01)
+            raise TimeoutError(
+                "fresh policy inputs did not arrive"
+                + ("" if last_error is None else f": {last_error}")
+            )
+
+        def controller_status(self) -> dict[str, str]:
+            with self._lock:
+                status = (
+                    None
+                    if self._controller_status is None
+                    else dict(self._controller_status)
+                )
+                received = self._receive_time.get("status", 0.0)
+            if status is None or time.monotonic() - received > 1.0:
+                raise RuntimeError(
+                    "Cartesian replay controller feedback stopped; check the hardware log"
+                )
+            return status
 
         @staticmethod
         def policy_hand_state(sample: LiveSample) -> tuple[np.ndarray, np.ndarray]:
-            columns = {name: index for index, name in enumerate(HAND_JOINTS)}
-            indices = [columns[name] for name in POLICY_HAND_JOINTS]
-            return sample.hand_position[indices], sample.hand_velocity[indices]
+            return physical_hand_state_to_policy(
+                sample.hand_position, sample.hand_velocity
+            )
 
         def grasp_pose(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             from rclpy.time import Time
@@ -496,7 +854,6 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
 
     import rclpy
     from rclpy.executors import MultiThreadedExecutor
-    from franka_trajectory_replay import cartesian
     from franka_trajectory_replay.cartesian_replay_client import CartesianReplayClient
     from franka_trajectory_replay.replay_client import Rejected
     from franka_trajectory_replay.runconfig import load_config
@@ -521,6 +878,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "checkpoint": metadata["checkpoint"],
             "checkpoint_sha256": metadata["sha256"],
             "checkpoint_weight_source": metadata["weight_source"],
+            "flow_integration_steps": metadata["integration_steps"],
             "camera_profile": str(calibration.source_path),
             "collection_mode": "physical_closed_loop_student",
             "controller": config["cartesian"]["controller_name"],
@@ -551,7 +909,10 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
     status = "error"
     steps = 0
     missed_deadlines = 0
+    limited_policy_targets = 0
     watchdog_stop = False
+    live_preflight_s = []
+    grasp_controlled_offset_m = None
     artifact = None
     try:
         home_client.ensure_active(print)
@@ -565,9 +926,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         )
         print("policy homing complete")
 
-        tool = cartesian.tool_transform(
-            config["tcp"]["offset_xyz"], config["tcp"]["offset_rpy"]
-        )
+        tool = policy_tool_transform(config)
         arm_client.check_tool(tool, print)
         if arm_client.uses_dh_model():
             raise Rejected("physical rollout requires model_source=franka, not dh")
@@ -584,6 +943,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "max_policy_step_m": 0.036,
             "max_policy_step_rad": 0.18,
             "policy_command_timeout": 0.5,
+            "state_publish_rate": 50.0,
         }
         mismatches = [
             f"{name}={parameters.get(name)!r} (expected {value})"
@@ -598,24 +958,79 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             )
         if parameters.get("coriolis_compensation") is not True:
             raise Rejected("policy controller must enable coriolis_compensation")
+
+        # Homing and setup are complete. Keeping these helper nodes in the
+        # Python executor would continue deserializing joint/robot state that
+        # the policy loop never reads. The main node owns the live state and
+        # controller-status subscriptions from this point onward.
+        executor.remove_node(home_client)
+        executor.remove_node(arm_client)
         node.wait_ready(args.input_timeout)
-        sample = node.sample()
-        grasp_position, grasp_quaternion, _ = node.wait_for_grasp_pose(
-            args.input_timeout
+
+        # Synthetic tensors do not exercise every content-dependent point-cloud
+        # path. Run one warm-up and four measured real-frame passes before any
+        # policy command. Physical execution requires the whole policy pass to
+        # fit inside its actual command period, not merely the much looser
+        # controller watchdog.
+        preflight_session = PolicyRolloutSession(runner, calibration)
+        for _ in range(5):
+            sample = node.wait_for_fresh_sample(args.input_timeout)
+            grasp_position, grasp_quaternion, _ = node.wait_for_grasp_pose(
+                args.input_timeout
+            )
+            q_policy_hand, dq_policy_hand = node.policy_hand_state(sample)
+            preflight_session.reset(
+                previous_filtered_native_action=np.zeros(9), seed=args.seed
+            )
+            preflight_started = time.perf_counter()
+            preflight_session.step(
+                joint_position=np.concatenate((sample.arm_position, q_policy_hand)),
+                joint_velocity=np.concatenate((sample.arm_velocity, dq_policy_hand)),
+                rgb=sample.rgb,
+                depth=sample.depth,
+                depth_units=sample.depth_units,
+                trajectory_progress=(
+                    0.0 if runner.config.trajectory_progress_conditioning else None
+                ),
+                process_phase=(
+                    "policy" if runner.config.cyclic_process_phase_conditioning else None
+                ),
+            )
+            live_preflight_s.append(time.perf_counter() - preflight_started)
+
+        command_period = 1.0 / args.rate
+        steady_budget = 0.9 * command_period
+        steady_preflight_max = max(live_preflight_s[1:])
+        print(
+            f"live policy preflight: first {live_preflight_s[0]:.3f} s, "
+            f"steady max {steady_preflight_max:.3f} s "
+            f"(required < {steady_budget:.3f} s)",
+            flush=True,
         )
+        if steady_preflight_max >= steady_budget:
+            raise Rejected(
+                f"steady live policy pass took up to {steady_preflight_max:.3f} s; "
+                f"must be below {steady_budget:.3f} s for {args.rate:g} Hz physical "
+                "execution; reduce --integration-steps or --rate"
+            )
+
+        # Re-seed from a fresh measured state so dry preflight cannot affect the
+        # first commanded action or the temporal action ensemble.
+        sample = node.wait_for_fresh_sample(args.input_timeout)
+        grasp_position, grasp_quaternion, _ = node.wait_for_grasp_pose(args.input_timeout)
         q_policy_hand, _ = node.policy_hand_state(sample)
-        grasp_world_position, grasp_world_quaternion = frame.pose_base_to_world(
-            grasp_position, grasp_quaternion
+        grasp_controlled_offset_m = float(
+            np.linalg.norm(sample.controller_measured_position - grasp_position)
         )
-        live_grasp = fo.GraspFrameState(
-            grasp_world_position,
-            grasp_world_quaternion,
-            np.zeros(3),
-            np.zeros(3),
-            np.zeros((6, 7)),
+        print(
+            "live grasp-to-controller offset: "
+            f"{1.0e3 * grasp_controlled_offset_m:.1f} mm (compensated)",
+            flush=True,
         )
-        previous_action = seed_action_history(live_grasp, q_policy_hand)
-        session.reset(previous_filtered_native_action=previous_action, seed=args.seed)
+        # Match the reset contract used by training and the MuJoCo rollout.
+        # Pose-derived seeding here made the last nine proprioception values
+        # strongly out of distribution before the first physical command.
+        session.reset(previous_filtered_native_action=np.zeros(9), seed=args.seed)
         coordinator = GripCycleCoordinator(
             rate_hz=args.rate,
             max_cycles=args.cycles,
@@ -633,7 +1048,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         for steps in range(1, args.max_steps + 1):
             tick_started = time.monotonic()
             sample = node.sample()
-            grasp_position, grasp_quaternion, flange_quaternion = node.grasp_pose()
+            grasp_position, grasp_quaternion, _flange_quaternion = node.grasp_pose()
             q_hand, dq_hand = node.policy_hand_state(sample)
             q10 = np.concatenate((sample.arm_position, q_hand))
             dq10 = np.concatenate((sample.arm_velocity, dq_hand))
@@ -668,8 +1083,24 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 filtered,
                 grasp_position_base=grasp_position,
                 grasp_quaternion_base=grasp_quaternion,
-                flange_quaternion_base=flange_quaternion,
+                controlled_position_base=sample.controller_measured_position,
+                controlled_quaternion_base=sample.controller_measured_quaternion,
             )
+            (
+                target_position,
+                target_quaternion,
+                position_limited,
+                orientation_limited,
+            ) = limit_cartesian_step(
+                target_position,
+                target_quaternion,
+                sample.controller_target_position,
+                sample.controller_target_quaternion,
+                max_position_step_m=expected["max_policy_step_m"],
+                max_orientation_step_rad=expected["max_policy_step_rad"],
+            )
+            if position_limited or orientation_limited:
+                limited_policy_targets += 1
             node.publish_policy_target(target_position, target_quaternion, home_arm)
             node.publish_hand_target(fo.pinch_targets(filtered))
             event, turn_progress = coordinator.update(
@@ -705,8 +1136,12 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             if coordinator.completed_cycles >= args.cycles:
                 status = "completed"
                 break
-            arm_client._check_fault()
-            controller_status = arm_client.status() or {}
+            controller_status = node.controller_status()
+            if controller_status.get("tracking_fault") == "true":
+                raise Rejected(
+                    "the Cartesian controller stopped on a tracking fault: "
+                    + controller_status.get("last_fault", "unknown")
+                )
             if controller_status.get("policy_watchdog_stop") == "true":
                 watchdog_stop = True
                 status = "controller_watchdog"
@@ -742,15 +1177,24 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             coordinator.completed_cycles if "coordinator" in locals() else 0
         ),
         "missed_policy_deadlines": missed_deadlines,
+        "limited_policy_targets": limited_policy_targets,
         "watchdog_stop": watchdog_stop,
+        "live_preflight_s": live_preflight_s,
+        "grasp_controlled_offset_m": grasp_controlled_offset_m,
         "recording": None if artifact is None else str(artifact.data_path),
     }
 
 
 __all__ = [
     "HardwareReadiness",
+    "RgbdFrameSynchronizer",
     "TrainingFrameAdapter",
     "assess_hardware_readiness",
+    "assert_policy_camera_frames",
     "image_message_to_numpy",
+    "limit_cartesian_step",
+    "physical_hand_state_to_policy",
+    "policy_tool_transform",
+    "retarget_grasp_pose_to_controlled_pose",
     "run_hardware_rollout",
 ]

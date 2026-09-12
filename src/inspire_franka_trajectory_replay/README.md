@@ -388,6 +388,199 @@ reference clock is stopped, not that power is removed or that the workspace is
 safe to enter; follow the lab's hardware access procedure when repositioning
 objects.
 
+### Hand-guided interventions: safe DAgger on the real rig
+
+`--intervene` lets the operator take the arm mid-rollout, do the task step by
+hand, and give it back. It is the pause above plus three things: the arm is
+handed to gravity compensation so it can be moved freely, the poses the
+operator marks are recorded, and the run then rejoins the trajectory at the
+interrupted cycle's **release point** rather than where it was interrupted.
+
+```bash
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_3_multi_joint5_cap_2p8 \
+  --home apps/traj_replay/demo_trajs/traj_3_multi_joint5_cap_2p8/homing.yaml \
+  --time-scale 5 --max-prepared-duration 400 \
+  --intervene --note "nut jammed on cycle 3"
+```
+
+One intervention, key by key:
+
+| key | what happens |
+|---|---|
+| **Enter** | steps in, in one press. The trajectory clock ramps to zero, and once the controller reports it stopped, `gravity_compensation_example_controller` takes the arm's effort interfaces. **Be holding the arm before you press it**, and wait for `FLOATING`. |
+| preset / jog keys | command the hand, from `config/hand_presets.yaml` exactly as in `capture_demo` — `o` open, `r` preshape, `p` pinch, `-`/`=` and `[`/`]` to jog. This is how the grip is tuned on the object actually in front of you. |
+| **Enter** (inside the stage) | records this pose: the arm's and the hand's measured joints at that instant. |
+| **g** | ends the supervision and continues the run. |
+| **q** | ends the run here; the arm stiffens and holds. |
+| **SPACE** | still the plain pause: the clock stops and the arm keeps holding stiffly, nothing goes limp. `i` then steps in from there, for when you want to look before deciding. |
+
+`g` hands back in two steps, both printed with their distance and put behind a
+prompt first:
+
+1. The replay controller is reactivated. It initialises its reference from the
+   measured joints, so it holds the pose the arm was left in and there is no
+   step to ramp out.
+2. The arm ramps onto the current cycle's release point and the rest of the
+   trajectory is replayed from there. The gap is refused above
+   `--max-release-delta` (0.6 rad), naming the joints.
+
+The trajectory then carries on into the next cycle, and Enter works again.
+
+**Nothing you did by hand is re-executed.** The arm goes from where you left it
+straight to the release point; the recorded poses are a record, not a motion to
+replay. That is deliberate for this task: once a nut has been threaded by hand,
+driving the arm back through the turn with the nut already on the bolt is not a
+correction, it is a collision. To replay a session's poses as a motion of their
+own — to check they are reachable, or to build training material — run
+`extract_waypoints` on the session afterwards and replay the artifact it writes.
+
+Because nothing is replayed from them, recording no poses at all is valid: if
+you only repositioned the workpiece, press `g` and the run carries on. It says
+so, since a session whose purpose is the record is worth a word when it has
+none.
+
+**Nothing moves the arm while a person is touching it.** The recording node
+this uses is the one `capture_demo` uses, and it holds no arm publisher and no
+arm command interface at all; during an intervention the only thing published
+is the hand command. Every motion happens after the handback, through the same
+`goto`/`trajectory` path and the same FR3 preparation as an ordinary replay.
+`FLOATING` means zero commanded torque with libfranka compensating gravity
+underneath — it does not mean the arm is safe to let go of, and it does not
+remove the lab's hardware access procedure.
+
+#### Where the release point comes from
+
+Each cycle of a Forge threading rollout is `policy`, then `follow_waypoints`,
+then `return_to_reset`. The middle phase is the release: the index finger goes
+from 0.70 rad of flexion to 0.06 rad over sixteen samples with the arm still at
+the bolt, and the source metadata says `threading_release_motion: manual`. That
+is the point worth rejoining, because an intervention has already done by hand
+what the rest of the `policy` phase was going to attempt; what still has to
+happen is letting go, retreating, and the next cycle.
+
+`make_cycle_trajectory` resolves those per-sample phases into one sample index
+per cycle and writes them into the artifact's `metadata.json`:
+
+```json
+"release_phase": "follow_waypoints",
+"cycle_index": [
+  {"cycle": 1, "start_sample": 0, "end_sample": 102,
+   "release_sample": 56, "release_time_s": 3.733},
+  ...
+]
+```
+
+The flags are in the **artifact's** own 15 Hz samples. `--intervene` prints
+where each one lands on the controller's prepared clock, which is where the
+automatic time scaling and `--time-scale` have had their say:
+
+```
+intervention: 10 cycles, each releasing in its 'follow_waypoints' phase
+  cycle 1: samples 0-102, release at 56 (3.73 s)  ->  prepared stream 19.67 s
+  cycle 2: samples 103-201, release at 155 (10.33 s)  ->  prepared stream 52.67 s
+  ...
+```
+
+`traj_3_multi_joint5_cap_2p8` carries these flags. An artifact that does not is
+refused rather than guessed at, with the command that regenerates it. Because
+the flags are numbered against the artifact's samples, `--intervene` also
+refuses `--cycle`/`--segment`: use a derived continuous artifact instead.
+
+The remainder after a release point is re-prepared from the source slice rather
+than cut out of the dense stream that was running. That is what puts a lead-in
+ramp in front of it, accelerating from rest into the velocity the recording
+actually has at that sample; a dense stream cut mid-motion would ask the arm to
+be already moving the instant the trajectory is accepted.
+
+#### A pose the arm cannot hold is refused at capture, not at handback
+
+The FR3's velocity limit follows joint position: close enough to a stop, the
+envelope does not contain zero, and the arm is *required* to still be moving
+away from the limit. Standing still there is itself a limit violation, and no
+amount of slowing down fixes it. This task already runs joint 5 to 2.80 rad
+against a 2.8763 rad limit, so it is the realistic way for a hand-guided pose
+to be unusable.
+
+Such a pose is therefore rejected when **Enter** is pressed, while the operator
+still has hold of a floating arm and can move that joint out:
+
+```
+waypoint 3 NOT recorded: the arm cannot hold this pose.
+  fr3_joint5 is at +2.8500 rad, 0.0263 rad from its upper limit +2.8763 rad and
+  inside the braking zone, where the FR3 velocity envelope is [-4.183, -0.025]
+  rad/s and so does not contain nought: the arm cannot be commanded to hold
+  still here at any speed
+Move that joint away from its limit and press Enter again.
+```
+
+The keypress still appears in the event log as `pose_capture` followed by
+`pose_capture_refused`; it just does not join the correction. Every one of the
+1112 samples of `traj_3_multi_joint5_cap_2p8` passes this check.
+
+#### What a session writes
+
+`logs/dagger/<UTC stamp>[_<note>]/`, with `--session-root` to put it elsewhere:
+
+- `events.jsonl` — the rollout's own marks (`rollout_start`, `intervention_open`,
+  `arm_floating`, `arm_stiff`, `intervention_release`, `handback`, `rollout_end`)
+  beside the operator's `pose_capture` and `hand_command` events. `arm_stiff`
+  carries the arm and hand joints the supervision was left at, which is where
+  the goto onto the release point starts from. Flushed and fsynced per line, so
+  a session that ends on a Ctrl-C still describes everything it did.
+
+  What it does **not** hold is the continuous path your hand took: only the
+  poses you marked. Marking is deliberate rather than incidental — but if the
+  guided motion itself is wanted as training data (a thread turn is continuous,
+  and a handful of marks is a thin description of one), that wants a bag
+  recorded across the stage, which this does not yet do.
+- `manifest.json` — one entry per intervention: where it paused, which cycle,
+  which release sample it rejoined at, how many waypoints, and how it ended.
+
+`pose_capture` is written in the shape `capture_demo` writes it, so the session
+is a capture session as far as the rest of the toolchain is concerned, and the
+corrections can be turned into a replayable artifact of their own with no bag
+read at all:
+
+```bash
+ros2 run inspire_franka_trajectory_replay extract_waypoints logs/dagger/<stamp>
+```
+
+To build one composite artifact that keeps the original prefix and suffix but
+replaces the interrupted interval with a smooth path through the marked poses,
+use `splice_intervention` instead:
+
+```bash
+ros2 run inspire_franka_trajectory_replay splice_intervention \
+  logs/dagger/<stamp>
+
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  logs/dagger/<stamp>/composite \
+  --home logs/dagger/<stamp>/composite/homing.yaml \
+  --time-scale 5 --max-prepared-duration 500 --dry-run
+```
+
+The splice begins with the original artifact through `paused_sample`, visits
+the intervention's captured poses on zero-velocity/zero-acceleration quintic
+segments, eases the hand onto each recorded posture while the arm dwells, and
+then bridges to `rejoin_sample` before retaining the rest of the original
+artifact. It also renumbers the artifact's `cycle_index` release markers, so a
+later `--intervene` run still refers to the composite's own samples.
+
+This is an approximation of the correction, not the path the operator's hand
+actually took: intervention sessions record only deliberate `Enter` captures,
+not continuous arm state. Capture more intermediate poses when the shape of the
+replacement matters. The generated metadata states this explicitly, and the
+result must pass the ordinary `replay_trajectory --dry-run` before motion.
+
+**Status: built, unit-tested, and dry-run validated; not yet run on the arm.**
+The pieces it is assembled from are hardware-validated — the joint-impedance
+replay controller, its pause, `capture_demo`'s gravity-compensation hand
+guiding — but the switch between them mid-rollout, and the handback, have not
+been performed on the FR3. Walk it up: step in, record one pose without moving
+the arm, and press `g`, so the only motion is the goto onto the release point.
+Then one where the arm is guided somewhere first.
+
 ## Cartesian impedance replay
 
 `--arm-controller cartesian-impedance` replays the same captures with the torque
@@ -593,7 +786,7 @@ legitimately long recording, but it does not disable any FR3 limit check.
 | `demo_trajs/traj_3` | V2-policy source capture; raw arm replay is rejected because joint 5 reaches its position-dependent velocity boundary | 449-sample continuous rollout (the two-sample reset tail is ignored automatically); matching home is colocated, but do not bypass the FR3 safety guard |
 | `demo_trajs/traj_3_joint5_cap_2p8` | minimally retargeted `traj_3` hardware candidate; saturated joint-5 waypoints capped at 2.800 rad; physical validation pending | use its colocated `homing.yaml` and `--time-scale 5` |
 | `demo_trajs/traj_3_multi` | raw ten-cycle V2 source capture; cycles 1, 6, 7, and 8 reach the joint-5 braking boundary | preserve as source material; individual cycles can be inspected with `--cycle N`, but use the derived artifact for the complete run |
-| `demo_trajs/traj_3_multi_joint5_cap_2p8` | all ten V2 cycles plus return home; 171 saturated joint-5 waypoints capped at 2.800 rad; dry-run validated at 5x, physical validation pending | one continuous run; use its colocated `homing.yaml`, `--time-scale 5`, `--interactive-pause`, and `--max-prepared-duration 400` |
+| `demo_trajs/traj_3_multi_joint5_cap_2p8` | all ten V2 cycles plus return home; 171 saturated joint-5 waypoints capped at 2.800 rad; carries the per-cycle **release flags** `--intervene` needs; dry-run validated at 5x, physical validation pending | one continuous run; use its colocated `homing.yaml`, `--time-scale 5`, `--interactive-pause` or `--intervene`, and `--max-prepared-duration 400` |
 | `demo_trajs/threading_cycle1_flange180` | **legacy-source hardware baseline**; validated 2026-09-09 with its historical joint-7 compensation | one continuous cycle; use its colocated `homing.yaml` |
 | `demo_trajs/traj_1` | source capture; **outdated for direct arm replay** because it uses the legacy mount convention | `--cycle 1`..`22`; raw `homing/threading.yaml`; safe for viewing, conversion, or `--no-arm` |
 | `demo_trajs/threading_5x` | generated intermediate; **outdated for current-mount arm replay** | raw `homing/threading.yaml` |
@@ -673,6 +866,13 @@ samples, and maximum change. This option is an explicit waypoint retarget, not
 a way to bypass preparation: the generated artifact must still pass the normal
 FR3 limit check.
 
+The output also carries the **release flag** of every cycle it took, resolved
+from the source's per-sample `replay_phase` into the artifact's own sample
+numbering as `cycle_index`. That is what `--intervene` rejoins at; see
+[Hand-guided interventions](#hand-guided-interventions-safe-dagger-on-the-real-rig).
+A source with no `replay_phase` field produces no flags, and the generator says
+so rather than guessing at one.
+
 That output is ready for preparation without another orientation step. New
 captures use the hardware joint convention and must not be passed through
 `retarget_flange_mount.py`. The retargeting tool remains only for intentional
@@ -727,3 +927,120 @@ The hand mapping from the Forge model is:
 | `index_joint_0` | `index_proximal_joint` |
 | `thumb_joint_1` | `thumb_proximal_pitch_joint` |
 | `thumb_joint_0` | `thumb_proximal_yaw_joint` |
+
+## Hand-guided demonstration capture
+
+`capture_demo` records a kinesthetic teaching session beside a
+`gravity_compensation:=true` bringup, and `extract_demo` turns it into an
+artifact this package's own `replay_trajectory` consumes unmodified. The
+end-to-end workflow, the preflight, the key map and the filter rationale are in
+the repo README's "Hand-guided demonstration capture" section; what follows is
+the part specific to this package.
+
+**Why here.** A hand-guided capture is the one job that touches both halves of
+this workspace at once: the FR3's 1 kHz state and limit machinery in
+`franka_trajectory_replay`, and the RH56's DOF table, coupling and command
+overlay in `inspire_hand_driver`. This package is the only one that already
+depends on both, and it already owns the artifact schema a capture has to
+produce. Putting the tools anywhere else would mean a second package growing
+the same two dependencies and a second opinion about that schema.
+
+**Modules.**
+
+| module | holds |
+|---|---|
+| `hand_presets.py` | loads and validates `config/hand_presets.yaml` — postures, the pinned-DOF table and the jog bindings; every joint name and limit resolved through `inspire_hand_driver.kinematics`, never restated |
+| `capture.py` | the recorded topic list and why each one is there, the fail-closed preflight, the keyboard session, the event log and the manifest |
+| `extract.py` | bag to artifact: resampling, the zero-phase low-pass, the 19-joint layout, the TCP conversion, and the artifact writer |
+| `waypoints.py` | marks to artifact: the operator's `c` presses as a point-to-point trajectory, without reading the bag |
+| `launch_files/sim_capture.py` | the MuJoCo rehearsal stack, as an importable module so its four load-bearing choices are testable; `launch/sim_capture.launch.py` is a shim over it |
+
+**What the artifact says about itself.** `metadata.json` carries
+`"replay": "hand_guided"`, the session directory it came from, the filter's
+kind, cutoff and what it was applied to, and `offset_rad: 0.0` under
+`hardware_orientation`. `homing.yaml` is read off the first extracted waypoint,
+so a home and its trajectory cannot disagree.
+
+**The two conversions that are silent when wrong**, and are therefore tested:
+libfranka packs `O_T_EE` column-major, and
+`franka_trajectory_replay.kinematics.matrix_to_quaternion` returns XYZW while
+every artifact's `tcp_quat` is WXYZ. Likewise the driver's twelve joint names
+map onto the artifact's twelve; `test_extract.py` asserts the driven six against
+`trajectory.FORGE_HAND_JOINTS`, which is the table the replay loader itself
+reads, so a permuted finger cannot pass.
+
+**Pinned DOF and jogging.** `fixed_open_ratio` in the preset file pins a DOF
+for the whole session — currently `thumb_proximal_yaw_joint: 0.0`, the thumb held
+in opposition. It is enforced three times over, because a silently unpinned joint
+would be invisible in the data: a preset that disagrees with it is a load error,
+a jog control that names it is a load error, and `PresetTable.apply_fixed` puts
+the pinned value back on every command that leaves the tool. The `jog` block
+binds two keys per DOF (`close_key` lowers the open ratio, `open_key` raises it)
+and the loader refuses a binding that collides with a preset, with another jog
+control, or with the tool's own reserved keys.
+
+**The two-stage loop.** Confirming a demonstration is worth keeping is a
+question about the poses the operator *meant* — the ones they stopped at and
+pressed `c` on — not about the continuous path their hand happened to take.
+Those two questions have very different costs, so they are two tools:
+
+```sh
+# 1. capture (lean by default: no 1 kHz FrankaRobotState)
+ros2 run inspire_franka_trajectory_replay capture_demo --note "pick the red block"
+
+# 2. the marked poses only - events.jsonl, no bag read at all
+ros2 run inspire_franka_trajectory_replay extract_waypoints \
+    logs/demo_capture/<stamp>_<name>
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    logs/demo_capture/<stamp>_<name>/waypoints \
+    --home logs/demo_capture/<stamp>_<name>/waypoints/homing.yaml --dry-run
+
+# 3. once the waypoints are confirmed, re-capture the motion as training data
+ros2 run inspire_franka_trajectory_replay capture_demo --full-state --note "..."
+ros2 run inspire_franka_trajectory_replay extract_demo logs/demo_capture/<stamp>_<name>
+```
+
+`extract_waypoints` writes the same three files in the same schema
+`extract_demo` does, so stage 2 adds no replay code and no new motion path: the
+artifact is a dense 15 Hz trajectory like any other and goes through
+`prepare()`, the limit guards and the same client. Its `metadata.json` says
+`hand_guided_waypoints`, never `hand_guided` — it visits the marked poses by
+the shortest joint-space route between them, which is not what was
+demonstrated, and nothing downstream may confuse the two.
+
+The motion is quintic ease from waypoint to waypoint (zero velocity and
+acceleration at each end) at a deliberately slow 0.35 rad/s peak, a `--dwell`
+hold on arrival, and the hand commanded to that waypoint's recorded posture
+over the first half of the dwell — so the fingers move once the arm has
+stopped, not during transit. `--speed` scales the peak, `--dwell` the hold.
+
+**Lean by default, `--full-state` for a keeper.** `FrankaRobotState` is 3.7 kB
+per message at 1 kHz: on a 176 s session that is 623 MB of a 1.4 GB bag, and
+about 90% of what `extract_demo` then spends its time on — measured, ~405 s to
+deserialize the robot_state alone against ~7 s for the whole lean set. A lean
+capture drops it and keeps `/franka/joint_states` at the same 1 kHz, which is
+every number the 15 Hz artifact is built from.
+
+What a lean bag gives up, permanently: `tau_ext`, both external wrenches,
+`O_T_EE`/`F_T_EE`/`EE_T_K`, the elbow, the collision and contact indicators,
+the error flags and the load model. Those matter for training augmentation and
+for after-the-fact contact analysis and nothing recovers them later, so a take
+you intend to keep wants `--full-state`. `manifest.json` records which kind it
+was, and `extract_demo` reads either without being told.
+
+**Two profiles, one of which is not data.** `--profile hardware` is the only
+profile whose output is a demonstration. `--profile sim` targets `sim_capture.launch.py`: MuJoCo has no
+`FrankaRobotState` at all, so that profile records `/joint_states`, derives the
+TCP by forward kinematics, runs on `/clock` so the event log and the bag share
+one clock, and asks the arm-safety question differently — on hardware "is
+gravity compensation active", in simulation "is the zero-effort controller
+active". Not "is the arm unclaimed": the MuJoCo hardware holds unclaimed joints
+on their last desired position, so a bare arm is rigid, and treating that as
+free was the first version's bug. Both the manifest and the artifact say
+`hand_guided_sim`, and `metadata.limitations` lists what is missing.
+
+**What a demonstration does not contain.** There is no arm action. The arm block
+of `joint_pos_target` is `joint_pos` itself; the hand block is the preset in
+force at that instant, from the operator's keypresses in `events.jsonl`, with
+`hand_command_active` marking the samples before the first press. Nothing is
+filled in to complete a schema.

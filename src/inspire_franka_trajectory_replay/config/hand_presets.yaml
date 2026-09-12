@@ -1,0 +1,126 @@
+# Named Inspire RH56 postures and jog controls for hand-guided capture.
+#
+# This file is the only place the capture tool learns what a key does. Nothing
+# in capture.py carries a hand posture, a step size, or a force: add a preset or
+# rebind a jog key here and it takes effect on the next run, with no code change.
+#
+# Units
+# -----
+# `open_ratio` is the driver's commanding unit: 1.0 fully open, 0.0 fully
+# closed, identical for all six DOF. It is NOT radians, and it runs the
+# opposite way round from `/inspire_hand/joint_states` -- see the interface
+# note at the top of inspire_hand_driver/driver_node.py.
+#
+# `speed` and `force` are the hand's own register units, 0..1000, and are
+# applied through `~/set_speed` / `~/set_force` immediately before the angles
+# are published. They are volatile: the hand forgets them on power cycle, so
+# every preset states its own rather than relying on whatever the last one set.
+#
+# Joint names
+# -----------
+# Only the six *driven* joints may appear. The six mechanical followers are not
+# addressable -- commanding one is rejected by the driver. The names, and the
+# per-joint radian limits the ratios map onto, come from
+# inspire_hand_driver.kinematics; test_hand_presets.py fails if this file and
+# that table ever disagree.
+
+schema_version: 2
+
+# Keys the capture tool reserves for itself. A preset or jog control claiming
+# one of these is a load error rather than a silently shadowed binding.
+reserved_keys: ["s", "c", "q", "?"]
+
+# DOF that are held at one value for the whole session and are neither
+# commanded by a preset nor reachable by a jog key.
+#
+# Thumb abduction is pinned to the bottom of its commanded range: the thumb is
+# swung fully across the palm, into opposition with the index finger, and stays
+# there. Every pinch this rig performs is a thumb-index pinch about that fixed
+# opposition angle, so leaving the yaw free only adds a way for two sessions to
+# disagree about what "the same grasp" was.
+#
+# 0.0 is the minimum of the *commanded* range, not a mechanical stop. The
+# driver's abduction overlay maps it onto physical open ratio 0.25, i.e. 0.981
+# rad of yaw -- see inspire_hand_driver.command_overlays, which exists because
+# the bottom quarter of the raw range swings the thumb past the palm plane and
+# is unusable. A preset that names this joint with any other value is refused.
+fixed_open_ratio:
+  thumb_proximal_yaw_joint: 0.0
+
+# Incremental control, for finding a grasp on the object actually in front of
+# you rather than stepping between canned postures. Each press publishes the
+# whole six-DOF command and writes a hand_command event, so a jogged pose is
+# recorded ground truth exactly like a preset is.
+#
+# `close_key` lowers the open ratio (more flexion); `open_key` raises it (less
+# flexion). Swap the two here if that reads backwards to your hand.
+jog:
+  step: 0.05
+  # Applied once, when jogging first moves a DOF, and then left alone: every
+  # jog press otherwise costs two service round-trips on a half-duplex bus.
+  # Slow and gentle, because jogging happens with an object between the fingers.
+  speed: 250
+  force: 150
+  controls:
+    - joint: thumb_proximal_pitch_joint
+      label: thumb MCP flexion
+      close_key: "-"
+      open_key: "="
+    - joint: index_proximal_joint
+      label: index MCP flexion
+      close_key: "["
+      open_key: "]"
+
+presets:
+  - name: open
+    key: "o"
+    description: >
+      Every DOF fully open, thumb opposition excepted. The pose to start and end
+      a session in, and the one to press if a grasp has to be released quickly.
+    speed: 500
+    force: 200
+    open_ratio:
+      pinky_proximal_joint: 1.0
+      ring_proximal_joint: 1.0
+      middle_proximal_joint: 1.0
+      index_proximal_joint: 1.0
+      thumb_proximal_pitch_joint: 1.0
+      thumb_proximal_yaw_joint: 0.0
+
+  - name: preshape
+    key: "r"
+    description: >
+      Pinch-ready: pinky, ring and middle folded out of the way, thumb and index
+      part-flexed but still short of contact. The pose to jog from with
+      -/= and [/]. Support-finger and flexion values are taken from the
+      validated RH56 threading posture (forge_ultra reset_pose_m24.yaml,
+      restated as THREADING_HAND_POSTURE in
+      apps/policy_rollout/policy_rollout/forge_osc.py), converted to open ratios.
+    speed: 500
+    force: 200
+    open_ratio:
+      pinky_proximal_joint: 0.2518
+      ring_proximal_joint: 0.2518
+      middle_proximal_joint: 0.2518
+      index_proximal_joint: 0.7007
+      thumb_proximal_pitch_joint: 0.6667
+      thumb_proximal_yaw_joint: 0.0
+
+  - name: pinch
+    key: "p"
+    description: >
+      Thumb-and-index pinch. The support fingers stay where `preshape` put them;
+      index flexion and thumb bend are commanded fully closed so that the grip
+      stops on the force threshold rather than on a guessed finger angle.
+      `force` is therefore the parameter that decides how hard this pinch is --
+      tune it here, per object, not in the code. For a grip on a specific
+      object, jog to it with -/= and [/] and press `c` to record what you found.
+    speed: 300
+    force: 200
+    open_ratio:
+      pinky_proximal_joint: 0.2518
+      ring_proximal_joint: 0.2518
+      middle_proximal_joint: 0.2518
+      index_proximal_joint: 0.0
+      thumb_proximal_pitch_joint: 0.0
+      thumb_proximal_yaw_joint: 0.0

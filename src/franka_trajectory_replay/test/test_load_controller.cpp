@@ -96,7 +96,7 @@ TEST(TrajectoryReplayControllerMath, quintic_blend_endpoints) {
   EXPECT_NEAR(TrajectoryReplayController::quintic_blend_derivative(0.5), 1.875, 1e-12);
 }
 
-TEST(TrajectoryReplayControllerMath, velocity_limits_match_libfranka_shape) {
+TEST(TrajectoryReplayControllerMath, velocity_limits_match_the_description_shape) {
   std::array<double, 7> home{0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785};
   const auto upper = TrajectoryReplayController::upper_velocity_limits(home);
   const auto lower = TrajectoryReplayController::lower_velocity_limits(home);
@@ -111,8 +111,27 @@ TEST(TrajectoryReplayControllerMath, velocity_limits_match_libfranka_shape) {
   EXPECT_NEAR(lower[0], -2.62 + 0.031, 1e-9);
   // Near the upper position limit of joint 1 the allowed positive velocity collapses.
   std::array<double, 7> near_limit = home;
-  near_limit[0] = 2.70;
+  near_limit[0] = 2.85;
   EXPECT_LT(TrajectoryReplayController::upper_velocity_limits(near_limit)[0], 0.6);
+}
+
+TEST(TrajectoryReplayControllerMath, the_envelope_never_excludes_standing_still) {
+  // At the position limit the envelope is exactly zero: holding the pose stays legal. A
+  // negative upper bound would make the rate limiter drive the joint away from the limit,
+  // and the trajectory check reject any pose held at the end of the travel.
+  std::array<double, 7> at_limit{2.9007, 1.8361, 2.9007, -0.1169, 2.8763, 4.6216, 3.0508};
+  const auto upper = TrajectoryReplayController::upper_velocity_limits(at_limit);
+  for (int i = 0; i < 7; ++i) {
+    EXPECT_DOUBLE_EQ(upper[i], 0.0) << "joint " << i + 1;
+  }
+}
+
+TEST(TrajectoryReplayControllerMath, joint_six_keeps_the_top_of_its_range) {
+  // The pose a hand-guided demonstration actually reached: 0.085 rad short of joint 6's
+  // limit. libfranka's rate_limiting.h constants encode the retired 4.5169 rad limit and
+  // close the envelope here; paired with today's 4.6216 rad limit it stays open.
+  std::array<double, 7> guided{0.0, -0.785, 0.0, -2.356, 0.0, 4.5369, 0.785};
+  EXPECT_GT(TrajectoryReplayController::upper_velocity_limits(guided)[5], 0.4);
 }
 
 TEST(TrajectoryReplayControllerMath, sample_trajectory_hermite_hits_knots) {

@@ -86,6 +86,23 @@ ros2 launch inspire_franka_bringup hand.launch.py                 # hand alone
 ./apps/operations/home_arm.py
 # Options and safety behavior: apps/operations/README.md
 
+# Drive individual fingers by hand, in open ratios (1.0 open, 0.0 closed).
+# Full interface and the traps: the "Moving the fingers by hand" section below.
+ros2 service call /inspire_hand/set_angles inspire_hand_msgs/srv/SetAngles \
+    "{name: ['1','2','3','4'], open_ratio: [0.2, 0.2, 0.2, 0.2]}"
+ros2 topic pub -1 /inspire_hand/command sensor_msgs/msg/JointState \
+    "{name: [index_proximal_joint], position: [0.2]}"
+
+# Hand-guided demonstration capture, beside a gravity-compensated bringup.
+# It records and drives the hand; it never commands the arm. Then extract the
+# session into a replay artifact and check it against the safety guards.
+ros2 run inspire_franka_trajectory_replay capture_demo --note "what this is"
+# Try the marked poses first - reads events.jsonl only, no bag, seconds:
+ros2 run inspire_franka_trajectory_replay extract_waypoints logs/demo_capture/<session>
+# Then the whole demonstrated motion:
+ros2 run inspire_franka_trajectory_replay extract_demo logs/demo_capture/<session>
+# Full workflow: the "Hand-guided demonstration capture" section below.
+
 # Coordinated replay: example joint-impedance effort law + recorded waypoints.
 # This launch replaces ordinary bringup for the session.
 ros2 launch inspire_franka_trajectory_replay replay.launch.py
@@ -242,7 +259,7 @@ ros2 launch realsense2_camera rs_launch.py \
   enable_color:=true enable_depth:=true \
   rgb_camera.color_profile:=640x480x30 \
   depth_module.depth_profile:=640x480x30 \
-  enable_sync:=true align_depth.enable:=true
+  enable_sync:=true align_depth.enable:=true enable_rgbd:=true
 ```
 
 It runs as `/camera/camera` and publishes, among others:
@@ -347,6 +364,356 @@ the calibrated RGB point of view and `F` or `1` selects the external overview.
 The complete calibration and troubleshooting guide is in
 [apps/camera_calibration/README.md](apps/camera_calibration/README.md).
 
+## Hand-guided demonstration capture
+
+Teaching by hand: the FR3 floats under libfranka's gravity compensation, you
+move it, you drive the Inspire hand from the keyboard, and the session is
+recorded. The recording then extracts into exactly the trajectory artifact the
+replay stack already consumes, so a demonstration and a policy rollout reach
+hardware down the same guarded path.
+
+This is deliberately two commands rather than one launch. The capture tool
+records and commands the hand; **it never commands the arm**, and it holds no
+arm publisher or command interface at all. That is what makes it safe to run
+against an arm somebody has their hands on.
+
+### 1. Float the arm
+
+```bash
+ros2 launch inspire_franka_bringup inspire_franka.launch.py \
+    gravity_compensation:=true
+```
+
+In this mode three controllers are active: `joint_state_broadcaster`,
+`franka_robot_state_broadcaster`, and
+`gravity_compensation_example_controller`. The last one claims the arm's seven
+effort interfaces and writes zero torque to them, so the robot holds its own
+weight and nothing else. No trajectory, position or impedance controller is
+loaded, which is the point: there is no reference for the arm to fight you over.
+
+### 2. Record
+
+In a second sourced shell, in the terminal you will be typing into:
+
+```bash
+ros2 run inspire_franka_trajectory_replay capture_demo \
+    --note "pick the red block and place it left" \
+    --bringup-command "inspire_franka.launch.py gravity_compensation:=true"
+```
+
+Before a single sample is written, every channel is checked and the session is
+refused if one is missing, with a per-topic report in the shape
+`apps/traj_replay/tests/system_check.py` uses. The state topics have to be
+*publishing*, not merely advertised; `/inspire_hand/command` is checked from the
+other side, because nothing publishes to it until a key is pressed. The active
+controller set is checked too: without `gravity_compensation_example_controller`
+active, and with nothing else claiming the arm, the session does not start.
+
+What lands in the bag by default is a *lean* session: the 1 kHz
+`/franka/joint_states`, the 30 Hz `/joint_states` every other tool here reads,
+all four hand channels including the command one, and `/tf` with `/tf_static`.
+That is every number the 15 Hz trajectory artifact is built from, at about
+60 MB for three minutes.
+
+`--full-state` adds the complete `franka_msgs/FrankaRobotState` at the
+controller's own **1000 Hz**: measured and desired joint state, motor-side
+state, external and filtered torques, both external wrenches,
+`O_T_EE`/`F_T_EE`/`EE_T_K`, the elbow, the collision and contact indicators, the
+robot mode, the error flags and the load model. That is what makes a session
+training material rather than a path, and none of it can be recovered
+afterwards.
+
+It is off by default because it is expensive at both ends. Measured on a 176 s
+session: `FrankaRobotState` was 623 MB of a 1.4 GB bag, and deserializing it
+took ~405 s of an ~8 minute `extract_demo` — against 47 s for the same session
+recorded lean, and ~6 s to pull its waypoints out. So: capture lean while you
+are still finding the motion, confirm it, then spend a `--full-state` take on
+the one you are keeping.
+
+Recording goes through `ros2 bag record` by way of
+`franka_trajectory_replay.recording.BagRecorder`. That is not incidental: an
+rclpy subscriber drops messages at 1 kHz, which would silently thin the very
+channel the session exists to produce. Do not replace it with a Python
+subscriber.
+
+The keys come from
+[`config/hand_presets.yaml`](src/inspire_franka_trajectory_replay/config/hand_presets.yaml),
+not from the code — add a posture or rebind a jog key there and it takes effect
+on the next run.
+
+| key | does |
+|---|---|
+| `o` `r` `p` | preset postures: open, preshape, pinch — each with its own speed and force |
+| `-` `=` | close / open the thumb MCP by one step (0.05 open ratio) |
+| `[` `]` | close / open the index MCP by one step |
+| `c` | mark this instant and record every joint state |
+| `s` | close the current segment and start the next |
+| `?` `q` | reprint the key map; end the session |
+
+There is one marker key, not two. `c` is the button: it records the complete
+state and leaves a mark, and there is nothing lighter to choose between
+mid-demonstration. `s` is the only key that changes what comes out of
+extraction — it cuts the session so `extract_demo --segment N` can emit one step
+of a multi-step task as its own artifact. `c` marks never change what `extract_demo`
+emits; every 15 Hz sample is replayed regardless. They are, however, the entire
+input to `extract_waypoints` — see step 3.
+
+**Thumb abduction is pinned at 0.0 for the whole session** — the thumb sits
+fully across the palm, in opposition with the index, and neither a preset nor a
+jog key can move it. Every pinch this rig performs is a thumb-index pinch about
+that one fixed opposition angle, so two sessions cannot disagree about what "the
+same grasp" was. 0.0 is the bottom of the *commanded* range, not a mechanical
+stop: the driver's abduction overlay maps it onto 0.981 rad of physical yaw,
+because the bottom quarter of the raw range swings the thumb past the palm plane
+and is unusable. A preset that names this joint with any other value is refused
+at load time.
+
+Presets and jog keys are the same thing to everything downstream: both publish a
+complete six-DOF command and both write the same timestamped `hand_command`
+event, so a grasp you jogged onto a particular object is recorded ground truth
+exactly as a canned posture is, and extraction needs to know nothing about the
+difference. Speed and force are resent only when they change — every service
+call is time a half-duplex RS485 bus cannot be carrying a target, and jogging is
+a key held down.
+
+`c` writes the complete current joint state — seven arm joints, all twelve hand
+joints, the open ratios and the grip force — into the event log, lands in the
+artifact as `pose_capture_index`, is drawn on `extraction.png`, and prints the
+hand block in the shape `hand_presets.yaml` wants, because the reason to jog
+onto a grasp is usually that you want to keep it. It reads the arm from the
+30 Hz `/joint_states` rather than the 1 kHz state: this is a latest-value
+snapshot for a keypress, and the 1 kHz channel is what the bag is for — the
+snapshot's own timestamp is what locates it there.
+
+The bag is closed on every path out, including Ctrl-C and a failed preflight.
+
+A session is a timestamped directory under `logs/demo_capture/` holding the raw
+`bag/`, the `events.jsonl` command and marker log, and a `manifest.json`
+recording the bringup command, the active controllers, the preflight verdicts,
+the preset file and its checksum, and your note.
+
+### 3. Try the marked poses first
+
+```bash
+ros2 run inspire_franka_trajectory_replay extract_waypoints \
+    logs/demo_capture/<stamp>_<name>
+```
+
+Whether a demonstration is worth keeping is a question about the poses you
+*meant* — the ones you stopped at and pressed `c` on — not about the continuous
+path your hand happened to take. This answers that question without reading the
+bag at all: a `pose_capture` event already carries the arm and hand joint state
+from the instant the key went down, so extraction is milliseconds. (A session
+recorded before that snapshot existed falls back to reading only the two
+joint-state topics, which is still seconds rather than minutes, because it never
+touches `FrankaRobotState`.)
+
+Out comes `<session>/waypoints/` holding the same three files `extract_demo`
+writes, in the same schema — so it dry-runs and replays through the identical
+guarded path, with no separate motion code. The trajectory visits your marks in
+order: a quintic ease between them at a deliberately slow 0.35 rad/s peak
+(`--speed` scales it), a `--dwell` hold on arrival, and the hand commanded to
+that mark's recorded posture over the first half of the dwell, so the fingers
+move once the arm has stopped rather than during transit.
+
+Its `metadata.json` says `hand_guided_waypoints`, never `hand_guided`. This is
+not the motion you performed and nothing downstream may read it as such — it is
+the reachability and grasp check you run *before* spending a `--full-state`
+capture on the take.
+
+Two waypoints is the minimum; `c` marks that carry no snapshot and no bag are a
+clear error rather than an invented pose.
+
+### 4. Extract the whole demonstration
+
+```bash
+ros2 run inspire_franka_trajectory_replay extract_demo \
+    logs/demo_capture/<stamp>_<name>
+```
+
+Works on either kind of bag, without being told which. A lean session's arm
+comes from `/franka/joint_states` at the same 1 kHz and its TCP from forward
+kinematics; a `--full-state` one uses the FCI's own state and recorded `O_T_EE`.
+The artifact has the same shape either way and `metadata.source.tcp_source`
+records which route it took — so **confirming the waypoints and then replaying
+the demonstrated motion does not require a full-state capture.** What the lean
+bag cannot give you afterwards is the rest of the FCI field set for training
+augmentation; that is the one thing worth re-capturing for.
+
+This resamples the arm to the workspace's 15 Hz artifact convention, builds the
+19-joint layout (7 arm + 12 hand, the six mechanical followers recomputed
+through `inspire_hand_driver.kinematics` so the coupling holds exactly at every
+emitted sample), fills `tcp_pos`/`tcp_quat` from the recorded `O_T_EE`, and
+writes `replay_data.npz`, `metadata.json` and `homing.yaml` into
+`<session>/artifact/`. Add `--segment N` for one span between your `s` marks.
+
+**The filter, and why it is the only lever.** Hand-guided motion is jerky in a
+way a policy rollout is not: operator tremor and the arm's own structural ring
+both sit in the recording, and both land inside the band a 15 Hz sampler can
+represent. The arm's joint positions are therefore low-passed with a zero-phase
+4th-order Butterworth at 2 Hz — `filtfilt`, so there is no lag to correct for —
+*before* being decimated. That does two jobs at once: it is the anti-alias
+filter the decimation needs (the 15 Hz grid's Nyquist is 7.5 Hz), and it is what
+brings the trajectory's derivatives inside the FR3's guards. On a calm 24 s
+capture the difference is stark: filtered, the prepared stream sits at 3-5 % of
+the acceleration margin and needs no slowdown; unfiltered, the same capture
+reaches 97 % and the preparation silently slows it to 1.6x to fit.
+
+How far the filter moved each waypoint is printed as a table and written to
+`extraction_report.json`, and `extraction.png` plots the recording against the
+extracted waypoints. `--cutoff-hz 0` turns it off, which is useful for seeing
+what the raw demonstration was and is not useful for anything else.
+
+Velocities are differentiated from the filtered, resampled positions rather than
+taken from the recorded `dq`, so the artifact's velocity field describes the
+trajectory the artifact actually holds. `tcp_pos`/`tcp_quat` and the hand are
+*not* filtered: they are recorded measurements, and smoothing them would make
+them disagree with the joint angles they describe.
+
+### 5. Dry-run before anything moves
+
+```bash
+# the waypoint check from step 3 ...
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    logs/demo_capture/<stamp>_<name>/waypoints \
+    --home logs/demo_capture/<stamp>_<name>/waypoints/homing.yaml \
+    --dry-run
+
+# ... or the full demonstration from step 4
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    logs/demo_capture/<stamp>_<name>/artifact \
+    --home logs/demo_capture/<stamp>_<name>/artifact/homing.yaml \
+    --dry-run
+```
+
+Both go through the same preparation and the same position-dependent velocity,
+acceleration and jerk guards in
+`franka_trajectory_replay/limits.py` that every other artifact goes through. The
+homing pose is read off the first extracted waypoint, so the home-to-first-source
+delta is 0 by construction and a mismatch means something is genuinely wrong.
+
+If it does not pass: filter harder (`--cutoff-hz 1.5`), slow the replay
+(`--time-scale 5`), or give a calmer demonstration. Never raise or bypass a
+safety margin, and never drop `--dry-run` to see what happens.
+
+Recorded `fr3_joint7` is written through unchanged and `metadata.json` records
+`offset_rad: 0.0`. New captures keep the current orientation: no `+90 deg`, no
+`retarget_flange_mount.py`, no `*_flange180` derivative. See
+[apps/traj_replay/demo_trajs/README.md](apps/traj_replay/demo_trajs/README.md).
+
+### 6. Replay it
+
+A hand-guided artifact is an ordinary trajectory artifact, so it replays through
+the same runner and the same controller as everything else — no flags needed:
+
+```bash
+ros2 launch inspire_franka_trajectory_replay replay.launch.py
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    logs/demo_capture/<stamp>_<name>/artifact \
+    --home logs/demo_capture/<stamp>_<name>/artifact/homing.yaml
+```
+
+Both default to `arm_controller:=joint-impedance`, which is
+`controllers_joint_impedance.yaml` and the `TrajectoryReplayController` effort
+branch: `torque = K (q_ref − q) − D dq_filtered`, `startTorqueControl()` under
+it. Worth naming precisely, because the two are easy to conflate — that is the
+*example PD law running in the ROS controller*, not the robot's own built-in
+impedance controller. The robot's internal one is
+`controllers_internal_impedance.yaml`, which claims the **position** interface
+so `franka_hardware` calls `startJointPositionControl(kJointImpedance)` and the
+impedance loop and its gains live on the robot; it pairs with
+`--arm-controller position-jtc`. The replay app has always used the former, and
+so does a hand-guided capture.
+
+**Playback speed.** `--time-scale N` is a multiplier; `--duration SECONDS` says
+how long you want the motion to take and works the multiplier out from the
+recording's own length:
+
+```bash
+ros2 run inspire_franka_trajectory_replay replay_trajectory <artifact> \
+    --home <artifact>/homing.yaml --duration 60 --dry-run
+# --duration 60 s over a 23.93 s recording: time scale x2.507
+# --duration honoured: 60.00 s of motion inside a 62.00 s stream
+```
+
+`--duration` targets the recorded motion, not the whole command stream: the
+prepared stream is a couple of seconds longer because of its hold and
+lead-in/out segments, whose lengths depend on the trajectory's own start and end
+velocities and so cannot be solved for in one step. The real figure is printed
+either way. Both flags slow down only — a request shorter than the recording is
+refused by name rather than quietly clamped — and preparation may slow things
+further still to stay inside the FR3's limits, which is reported explicitly
+rather than left to be inferred from the summary. The hand follows: its 50 Hz
+stream is built on the arm's *prepared* clock, so a grasp still lands at the
+same point in the motion at any speed.
+
+### Rehearsing the whole thing in MuJoCo
+
+The capture path can be exercised end to end with no hardware at all:
+
+```bash
+# terminal 1 - MuJoCo, the arm floating, the real hand driver behind a mock bus
+ros2 launch inspire_franka_trajectory_replay sim_capture.launch.py
+
+# terminal 2 - the same tool, told that MuJoCo has no FrankaRobotState
+ros2 run inspire_franka_trajectory_replay capture_demo --profile sim \
+    --note "rehearsing the pinch"
+
+# afterwards, exactly as for a real session
+ros2 run inspire_franka_trajectory_replay extract_demo \
+    logs/demo_capture/<stamp>_<session>
+```
+
+Guide the arm by ctrl-dragging a link in the MuJoCo window, which opens by
+default for this launch.
+
+**Floating the arm takes a zero-torque controller, not an unclaimed one.**
+Leaving the arm unclaimed does not make it limp: the MuJoCo hardware holds
+unclaimed joints on their last desired position, so the arm comes up rigid and
+cannot be pushed. What works is the same thing that works on the real robot —
+claim the arm with `fr3_effort_forward_command_controller` and publish zeros
+into it — in the gravity-free scene, which is the simulator's stand-in for the
+gravity compensation libfranka applies underneath a torque controller. The
+launch publishes those zeros itself rather than leaving it to you. Measured in
+that configuration: zero drift over three seconds at rest, 2.5 rad of motion
+under a 5 Nm push, and it stays where it was pushed instead of springing back.
+
+`sim_capture.launch.py` exists because neither neighbouring launch is right for
+this. `sim.launch.py` holds the arm at a setpoint and never starts the hand
+driver, so there is no `/inspire_hand/command` to press a key into;
+`sim_replay.launch.py` starts the driver and the bridge but also spawns the
+replay controller, which drives the arm. The capture tool refuses both by name,
+with the right launch in the error, and it refuses a bare arm too — "no
+controller" is not the same as "floating".
+
+**The hand is genuinely under test here.** `inspire_hand_driver` runs in mock
+mode with `inspire_hand_sim_bridge` feeding MuJoCo, so every preset, every jog
+step and every `c` capture goes through the driver's unit conversion, range
+rejection, register quantisation and thumb-abduction overlay exactly as it would
+on the bench. The arm is scenery.
+
+**What a rehearsal cannot be.** `franka_msgs/FrankaRobotState` is libfranka's
+own message: there is no measured torque, no external wrench, no `O_T_EE`, no
+collision indicator and no load model in simulation, and none of them are faked.
+A simulated session records `/joint_states` and nothing else from the arm, its
+`tcp_pos`/`tcp_quat` are forward kinematics of the joint angles rather than the
+robot's own pose, and the session manifest, the extracted `metadata.json` and
+its `replay` field all say `hand_guided_sim`. A `limitations` block in the
+metadata spells it out. It rehearses the capture and extraction path; it is not
+training data, and no amount of copying directories makes it so.
+
+### What a demonstration does not have
+
+A hand-guided capture has states, not actions. `joint_pos_target`'s hand block
+is the preset in force at that instant, taken from your own keypresses; its arm
+block is `joint_pos` itself, because there is no arm command to record — the
+capture *is* the reference a replay tracks. `hand_command_active` is false for
+the samples before the first keypress, where the hand block falls back to the
+first measured pose. Nothing is invented to fill a field. The same gap is the
+open question for training on these demonstrations, because the flow-matching
+student in `apps/policy_rollout` consumes a 9-D native-OSC action that a
+demonstration simply does not contain.
+
 ## The one structural thing to understand
 
 **On real hardware the arm and the hand are two independent stacks. In
@@ -395,6 +762,79 @@ The hand's `robot_state_publisher` is namespaced only when the arm is also
 running: two latched publishers on `/robot_description` means RViz shows
 whichever it happened to hear last. `inspire_franka_bringup`'s RViz config has
 one RobotModel display per description topic.
+
+## Moving the fingers by hand
+
+With `hand.launch.py` (or any bringup that includes the hand) running, the
+driver takes commands on one topic and one service. Both speak **open ratios:
+`1.0` fully open, `0.0` fully closed**, for every one of the six DOF — not
+radians, and the opposite way round from `/inspire_hand/joint_states`, where a
+*rising* value means a *closing* hand.
+
+```bash
+# Curl the four fingers, thumb untouched. Names may be channel ids or driven
+# joint names, mixed freely; they say which DOF, never what the unit is.
+ros2 service call /inspire_hand/set_angles inspire_hand_msgs/srv/SetAngles \
+  "{name: ['1','2','3','4'], open_ratio: [0.2, 0.2, 0.2, 0.2]}"
+
+# The same thing on the topic, by joint name.
+ros2 topic pub -1 /inspire_hand/command sensor_msgs/msg/JointState \
+  "{name: [index_proximal_joint, middle_proximal_joint], position: [0.2, 0.2]}"
+
+# Open everything.
+ros2 service call /inspire_hand/set_angles inspire_hand_msgs/srv/SetAngles \
+  "{name: ['1','2','3','4','5','6'], open_ratio: [1,1,1,1,1,1]}"
+
+# Swing the thumb into opposition with the index finger, then pinch.
+ros2 service call /inspire_hand/set_angles inspire_hand_msgs/srv/SetAngles \
+  "{name: [thumb_proximal_yaw_joint, thumb_proximal_pitch_joint, index_proximal_joint], \
+    open_ratio: [0.0, 0.3, 0.25]}"
+
+# Slow it down and cap grip force before closing on something.
+ros2 service call /inspire_hand/set_speed inspire_hand_msgs/srv/SetSpeed \
+  "{name: ['1','2','3','4','5','6'], speed: [300,300,300,300,300,300]}"
+ros2 service call /inspire_hand/set_force inspire_hand_msgs/srv/SetForce \
+  "{name: ['1','2','3','4','5','6'], force: [200,200,200,200,200,200]}"
+
+# Watch what the hand actually did (six channels, open ratios).
+ros2 topic echo /inspire_hand/state
+
+# Back to a known pose without composing a command:
+./apps/operations/zero_hand.py
+```
+
+| channel | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| | little | ring | middle | index | thumb bend | thumb rotation |
+
+Four things that bite:
+
+- **Any subset may be addressed, and an unnamed DOF holds its previous target**
+  rather than snapping to a default. That is what makes a partial command safe.
+- **A value outside `[0.0, 1.0]` rejects the whole message or request** and says
+  which entries offended. It is not clamped.
+- **Followers cannot be commanded.** Naming an `*_intermediate` joint is
+  rejected, not redirected — see the next section.
+- **Thumb abduction is rescaled.** `thumb_proximal_yaw_joint` (channel `"6"`)
+  maps the commanded `[0.0, 1.0]` onto physical `[0.25, 1.0]`, because below
+  `0.25` the thumb swings past the palm plane. A commanded `0.5` reaches
+  `0.625`. Speed and force are volatile registers and are forgotten on power
+  cycle.
+
+Under `sim.launch.py` there is no driver, so there is no `/inspire_hand/command`
+— the simulated hand is driven through its trajectory controller instead, in
+**radians**, where `0.0` is the open pose:
+
+```bash
+ros2 action send_goal /hand_joint_trajectory_controller/follow_joint_trajectory \
+  control_msgs/action/FollowJointTrajectory "{trajectory: {joint_names:
+  [index_proximal_joint, middle_proximal_joint, ring_proximal_joint,
+  pinky_proximal_joint], points: [{positions: [1.2, 1.2, 1.2, 1.2],
+  time_from_start: {sec: 2}}]}}"
+```
+
+The full interface reference, the unit conversion and the per-DOF radian limits
+are in [`docs/hand.md`](docs/hand.md).
 
 ## Six actuators, twelve joints
 

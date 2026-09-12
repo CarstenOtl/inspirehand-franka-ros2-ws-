@@ -162,3 +162,72 @@ def test_pickplace_style_capture_is_refused_with_a_reason(tmp_path):
 
     with pytest.raises(ValueError, match="cycle field"):
         build(directory, directory / "home.yaml", 1, 2, 2.0, 0)
+
+
+# --- the release flag the artifact has to carry -------------------------------------------
+
+
+def _phased_capture(tmp_path, cycles=3, per_cycle=20, release_at=12, dt=1 / 15.0):
+    """A capture whose samples carry ``replay_phase`` as a Forge rollout's do."""
+    directory = _capture(tmp_path, cycles=cycles, per_cycle=per_cycle, dt=dt)
+    data = dict(np.load(directory / "replay_data.npz", allow_pickle=False))
+    phases = []
+    for _ in range(cycles):
+        phases.extend(["policy"] * release_at)
+        phases.extend(["follow_waypoints"] * (per_cycle - release_at - 3))
+        phases.extend(["return_to_reset"] * 3)
+    data["replay_phase"] = np.array(phases)
+    np.savez(directory / "replay_data.npz", **data)
+    return directory
+
+
+def test_the_output_metadata_carries_one_release_point_per_cycle(tmp_path):
+    directory = _phased_capture(tmp_path)
+
+    time, arm, hand, report = build(
+        directory, directory / "home.yaml", first=1, count=3, seconds=1.0, environment=0
+    )
+    written = write(tmp_path / "out", time, arm, hand, report)
+    metadata = json.loads((written / "metadata.json").read_text())
+
+    assert metadata["release_phase"] == "follow_waypoints"
+    assert [entry["cycle"] for entry in metadata["cycle_index"]] == [1, 2, 3]
+    # Indices are in the *output's* numbering: cycles are taken whole and in
+    # order, so cycle 2's release is 20 samples after cycle 1's.
+    assert [entry["release_sample"] for entry in metadata["cycle_index"]] == [12, 32, 52]
+    assert metadata["cycle_index"][0]["release_time_s"] == pytest.approx(12 / 15.0)
+
+
+def test_the_flags_are_renumbered_when_the_selection_does_not_start_at_cycle_one(tmp_path):
+    directory = _phased_capture(tmp_path, cycles=4)
+
+    _, _, _, report = build(
+        directory, directory / "home.yaml", first=3, count=2, seconds=1.0, environment=0
+    )
+
+    # Cycles 3 and 4 become samples 0-19 and 20-39 of the artifact.
+    assert [entry["cycle"] for entry in report["cycle_index"]] == [3, 4]
+    assert [entry["release_sample"] for entry in report["cycle_index"]] == [12, 32]
+
+
+def test_the_flags_fall_inside_the_recorded_part_not_the_return_ramp(tmp_path):
+    directory = _phased_capture(tmp_path, cycles=2)
+
+    time, arm, hand, report = build(
+        directory, directory / "home.yaml", first=1, count=2, seconds=1.0, environment=0
+    )
+
+    for entry in report["cycle_index"]:
+        assert entry["release_sample"] < report["cycle_samples"]
+    assert report["cycle_samples"] + report["ramp_samples"] == len(time)
+
+
+def test_a_source_without_phases_produces_no_flags_rather_than_guessed_ones(tmp_path):
+    directory = _capture(tmp_path, cycles=2)
+
+    _, _, _, report = build(
+        directory, directory / "home.yaml", first=1, count=2, seconds=1.0, environment=0
+    )
+
+    assert "cycle_index" not in report
+    assert "release_phase" not in report

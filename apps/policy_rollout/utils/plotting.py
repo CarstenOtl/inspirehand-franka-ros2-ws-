@@ -243,4 +243,103 @@ def plot_rollout(
     )
 
 
-__all__ = ["ACTION_NAMES", "JOINT_NAMES", "plot_rollout"]
+def plot_joint_comparisons(
+    recording: str | Path,
+    reference: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+) -> tuple[Path, ...]:
+    """Plot measured and nominal position/velocity separately for every joint."""
+
+    rollout = load_rollout(recording)
+    nominal = load_rollout(reference)
+    destination = _output_dir(rollout, output_dir) / "joints"
+    destination.mkdir(parents=True, exist_ok=True)
+    actual_time = rollout.arrays["sample_time_s"].astype(np.float64)
+    nominal_time = nominal.arrays["sample_time_s"].astype(np.float64)
+    comparison_end = min(float(actual_time[-1]), float(nominal_time[-1]))
+    actual_mask = actual_time <= comparison_end
+    nominal_mask = nominal_time <= comparison_end
+    overlap_time = actual_time[actual_mask]
+    plt = _pyplot()
+    paths = []
+
+    for index, name in enumerate(JOINT_NAMES):
+        nominal_position = np.interp(
+            overlap_time,
+            nominal_time,
+            nominal.arrays["joint_position"][:, index],
+        )
+        nominal_velocity = np.interp(
+            overlap_time,
+            nominal_time,
+            nominal.arrays["joint_velocity"][:, index],
+        )
+        position_error = (
+            rollout.arrays["joint_position"][actual_mask, index] - nominal_position
+        )
+        velocity_error = (
+            rollout.arrays["joint_velocity"][actual_mask, index] - nominal_velocity
+        )
+        position_rmse = float(np.sqrt(np.mean(np.square(position_error))))
+        velocity_rmse = float(np.sqrt(np.mean(np.square(velocity_error))))
+
+        figure, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
+        axes[0].plot(
+            nominal_time[nominal_mask],
+            nominal.arrays["joint_position"][nominal_mask, index],
+            linestyle="--",
+            color="tab:orange",
+            label="nominal teacher",
+        )
+        axes[0].plot(
+            actual_time,
+            rollout.arrays["joint_position"][:, index],
+            color="tab:blue",
+            label="physical rollout",
+        )
+        axes[0].set_ylabel("position (rad)")
+        axes[0].legend()
+        axes[0].set_title(
+            f"{name}: physical vs nominal teacher "
+            f"(position RMSE {position_rmse:.4f} rad)"
+        )
+
+        axes[1].plot(
+            nominal_time[nominal_mask],
+            nominal.arrays["joint_velocity"][nominal_mask, index],
+            linestyle="--",
+            color="tab:orange",
+            label="nominal teacher",
+        )
+        axes[1].plot(
+            actual_time,
+            rollout.arrays["joint_velocity"][:, index],
+            color="tab:blue",
+            label="physical rollout",
+        )
+        axes[1].set_ylabel("velocity (rad/s)")
+        axes[1].set_title(f"velocity RMSE {velocity_rmse:.4f} rad/s")
+
+        axes[2].plot(overlap_time, position_error, color="tab:red")
+        axes[2].axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+        axes[2].set_ylabel("position error (rad)")
+        axes[2].set_xlabel("elapsed rollout time (s)")
+        for axis in axes:
+            axis.grid(alpha=0.25)
+            axis.set_xlim(0.0, comparison_end)
+        figure.tight_layout()
+        safe_name = name.replace("_", "-")
+        path = destination / f"{index + 1:02d}-{safe_name}.png"
+        figure.savefig(path, dpi=160)
+        plt.close(figure)
+        paths.append(path)
+    return tuple(paths)
+
+
+__all__ = [
+    "ACTION_NAMES",
+    "JOINT_NAMES",
+    "plot_joint_comparisons",
+    "plot_rollout",
+]

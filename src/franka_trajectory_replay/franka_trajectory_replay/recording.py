@@ -87,10 +87,14 @@ def storage_id_from_metadata(bag_dir, fallback='sqlite3'):
         return fallback
 
 
-def read_messages(bag_dir, topics=None, storage_id=None):
-    """Yield ``(topic, message, receive_time_ns)`` for every message in the bag."""
+def open_reader(bag_dir, topics=None, storage_id=None):
+    """Open a bag and return ``(reader, classes)`` ready to read.
+
+    ``classes`` maps topic name to message class for the topics asked for, so a
+    caller driving ``reader`` itself -- to seek, say -- deserialises the same
+    way ``read_messages`` does.
+    """
     import rosbag2_py
-    from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
 
     bag_dir = str(bag_dir)
@@ -105,7 +109,28 @@ def read_messages(bag_dir, topics=None, storage_id=None):
     wanted = set(topics) if topics else None
     if wanted:
         wanted = {topic for topic in wanted if topic in type_map}
-    classes = {topic: get_message(kind) for topic, kind in type_map.items() if wanted is None or topic in wanted}
+    classes = {topic: get_message(kind) for topic, kind in type_map.items()
+               if wanted is None or topic in wanted}
+    if wanted:
+        # Push the topic selection into the storage query rather than dropping
+        # unwanted messages after read_next() has already handed them over. The
+        # skip in read_messages is cheap per message but the read is not: a
+        # session bag is mostly FrankaRobotState by volume, so a caller that
+        # wants only the joint-state topics would otherwise still pull every
+        # robot_state blob out of sqlite. Guarded because set_filter is not in
+        # every rosbag2 build, and the Python-side skip remains correct alone.
+        try:
+            reader.set_filter(rosbag2_py.StorageFilter(topics=sorted(wanted)))
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+    return reader, classes
+
+
+def read_messages(bag_dir, topics=None, storage_id=None):
+    """Yield ``(topic, message, receive_time_ns)`` for every message in the bag."""
+    from rclpy.serialization import deserialize_message
+
+    reader, classes = open_reader(bag_dir, topics, storage_id)
     while reader.has_next():
         topic, data, timestamp = reader.read_next()
         if topic not in classes:

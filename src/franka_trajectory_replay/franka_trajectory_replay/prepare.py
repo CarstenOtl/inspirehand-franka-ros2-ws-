@@ -170,20 +170,30 @@ def resample(trajectory, rate=1000, cutoff_hz=0.0, hold_start=0.5, hold_end=0.5,
 def prepare(trajectory, rate=1000, cutoff_hz=0.0, hold_start=0.5, hold_end=0.5, time_scale=1.0,
             auto_scale=True, velocity_margin=0.8, acceleration_margin=0.5, jerk_margin=0.5,
             joint_names=None, max_iterations=6, lead_in=0.5, lead_out=0.5, lead_max_acceleration=2.5,
-            interpolation='cubic', blend_time=0.04):
-    """resample + limit check, slowing the trajectory down until it fits if ``auto_scale``."""
+            interpolation='cubic', blend_time=0.04, max_velocity=None):
+    """resample + limit check, slowing the trajectory down until it fits if ``auto_scale``.
+
+    ``max_velocity`` (rad/s) is a house speed limit below the FR3's own envelope. With
+    ``auto_scale`` it is what the slow-down converges on: the trajectory keeps its shape and
+    the playback stretches until no joint exceeds it.
+    """
     scale = float(time_scale)
     history = []
     for _ in range(max_iterations):
         prepared = resample(trajectory, rate, cutoff_hz, hold_start, hold_end, scale, joint_names,
                             lead_in, lead_out, lead_max_acceleration, interpolation, blend_time)
         report = limits.check(prepared.t, prepared.q, prepared.qd, prepared.qdd, prepared.qddd,
-                              velocity_margin, acceleration_margin, jerk_margin)
+                              velocity_margin, acceleration_margin, jerk_margin, max_velocity)
         history.append({'time_scale': scale, 'ok': report['ok'],
                         'velocity_fraction': max(report['velocity_fraction']),
                         'acceleration_fraction': max(report['acceleration_fraction']),
                         'jerk_fraction': max(report['jerk_fraction'])})
         if report['ok'] or not auto_scale:
+            break
+        # A braking-zone violation is not a speed problem and slowing down cannot touch it;
+        # iterating would only multiply the scale toward infinity and hand the caller a
+        # nonsense factor to report. Stop here and let it surface as it is.
+        if not report['scalable']:
             break
         # Slightly more than the analytic factor: the spline re-fit is not exactly self-similar.
         scale *= 1.02 * limits.required_time_scale(report)
@@ -192,6 +202,7 @@ def prepare(trajectory, rate=1000, cutoff_hz=0.0, hold_start=0.5, hold_end=0.5, 
     prepared.params['velocity_margin'] = velocity_margin
     prepared.params['acceleration_margin'] = acceleration_margin
     prepared.params['jerk_margin'] = jerk_margin
+    prepared.params['max_velocity'] = report.get('max_velocity')
     return prepared
 
 
@@ -236,6 +247,10 @@ def summarize(prepared, joint_names=None):
         margins = report['margins']
         lines.append('  percentages are of the FR3 limit times the margin (v %.2f, a %.2f, j %.2f)' % (
             margins['velocity'], margins['acceleration'], margins['jerk']))
+        ceiling = report.get('max_velocity')
+        if ceiling:
+            lines.append('  house speed limit %.0f deg/s on every joint, on top of the FR3 envelope'
+                         % np.degrees(min(ceiling)))
         if report['violations']:
             lines.append('  VIOLATIONS:')
             lines.extend('    - ' + text for text in report['violations'])

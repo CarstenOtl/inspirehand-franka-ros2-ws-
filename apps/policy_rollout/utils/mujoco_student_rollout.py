@@ -55,6 +55,7 @@ def main(argv=None) -> int:
     parser.add_argument("--max-steps", type=int, default=1500)
     parser.add_argument("--output-dir", default=str(DEFAULT_EPISODE.parent / "student_rollout"))
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--integration-steps", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--record-rgbd", action="store_true")
     parser.add_argument("--preview-every", type=int, default=0, help="save a render every N steps")
@@ -64,6 +65,8 @@ def main(argv=None) -> int:
     parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--dead-zone", choices=["none", "default"], default="none")
     args = parser.parse_args(argv)
+    if args.integration_steps < 1:
+        parser.error("--integration-steps must be positive")
 
     import mujoco
     import torch
@@ -84,7 +87,12 @@ def main(argv=None) -> int:
         vw, vh = (int(v) for v in args.video_size.lower().split("x"))
         video_renderer = mujoco.Renderer(scene.model, vh, vw)
 
-    runner = FlowPolicyRunner(args.checkpoint, device=args.device, seed=args.seed)
+    runner = FlowPolicyRunner(
+        args.checkpoint,
+        device=args.device,
+        integration_steps=args.integration_steps,
+        seed=args.seed,
+    )
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     metadata = runner.metadata()
@@ -94,6 +102,7 @@ def main(argv=None) -> int:
             "checkpoint": metadata["checkpoint"],
             "checkpoint_sha256": metadata["sha256"],
             "checkpoint_weight_source": metadata["weight_source"],
+            "flow_integration_steps": metadata["integration_steps"],
             "camera_profile": str(profile.source_path),
             "collection_mode": "mujoco_closed_loop_student",
             "reference_episode": str(args.episode),

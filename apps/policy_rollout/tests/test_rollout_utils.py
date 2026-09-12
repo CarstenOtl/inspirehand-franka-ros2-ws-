@@ -126,3 +126,14 @@ def test_plotting_creates_standard_headless_artifacts(tmp_path):
         "joint_state.png",
     }
     assert all(path.is_file() and path.stat().st_size > 0 for path in paths)
+
+
+def test_plotting_creates_one_teacher_comparison_per_joint(tmp_path):
+    pytest.importorskip("matplotlib")
+    from utils.plotting import JOINT_NAMES, plot_joint_comparisons
+
+    actual = _recording(tmp_path / "actual", position_offset=0.1)
+    nominal = _recording(tmp_path / "nominal")
+    paths = plot_joint_comparisons(actual.run_dir, nominal.run_dir)
+    assert len(paths) == len(JOINT_NAMES) == 10
+    assert all(path.is_file() and path.stat().st_size > 0 for path in paths)

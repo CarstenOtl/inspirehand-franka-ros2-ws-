@@ -167,37 +167,48 @@ class ReplayClient(Node):
                              ListControllers.Request(), 15.0)
         return {c.name: c for c in response.controller}
 
-    def ensure_active(self, log=print):
-        """Make the replay controller the one driving the arm.
+    def ensure_active(self, log=print, controller=None):
+        """Make a controller the one driving the arm; by default this client's own.
 
         Loads and configures it if the launch file did not, deactivates whatever other
         controller claims the arm's command interfaces, then activates it. Broadcasters are
         left alone.
+
+        ``controller`` names a different one to put in charge instead - the
+        gravity-compensation controller for a hand-guided intervention, say.
+        Handing the arm back is the same call with the argument left off. Both
+        directions go through one atomic ``switch_controller``, so the arm is
+        never left with nothing claiming its command interfaces, and both this
+        controller and the gravity-compensation one command torque, which is
+        what keeps franka_hardware in torque control across the swap.
         """
+        controller = controller or self.controller
         controllers = self.list_controllers()
-        if self.controller not in controllers:
-            log('controller %s is not loaded - loading it' % self.controller)
+        if controller not in controllers:
+            log('controller %s is not loaded - loading it' % controller)
             response = self.call(LoadController, self.manager_ns + '/load_controller',
-                                 LoadController.Request(name=self.controller), 30.0)
+                                 LoadController.Request(name=controller), 30.0)
             if not response.ok:
-                raise RuntimeError('could not load %s' % self.controller)
+                raise RuntimeError(
+                    'could not load %s; it has to be declared in the controllers yaml '
+                    'the launch file passed to the controller manager' % controller)
             controllers = self.list_controllers()
-        state = controllers[self.controller].state
+        state = controllers[controller].state
         if state == 'unconfigured':
-            log('configuring %s' % self.controller)
+            log('configuring %s' % controller)
             response = self.call(ConfigureController, self.manager_ns + '/configure_controller',
-                                 ConfigureController.Request(name=self.controller), 60.0)
+                                 ConfigureController.Request(name=controller), 60.0)
             if not response.ok:
-                raise RuntimeError('could not configure %s (see the controller log)' % self.controller)
+                raise RuntimeError('could not configure %s (see the controller log)' % controller)
             controllers = self.list_controllers()
-            state = controllers[self.controller].state
+            state = controllers[controller].state
         if state == 'active':
-            log('controller %s is active' % self.controller)
-            return
+            log('controller %s is active' % controller)
+            return []
         joints = set(self.config['joint_names'])
         to_stop = []
         for name, info in controllers.items():
-            if name == self.controller or info.state != 'active':
+            if name == controller or info.state != 'active':
                 continue
             if 'broadcaster' in info.type.lower():
                 continue
@@ -207,7 +218,7 @@ class ReplayClient(Node):
         if to_stop:
             log('deactivating %s (they hold the arm command interfaces)' % ', '.join(to_stop))
         request = SwitchController.Request()
-        request.activate_controllers = [self.controller]
+        request.activate_controllers = [controller]
         request.deactivate_controllers = to_stop
         request.strictness = SwitchController.Request.STRICT
         request.activate_asap = True
@@ -215,10 +226,11 @@ class ReplayClient(Node):
         request.timeout = Duration(seconds=10.0).to_msg()
         response = self.call(SwitchController, self.manager_ns + '/switch_controller', request, 30.0)
         if not response.ok:
-            raise RuntimeError('switch_controller refused to activate %s' % self.controller)
-        self.wait_until(lambda: self.list_controllers()[self.controller].state == 'active', 10.0,
-                        '%s to become active' % self.controller)
-        log('activated %s' % self.controller)
+            raise RuntimeError('switch_controller refused to activate %s' % controller)
+        self.wait_until(lambda: self.list_controllers()[controller].state == 'active', 10.0,
+                        '%s to become active' % controller)
+        log('activated %s' % controller)
+        return to_stop
 
     # --- commanding -------------------------------------------------------------------------
     def _snapshot_ids(self):

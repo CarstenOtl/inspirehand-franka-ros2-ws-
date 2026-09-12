@@ -76,7 +76,15 @@ def _vec3(v):
 
 
 def extract_bag(bag_dir, topics, joint_names, output_path):
-    """Read the bag once and write data.npz. ``topics`` maps role -> absolute topic name."""
+    """Read the bag once and write data.npz. ``topics`` maps role -> absolute topic name.
+
+    A replay run always has ``controller_state``, and it is the run's clock: t = 0 is its
+    first sample. A recording made without the replay controller - a hand-guided capture
+    under gravity compensation, say - has none, and then the clock comes from whichever of
+    ``robot_state`` and ``joint_states`` is present instead. Omitting the role from
+    ``topics`` is how that is asked for; a role that *was* requested and produced nothing is
+    still an error, because that is a recording which failed rather than one of another kind.
+    """
     cs = {key: [] for key in ('stamp', 'q_ref', 'qd_ref', 'q', 'dq', 'tau', 'out_pos', 'out_eff',
                               'phase', 'elapsed')}
     rs = {}
@@ -176,26 +184,37 @@ def extract_bag(bag_dir, topics, joint_names, output_path):
             st['rate_last'].append(int(values.get('rate_limit_engaged_last_command', 0)))
             st['rejections'].append(int(values.get('rejections', 0)))
 
-    if not cs['stamp']:
+    if not cs['stamp'] and topics.get('controller_state'):
         raise RuntimeError('the bag holds no controller_state messages (%s)' % topics.get('controller_state'))
 
-    order = np.argsort(np.asarray(cs['stamp']), kind='stable')
-    stamp = np.asarray(cs['stamp'], dtype=np.int64)[order]
-    t0_ns = int(stamp[0])
-    out = {
-        't0_ns': np.int64(t0_ns),
-        'stamp_ns': stamp,
-        't': (stamp - t0_ns) * 1e-9,
-        'q_ref': np.asarray(cs['q_ref'])[order], 'qd_ref': np.asarray(cs['qd_ref'])[order],
-        'q': np.asarray(cs['q'])[order], 'dq': np.asarray(cs['dq'])[order],
-        'tau': np.asarray(cs['tau'])[order],
-        'out': (np.asarray(cs['out_eff']) if mode == 'effort' else np.asarray(cs['out_pos']))[order],
-        'phase': np.asarray(cs['phase'], dtype=np.int64)[order],
-        'elapsed': np.asarray(cs['elapsed'])[order],
-        'mode': np.asarray(mode or 'position'),
-        'joint_names': np.asarray(joint_names),
-        'source': np.asarray('bag'),
-    }
+    if cs['stamp']:
+        order = np.argsort(np.asarray(cs['stamp']), kind='stable')
+        stamp = np.asarray(cs['stamp'], dtype=np.int64)[order]
+        t0_ns = int(stamp[0])
+        out = {
+            't0_ns': np.int64(t0_ns),
+            'stamp_ns': stamp,
+            't': (stamp - t0_ns) * 1e-9,
+            'q_ref': np.asarray(cs['q_ref'])[order], 'qd_ref': np.asarray(cs['qd_ref'])[order],
+            'q': np.asarray(cs['q'])[order], 'dq': np.asarray(cs['dq'])[order],
+            'tau': np.asarray(cs['tau'])[order],
+            'out': (np.asarray(cs['out_eff']) if mode == 'effort' else np.asarray(cs['out_pos']))[order],
+            'phase': np.asarray(cs['phase'], dtype=np.int64)[order],
+            'elapsed': np.asarray(cs['elapsed'])[order],
+            'mode': np.asarray(mode or 'position'),
+            'joint_names': np.asarray(joint_names),
+            'source': np.asarray('bag'),
+        }
+    else:
+        clocks = [values['stamp'] for values in (rs, js) if values.get('stamp')]
+        if not clocks:
+            raise RuntimeError('the bag holds none of the requested state topics (%s)' % sorted(wanted))
+        t0_ns = int(min(min(stamps) for stamps in clocks))
+        out = {
+            't0_ns': np.int64(t0_ns),
+            'joint_names': np.asarray(joint_names),
+            'source': np.asarray('bag'),
+        }
     if rs:
         order = np.argsort(np.asarray(rs['stamp']), kind='stable')
         for key, values in rs.items():
@@ -207,7 +226,8 @@ def extract_bag(bag_dir, topics, joint_names, output_path):
         out['rs_error_names'] = np.asarray(error_names)
     if js['stamp']:
         order = np.argsort(np.asarray(js['stamp']), kind='stable')
-        out['js_t'] = (np.asarray(js['stamp'], dtype=np.int64)[order] - t0_ns) * 1e-9
+        out['js_stamp_ns'] = np.asarray(js['stamp'], dtype=np.int64)[order]
+        out['js_t'] = (out['js_stamp_ns'] - t0_ns) * 1e-9
         for key in ('q', 'dq', 'tau'):
             out['js_' + key] = np.asarray(js[key])[order]
     if st['stamp']:

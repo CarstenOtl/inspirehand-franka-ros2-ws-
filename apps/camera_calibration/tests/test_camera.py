@@ -37,6 +37,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-namespace", default="camera")
     parser.add_argument("--camera-name", default="camera")
     parser.add_argument(
+        "--color-topic",
+        default=None,
+        help="Full RGB image topic (overrides camera namespace/name).",
+    )
+    parser.add_argument(
+        "--depth-topic",
+        default=None,
+        help="Full depth image topic (overrides camera namespace/name).",
+    )
+    parser.add_argument(
         "--serial",
         default="",
         help="Optional RealSense serial number when more than one camera is connected.",
@@ -271,10 +281,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         node = rclpy.create_node("realsense_matplotlib_viewer")
         executor = SingleThreadedExecutor()
         executor.add_node(node)
-        color_topic = _topic(
+        color_topic = args.color_topic or _topic(
             args.camera_namespace, args.camera_name, "color/image_raw"
         )
-        depth_topic = _topic(
+        depth_topic = args.depth_topic or _topic(
             args.camera_namespace, args.camera_name, "depth/image_rect_raw"
         )
         subscriptions = [

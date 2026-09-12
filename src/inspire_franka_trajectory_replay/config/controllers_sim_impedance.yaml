@@ -22,6 +22,12 @@ controller_manager:
 
     trajectory_replay_controller:
       type: franka_trajectory_replay/TrajectoryReplayController
+    # Declared so an --intervene flow can be rehearsed in MuJoCo before the
+    # arm. The simulated scene is gravity free, so a zero-torque controller
+    # leaves the model floating where it is rather than falling: that exercises
+    # the controller switch and the handback, not the feel of guiding it.
+    gravity_compensation_example_controller:
+      type: franka_example_controllers/GravityCompensationExampleController
 
     cartesian_trajectory_replay_controller:
       type: franka_trajectory_replay/CartesianTrajectoryReplayController

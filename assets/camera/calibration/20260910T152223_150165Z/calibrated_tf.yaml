@@ -1,5 +1,7 @@
 schema_version: 1
-status: measured
+status: validated
+validated_for: student_policy_rollout
+validated_at_utc: "2026-09-12"
 calibrated_at_utc: "2026-09-10T15:22:23.150165Z"
 
 world_to_camera_mount:

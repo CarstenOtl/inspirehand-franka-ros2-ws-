@@ -78,9 +78,55 @@ def test_velocity_limits_shape():
     lower = limits.lower_velocity_limits(READY_POSE)
     assert np.all(upper > 0) and np.all(lower < 0)
     near = READY_POSE.copy()
-    near[0] = 2.7
+    near[0] = 2.85
     assert limits.upper_velocity_limits(near)[0] < 0.6
     assert limits.lower_velocity_limits(near)[0] < -2.5
+
+
+def test_the_envelope_is_paired_with_the_position_limits_it_was_derived_for():
+    # The envelope closes just short of the position limit, by velocity_offset^2 /
+    # (2 * deceleration_limit) and the packet tolerance - single-digit centimetres of joint
+    # angle, not the 0.1 rad that an older generation of FR3 constants would cost. Joint 6 is
+    # the one that bit: libfranka's rate_limiting.h still encodes the retired 4.5169 rad limit.
+    closes_at = limits.POSITION_UPPER - limits.VELOCITY_OFFSET ** 2 / (2 * limits.DECELERATION_LIMIT)
+    assert np.all(limits.POSITION_UPPER - closes_at < 0.05)
+    assert limits.upper_velocity_limits(np.full(7, 4.5369))[5] > 0.4
+
+
+def test_holding_a_pose_against_a_position_limit_is_within_limits():
+    # The envelope shrinks to zero at the limit and is clamped there. It must not go negative:
+    # that would make standing still illegal, which is not something the arm asks for.
+    at_limit = limits.POSITION_UPPER.copy()
+    assert np.all(limits.upper_velocity_limits(at_limit) == 0.0)
+    t = np.linspace(0.0, 1.0, 11)
+    q = np.tile(at_limit, (len(t), 1))
+    zero = np.zeros_like(q)
+    report = limits.check(t, q, zero, zero, zero)
+    assert report['ok'] and report['scalable']
+    assert not any(report['braking_zone'])
+
+
+def test_a_house_speed_limit_is_a_speed_problem_that_scaling_fixes():
+    t = np.linspace(0.0, 1.0, 101)
+    q = np.tile(READY_POSE, (len(t), 1))
+    qd = np.zeros_like(q)
+    qd[:, 4] = 1.0
+    zero = np.zeros_like(q)
+    capped = limits.check(t, q, qd, zero, zero, max_velocity=0.5)
+    assert not capped['ok'] and capped['scalable']
+    assert limits.required_time_scale(capped) == pytest.approx(2.0, rel=0.01)
+    assert limits.check(t, q, qd, zero, zero)['ok']
+
+
+def test_a_house_speed_limit_does_not_invent_a_braking_zone():
+    # A low ceiling narrows the envelope everywhere; it must not read as the arm being
+    # cornered against a position limit it is nowhere near.
+    t = np.linspace(0.0, 1.0, 11)
+    q = np.tile(READY_POSE, (len(t), 1))
+    zero = np.zeros_like(q)
+    report = limits.check(t, q, zero, zero, zero, max_velocity=0.01)
+    assert not any(report['braking_zone'])
+    assert report['ok']
 
 
 def test_goto_duration_rules():
@@ -196,3 +242,84 @@ def test_linear_interpolation_is_straight_between_blends_and_smooth():
     # velocity is continuous (corner blends), so no 1 ms velocity steps
     assert np.abs(np.diff(prepared.qd, axis=0)).max() < 0.02
     assert prepared.params['interpolation'] == 'linear'
+
+
+# -- the braking zone --------------------------------------------------------
+#
+# Right at a position limit the velocity envelope closes onto zero: the joint may
+# hold its pose but not move. Those samples used to divide by a negative limit,
+# score a negative fraction, and pass the `> 1.0` test - so the deepest violations
+# in a trajectory were the ones the guard could not see.
+
+
+def _braking_zone_trajectory(angle, speed):
+    """Joint 5 held at ``angle`` and moving at ``speed``.
+
+    Position and velocity are set independently on purpose: ``check`` takes both as
+    given, and what is under test is the envelope at a configuration, not whether the
+    two are each other's derivative.
+    """
+    t = np.linspace(0.0, 1.0, 101)
+    q = np.tile(READY_POSE, (len(t), 1))
+    q[:, 4] = angle
+    qd = np.zeros_like(q)
+    qd[:, 4] = speed
+    return t, q, qd, np.zeros_like(q), np.zeros_like(q)
+
+
+def test_a_joint_past_its_braking_bound_is_a_violation_not_a_negative_fraction():
+    t, q, qd, qdd, qddd = _braking_zone_trajectory(2.872, 0.12)
+    report = limits.check(t, q, qd, qdd, qddd)
+    assert not report['ok']
+    assert report['braking_zone'][4]
+    assert report['velocity_fraction'][4] == np.inf
+    assert any('envelope is closed' in text for text in report['violations'])
+
+
+def test_the_braking_zone_violation_names_the_distance_to_the_position_limit():
+    t, q, qd, qdd, qddd = _braking_zone_trajectory(2.872, 0.12)
+    text = [v for v in limits.check(t, q, qd, qdd, qddd)['violations']
+            if 'envelope is closed' in v][0]
+    assert 'joint5' in text
+    assert 'position limit' in text
+    assert 'No time scaling fixes this' in text
+
+
+def test_slowing_down_is_not_offered_for_a_braking_zone_violation():
+    t, q, qd, qdd, qddd = _braking_zone_trajectory(2.872, 0.12)
+    report = limits.check(t, q, qd, qdd, qddd)
+    assert not report['scalable']
+    assert limits.required_time_scale(report) == np.inf
+
+
+def test_an_ordinary_overspeed_is_still_reported_as_scalable():
+    # Same joint, well clear of its limit: too fast, but slowing down fixes it.
+    t, q, qd, qdd, qddd = _braking_zone_trajectory(0.0, 9.0)
+    report = limits.check(t, q, qd, qdd, qddd)
+    assert not report['ok']
+    assert report['scalable']
+    assert not report['braking_zone'][4]
+    assert 1.0 < limits.required_time_scale(report) < np.inf
+
+
+def test_a_trajectory_within_limits_is_unchanged_by_the_braking_zone_check():
+    t, q, qd, qdd, qddd = _braking_zone_trajectory(0.0, 0.2)
+    report = limits.check(t, q, qd, qdd, qddd)
+    assert report['ok'] and report['scalable']
+    assert not any(report['braking_zone'])
+    assert report['velocity_fraction'][4] == pytest.approx(0.2 / limits.VELOCITY_MAX[4], rel=0.02)
+
+
+def test_auto_scaling_stops_instead_of_iterating_on_an_unscalable_trajectory():
+    # Joint 5 creeping the last few millirad into its limit. Slowly, but the envelope there
+    # is zero, so slowing down never reaches it - and a constant pose would not do: holding
+    # still against the limit is legal.
+    t = np.linspace(0.0, 1.0, 101)
+    q = np.tile(READY_POSE, (len(t), 1))
+    q[:, 4] = np.linspace(2.868, 2.8755, len(t))
+    prepared = prepare(Trajectory(t=t, q=q), rate=1000, auto_scale=True)
+    assert not prepared.report['ok']
+    assert not prepared.report['scalable']
+    # One pass, not six: the scale is never multiplied by an infinite factor.
+    assert len(prepared.params['auto_scale_history']) == 1
+    assert prepared.params['time_scale'] == 1.0

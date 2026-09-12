@@ -216,6 +216,7 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   double max_policy_step_m_{0.036};
   double max_policy_step_rad_{0.18};
   double policy_command_timeout_{0.25};
+  double state_publish_rate_{100.0};
   double goto_settle_tolerance_m_{0.0005};
   double goto_settle_tolerance_rad_{0.002};
   double goto_settle_timeout_{2.0};
@@ -291,6 +292,7 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   double rt_duration_{0.0};
   double rt_settle_elapsed_{0.0};
   double rt_policy_command_age_{0.0};
+  double rt_state_publish_elapsed_{0.0};
   double rt_playback_rate_{1.0};
   double rt_playback_target_{1.0};
   double rt_rate_ramp_start_{1.0};

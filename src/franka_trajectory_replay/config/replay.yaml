@@ -34,6 +34,9 @@ prepare:
   velocity_margin: 0.8      # fraction of the FR3 limit the prepared stream may use
   acceleration_margin: 0.5
   jerk_margin: 0.5
+  # House speed limit for replay, in deg/s, well under what the FR3 itself allows.
+  # auto_scale stretches the playback until no joint exceeds it; 0 turns it off.
+  max_joint_speed_deg_s: 30.0
   send_rate: 1000       # points per second handed to the controller (cubic Hermite in between)
 
 recording:

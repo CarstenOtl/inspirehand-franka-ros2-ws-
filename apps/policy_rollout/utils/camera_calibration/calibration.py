@@ -127,6 +127,7 @@ class CameraCalibrationProfile:
     color_topic: str
     depth_topic: str
     camera_info_topic: str
+    rgbd_topic: str
     physical_model: str
     serial_number: str
     physical_stream_size: tuple[int, int] | None
@@ -415,6 +416,7 @@ def load_camera_calibration(path: str | Path | None = None) -> CameraCalibration
         color_topic=str(physical["color_topic"]),
         depth_topic=str(physical["depth_topic"]),
         camera_info_topic=str(physical["camera_info_topic"]),
+        rgbd_topic=str(physical["rgbd_topic"]),
         physical_model=str(physical["model"]),
         serial_number=str(physical.get("serial_number", "PLACEHOLDER")),
         physical_stream_size=stream_size,

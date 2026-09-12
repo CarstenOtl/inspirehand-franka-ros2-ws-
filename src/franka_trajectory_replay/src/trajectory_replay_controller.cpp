@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,25 @@ constexpr std::array<double, 7> kPositionLower{-2.9007, -1.8361, -2.9007, -3.077
                                                -2.8763, 0.4398,  -3.0508};
 constexpr std::array<double, 7> kPositionUpper{2.9007, 1.8361, 2.9007, -0.1169,
                                                2.8763, 4.6216, 3.0508};
+
+// position_based_velocity_limits from the same file. These belong with the position limits
+// directly above and must be updated together: the offset is only meaningful next to the
+// limit it was derived for. libfranka's rate_limiting.h hard-codes an older generation of
+// both (joint 6's bound 4.52050 encodes the retired 4.5169 rad limit), and pairing those
+// offsets with today's position table closes the envelope roughly 0.1 rad early on joint 6.
+constexpr std::array<double, 7> kMaxVelocity{2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26};
+constexpr std::array<double, 7> kVelocityOffset{0.6520, 0.2500, 0.2005, 0.3542,
+                                                0.5738, 0.4885, 0.4592};
+constexpr std::array<double, 7> kDecelerationLimit{6.0, 2.585, 3.5, 4.0, 17.0, 5.5, 17.0};
+
+/// Braking envelope magnitude at `distance` rad from a position limit, for joint `i`.
+double brakingEnvelope(int i, double distance) {
+  const double braking = std::sqrt(std::max(0.0, 2.0 * kDecelerationLimit[i] * distance));
+  const double allowed = std::min(kMaxVelocity[i], std::max(0.0, braking - kVelocityOffset[i]));
+  // Clamped at zero rather than allowed to go negative: an envelope that excluded zero would
+  // forbid holding a pose, and the clamp below would then drive the joint away from the limit.
+  return std::max(0.0, allowed - kVelocityTolerance);
+}
 
 std::string format_joints(const std::array<double, 7>& values) {
   char buffer[128];
@@ -84,26 +104,20 @@ double TrajectoryReplayController::quintic_blend_derivative(double s) {
 
 std::array<double, 7> TrajectoryReplayController::upper_velocity_limits(
     const std::array<double, 7>& q) {
-  const auto limit = [](double vmax, double offset, double gain, double bound, double qi) {
-    return std::min(vmax, std::max(0.0, -offset + std::sqrt(std::max(0.0, gain * (bound - qi))))) -
-           kVelocityTolerance;
-  };
-  return {limit(2.62, 0.30, 12.0, 2.75010, q[0]), limit(2.62, 0.20, 5.17, 1.79180, q[1]),
-          limit(2.62, 0.20, 7.00, 2.90650, q[2]), limit(2.62, 0.30, 8.00, -0.1458, q[3]),
-          limit(5.26, 0.35, 34.0, 2.81010, q[4]), limit(4.18, 0.35, 11.0, 4.52050, q[5]),
-          limit(5.26, 0.35, 34.0, 3.01960, q[6])};
+  std::array<double, 7> limits{};
+  for (int i = 0; i < 7; ++i) {
+    limits[i] = brakingEnvelope(i, kPositionUpper[i] - q[i]);
+  }
+  return limits;
 }
 
 std::array<double, 7> TrajectoryReplayController::lower_velocity_limits(
     const std::array<double, 7>& q) {
-  const auto limit = [](double vmax, double offset, double gain, double bound, double qi) {
-    return std::max(-vmax, std::min(0.0, offset - std::sqrt(std::max(0.0, gain * (bound + qi))))) +
-           kVelocityTolerance;
-  };
-  return {limit(2.62, 0.30, 12.0, 2.750100, q[0]), limit(2.62, 0.20, 5.17, 1.791800, q[1]),
-          limit(2.62, 0.20, 7.00, 2.906500, q[2]), limit(2.62, 0.30, 8.00, 3.048100, q[3]),
-          limit(5.26, 0.35, 34.0, 2.810100, q[4]), limit(4.18, 0.35, 11.0, -0.54092, q[5]),
-          limit(5.26, 0.35, 34.0, 3.019600, q[6])};
+  std::array<double, 7> limits{};
+  for (int i = 0; i < 7; ++i) {
+    limits[i] = -brakingEnvelope(i, q[i] - kPositionLower[i]);
+  }
+  return limits;
 }
 
 void TrajectoryReplayController::sample_trajectory(const Trajectory& trajectory, double t,
@@ -460,8 +474,14 @@ void TrajectoryReplayController::trajectory_callback(
       for (int i = 0; i < kNumJoints; ++i) {
         const double dq = (position[i] - previous_position[i]) / h;
         const double limit = dq >= 0.0 ? upper[i] : -lower[i];
-        peak_velocity_ratio =
-            std::max(peak_velocity_ratio, std::abs(dq) / (trajectory_velocity_scale_ * limit));
+        // At a position limit the envelope is zero: holding the pose is fine (ratio 0), moving
+        // is not (ratio infinite). Taken literally 0/0 would be NaN, which loses to every
+        // std::max and would let the worst samples through unnoticed.
+        const double ratio = dq == 0.0 ? 0.0
+                             : limit > 0.0
+                                 ? std::abs(dq) / (trajectory_velocity_scale_ * limit)
+                                 : std::numeric_limits<double>::infinity();
+        peak_velocity_ratio = std::max(peak_velocity_ratio, ratio);
         if (k > 1) {
           const double ddq = (dq - previous_velocity[i]) / h;
           peak_acceleration_ratio = std::max(

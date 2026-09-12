@@ -12,15 +12,21 @@
   <exec_depend>control_msgs</exec_depend>
   <exec_depend>controller_manager_msgs</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
+  <!-- The gravity-compensation controller a hand-guided intervention hands
+       the arm to; declared in the replay controllers yamls. -->
+  <exec_depend>franka_example_controllers</exec_depend>
   <exec_depend>franka_trajectory_replay</exec_depend>
   <exec_depend>inspire_franka_bringup</exec_depend>
   <exec_depend>inspire_hand_description</exec_depend>
   <exec_depend>inspire_hand_driver</exec_depend>
+  <exec_depend>inspire_hand_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rosbag2_py</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>

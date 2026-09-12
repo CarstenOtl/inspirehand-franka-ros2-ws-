@@ -12,7 +12,7 @@ from .data_collection import (
     load_rollout,
 )
 from .evaluation import evaluate_rollout
-from .plotting import plot_rollout
+from .plotting import plot_joint_comparisons, plot_rollout
 
 __all__ = [
     "LoadedRollout",
@@ -22,4 +22,5 @@ __all__ = [
     "evaluate_rollout",
     "load_rollout",
     "plot_rollout",
+    "plot_joint_comparisons",
 ]

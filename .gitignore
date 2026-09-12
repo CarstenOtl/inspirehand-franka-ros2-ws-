@@ -3,6 +3,7 @@
 /install
 /log
 /logs/
+/artifacts/
 
 # Local reference worktree.
 /reference/

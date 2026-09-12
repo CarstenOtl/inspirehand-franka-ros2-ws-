@@ -48,6 +48,7 @@ DEFAULTS = {
         'velocity_margin': 0.8,
         'acceleration_margin': 0.5,
         'jerk_margin': 0.5,
+        'max_joint_speed_deg_s': 30.0,
         'send_rate': 1000,
     },
     'cartesian': {
