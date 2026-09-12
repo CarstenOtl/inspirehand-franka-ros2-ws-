@@ -19,6 +19,16 @@
 
   <worldbody>
     <body name="fr3_link8">
+      <!-- The point the Cartesian impedance replay controls: the hand's grasp
+           centre, i.e. the thumb/index fingertip midpoint at the threading
+           grip, 172.7 mm from the flange. Measured on this model and on
+           inspire_hand_description's URDF, which agree to 0.1 mm. Keep equal to
+           tcp.offset_xyz in inspire_franka_trajectory_replay/config/replay.yaml
+           and to the controllers' tool_offset_xyz; it is a marker, so nothing
+           in the physics depends on it. Group 4 is hidden by default: show it
+           with the passive viewer's site_groups:=4. -->
+      <site name="grasp_tcp" pos="-0.0874 -0.0327 0.1453" size="0.005"
+        group="4" rgba="0.95 0.42 0.12 0.95"/>
       <frame quat="0 0 0 1">
         <attach model="inspire_hand" prefix=""/>
       </frame>
