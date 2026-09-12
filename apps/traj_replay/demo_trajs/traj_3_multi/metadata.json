@@ -1,0 +1,259 @@
+{
+  "replay": "sequential-threading",
+  "threading_replay": "sequential-threading",
+  "threading_task": "Isaac-Forge-Franka-Threading-V2-M24-v0",
+  "threading_checkpoint": "/home/chi-zhang/projects/franka-chi/forge_ultra/tasks/forge_franka_threading_v2/logs/rl_games/ForgeTg2/franka_threading_v2-Forge-franka-threading-v2-m24-fr3-threading-v2-no-adr-512-2026-09-11_02-10-17/nn/ForgeTg2.pth",
+  "threading_rollout_mode": "sampled_gaussian",
+  "threading_policy_dt": 0.06666666666666667,
+  "threading_physics_dt": 0.008333333333333333,
+  "threading_release_motion": "manual",
+  "threading_direction": "clockwise",
+  "threading_target_turn_deg": 59.99999999999999,
+  "threading_seed": 0,
+  "threading_randomize_initial_pose": false,
+  "threading_initial_tcp_xyz_noise_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "threading_initial_nut_yaw_noise_deg": 0.0,
+  "threading_randomize_retreat_waypoints": false,
+  "threading_retreat_waypoint_arm_noise_rad": 0.0,
+  "threading_num_envs": 1,
+  "threading_num_runs": 10,
+  "threading_runs_per_env": 10,
+  "threading_grip_loss_reset_disabled": true,
+  "threading_disturbance_mode": "none",
+  "threading_impulse_time_range_s": [
+    0.25,
+    1.0
+  ],
+  "threading_impulse_magnitude_range_ns": [
+    0.05,
+    0.25
+  ],
+  "threading_impulse_seed": 0,
+  "domain_randomization_enabled": false,
+  "threading_scene_robot_base_pos": [
+    1.2,
+    0.0,
+    0.0
+  ],
+  "threading_scene_bolt_base_pos": [
+    0.61,
+    0.0,
+    0.05
+  ],
+  "threading_scene_table_surface_z": 0.55,
+  "threading_scene_viewer_eye": [
+    -0.5,
+    -0.7,
+    0.5
+  ],
+  "threading_release_controller": "hybrid-impedance-joint-pd",
+  "threading_thread_joint_hold": true,
+  "robot_motion_field": "joint_pos",
+  "joint_targets_recorded": true,
+  "joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+    "index_joint_0",
+    "little_joint_0",
+    "middle_joint_0",
+    "ring_joint_0",
+    "thumb_joint_0",
+    "index_joint_1",
+    "little_joint_1",
+    "middle_joint_1",
+    "ring_joint_1",
+    "thumb_joint_1",
+    "thumb_joint_2",
+    "thumb_joint_3"
+  ],
+  "real_world_replay_skipped": "robot does not use the TG2 impedance-joint-PD joint contract",
+  "trajectory_name": "traj_3_multi",
+  "schema_version": 3,
+  "created_at": "2026-09-11T16:47:48.783821",
+  "sample_count": 1082,
+  "data_file": "replay_data.npz",
+  "fields": {
+    "sample_time_s": [
+      1082
+    ],
+    "sample_dt_s": [
+      1082
+    ],
+    "wall_time_s": [
+      1082
+    ],
+    "step": [
+      1082
+    ],
+    "task_phase": [
+      1082
+    ],
+    "cycle": [
+      1082
+    ],
+    "replay_phase": [
+      1082
+    ],
+    "joint_pos": [
+      1082,
+      1,
+      19
+    ],
+    "joint_vel": [
+      1082,
+      1,
+      19
+    ],
+    "tcp_pos": [
+      1082,
+      1,
+      3
+    ],
+    "tcp_quat": [
+      1082,
+      1,
+      4
+    ],
+    "nut_pos": [
+      1082,
+      1,
+      3
+    ],
+    "nut_quat": [
+      1082,
+      1,
+      4
+    ],
+    "nut_lin_vel": [
+      1082,
+      1,
+      3
+    ],
+    "nut_ang_vel": [
+      1082,
+      1,
+      3
+    ],
+    "threading_turn_start_quat": [
+      1082,
+      1,
+      4
+    ],
+    "threading_target_pos": [
+      1082,
+      1,
+      3
+    ],
+    "threading_target_quat": [
+      1082,
+      1,
+      4
+    ],
+    "threading_turn_progress_rad": [
+      1082,
+      1
+    ],
+    "threading_proper_grip": [
+      1082,
+      1
+    ],
+    "threading_grasped_once": [
+      1082,
+      1
+    ],
+    "threading_grasp_face_index": [
+      1082,
+      1
+    ],
+    "threading_target_grasp_face_index": [
+      1082,
+      1
+    ],
+    "debug_nut_frame_pos": [
+      1082,
+      1,
+      3
+    ],
+    "debug_nut_frame_quat": [
+      1082,
+      1,
+      4
+    ],
+    "joint_pos_target": [
+      1082
+    ],
+    "impedance_joint_pd_command": [
+      1082
+    ],
+    "gravity_compensation_torque": [
+      1082
+    ]
+  },
+  "trajectory_layout": "time, environment, component",
+  "temporal_alignment": {
+    "joint_pos_target": "post-step command: for policy transitions, observation[t] pairs with joint_pos_target[t+1]",
+    "impedance_joint_pd_command": "post-step command: observation[t] pairs with impedance_joint_pd_command[t+1]"
+  },
+  "coordinate_convention": {
+    "tcp_position": "environment-relative metres",
+    "nut_position": "environment-relative metres",
+    "quaternion": "WXYZ",
+    "joint_position": "radians",
+    "joint_velocity": "radians/second",
+    "joint_position_target": "radians; controller command active at sample time",
+    "impedance_joint_pd_command": "seven arm positions [rad], seven arm velocities [rad/s], then three hand positions [rad]; order in impedance_joint_pd_command_names",
+    "gravity_compensation_torque": "Nm; full-scale MuJoCo qfrc_bias from measured arm q/qdot"
+  },
+  "timing": {
+    "clock": "logical simulation time",
+    "sample_period_s": 0.06666666666666667,
+    "sample_frequency_hz": 15.0,
+    "wall_time_field": "wall_time_s (monotonic elapsed diagnostic only)"
+  },
+  "recording_frequency_hz": 15.0,
+  "impedance_joint_pd_command_names": [
+    "shoulder_pitch_r_joint:position",
+    "shoulder_roll_r_joint:position",
+    "shoulder_yaw_r_joint:position",
+    "elbow_pitch_r_joint:position",
+    "elbow_yaw_r_joint:position",
+    "wrist_pitch_r_joint:position",
+    "wrist_roll_r_joint:position",
+    "shoulder_pitch_r_joint:velocity",
+    "shoulder_roll_r_joint:velocity",
+    "shoulder_yaw_r_joint:velocity",
+    "elbow_pitch_r_joint:velocity",
+    "elbow_yaw_r_joint:velocity",
+    "wrist_pitch_r_joint:velocity",
+    "wrist_roll_r_joint:velocity",
+    "thumb_joint_0:position",
+    "thumb_joint_1:position",
+    "index_joint_0:position"
+  ],
+  "hardware_orientation": {
+    "joint": "fr3_joint7",
+    "offset_rad": 0.0,
+    "note": "This policy uses the current hardware joint orientation. Replay fr3_joint7 exactly as recorded; do not apply the legacy +90-degree compensation."
+  },
+  "hardware_replay_status": "source_capture_requires_joint5_retargeting",
+  "hardware_replay_limitation": {
+    "joint": "fr3_joint5",
+    "recorded_max_rad": 2.806506872177124,
+    "affected_cycles": [
+      1,
+      6,
+      7,
+      8
+    ],
+    "note": "These cycles reach the FR3 position-dependent velocity boundary. Preserve this raw source; use the derived traj_3_multi_joint5_cap_2p8 artifact for a complete hardware candidate."
+  }
+}

@@ -1,0 +1,90 @@
+# Controllers for running the *replay* stack against MuJoCo.
+#
+# The FR3 uses the same stock JointTrajectoryController and position command
+# interface as hardware. On the real arm, franka_hardware connects that
+# interface to libfranka's robot-internal joint-impedance controller.
+#
+# The hand keeps its stock trajectory controller. On hardware the hand is not on
+# ros2_control at all -- it is the RS485 driver -- so this is where simulation
+# and hardware genuinely differ, and inspire_hand_sim_bridge is what puts the
+# driver's own command path back in front of it.
+
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    trajectory_replay_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    hand_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    hand_position_forward_command_controller:
+      type: forward_command_controller/ForwardCommandController
+
+# --- FR3: stock trajectory controller ----------------------------------------
+
+trajectory_replay_controller:
+  ros__parameters:
+    joints:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    interpolation_method: splines
+    # Match the hardware controller handoff: continue new goals from the last
+    # desired command, not from compliant/noisy measured joint positions.
+    interpolate_from_desired_state: true
+    set_last_command_interface_value_as_state_on_activation: true
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    allow_nonzero_velocity_at_trajectory_end: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+# --- Inspire hand ------------------------------------------------------------
+# Joint order matches inspire_hand_driver.kinematics.DRIVEN_JOINTS.
+
+hand_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - pinky_proximal_joint
+      - ring_proximal_joint
+      - middle_proximal_joint
+      - index_proximal_joint
+      - thumb_proximal_pitch_joint
+      - thumb_proximal_yaw_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+hand_position_forward_command_controller:
+  ros__parameters:
+    joints:
+      - pinky_proximal_joint
+      - ring_proximal_joint
+      - middle_proximal_joint
+      - index_proximal_joint
+      - thumb_proximal_pitch_joint
+      - thumb_proximal_yaw_joint
+    interface_name: position

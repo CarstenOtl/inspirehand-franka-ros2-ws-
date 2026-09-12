@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "data_file": "replay_data.npz",
+  "generated_by": "inspire_franka_trajectory_replay.make_cycles",
+  "description": "OUTDATED FOR CURRENT-MOUNT ARM REPLAY. Cycles 1-5 of the legacy-mount source capture, concatenated as recorded, followed by a quintic ramp onto the homing pose. Retarget joint 7 before hardware use.",
+  "hardware_replay_status": "outdated_for_current_180_degree_flange_mount",
+  "hardware_baseline": "../threading_cycle1_flange180",
+  "units": "radians",
+  "recording_frequency_hz": 15.000000000000053,
+  "sample_count": 451,
+  "arm_joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7"
+  ],
+  "hand_joint_names": [
+    "pinky_proximal_joint",
+    "ring_proximal_joint",
+    "middle_proximal_joint",
+    "index_proximal_joint",
+    "thumb_proximal_pitch_joint",
+    "thumb_proximal_yaw_joint"
+  ],
+  "cycles": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "cycle_samples": 421,
+  "ramp_samples": 30,
+  "rate_hz": 15.000000000000053,
+  "start_from_home": 4.4662475495726994e-08,
+  "recorded_end_from_home": 0.11069272618103021,
+  "final_from_home": 0.0,
+  "source": "/root/develop_ws/apps/traj_replay/demo_trajs/traj_1/replay_data.npz",
+  "home": "apps/traj_replay/demo_trajs/homing/threading.yaml",
+  "environment": 0
+}

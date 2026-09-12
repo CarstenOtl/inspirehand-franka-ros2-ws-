@@ -151,6 +151,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-cv-bridge \
         ros-${ROS_DISTRO}-diagnostic-updater \
         ros-${ROS_DISTRO}-image-transport \
+        ros-${ROS_DISTRO}-rqt-gui-py \
         ros-${ROS_DISTRO}-rqt-image-view \
         ros-${ROS_DISTRO}-apriltag \
         python3-matplotlib \
@@ -175,6 +176,20 @@ RUN pip3 install --no-cache-dir --break-system-packages \
         mujoco==${MUJOCO_VERSION} \
         trimesh \
     && python3 -c "import cv2, mujoco"
+
+# Inference runtime for apps/policy_rollout (the distilled DP3 flow student).
+# CPU-only PyTorch: this workcell has no NVIDIA GPU, and the CPU wheel is a
+# fraction of the CUDA one. torchdiffeq is the vendored flow_matching solver's
+# runtime dependency. Kept separate from the layer above so a version bump
+# here does not invalidate the mujoco layer.
+ARG TORCH_VERSION=2.14.0
+ARG TORCHDIFFEQ_VERSION=0.2.5
+RUN pip3 install --no-cache-dir --break-system-packages \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch==${TORCH_VERSION} \
+    && pip3 install --no-cache-dir --break-system-packages \
+        torchdiffeq==${TORCHDIFFEQ_VERSION} \
+    && python3 -c "import torch, torchdiffeq"
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

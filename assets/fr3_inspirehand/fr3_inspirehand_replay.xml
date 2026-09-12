@@ -241,17 +241,22 @@
                                larger than the hand's approximately 68 mm wrist. -->
                           <geom name="hand_adapter_flange" class="hand_visual" type="mesh"
                             mesh="hand_adapter_flange_mesh" pos="0 0 0.005" material="flange_black"/>
+                          <!-- Rz1 is the first tag-mount frame: rotate -45 deg
+                               about fr3_link8 Z. The tag centre is then translated
+                               60 mm along Rz1 +X and 35 mm along Rz1 +Z. The tag
+                               face is vertical with zero in-plane print clocking.
+                               The geom transform puts the printed surface at the
+                               tag-body origin and cancels the OBJ's +90 deg UV yaw. -->
+                          <body name="apriltag_rz1" quat="0.923879532511287 0 0 -0.382683432365090">
+                            <body name="apriltag_0" pos="0.060 0 0.035" quat="0.5 -0.5 0.5 -0.5">
+                              <geom name="apriltag_36h11_id0" type="mesh" mesh="hand_apriltag_36h11_id0_dorsal" material="apriltag_36h11_id0" pos="0 0 -0.0023" quat="0.707106781186548 0 0 -0.707106781186547" rgba="1 1 1 1" contype="0" conaffinity="0" group="2" density="0"/>
+                              <site name="apriltag_0_frame" type="box" size="0.020 0.020 0.0006" rgba="0 0 0 0" group="4"/>
+                            </body>
+                          </body>
                           <body name="palm" pos="0 0 0.010" quat="0 0 0 1" childclass="official_hand">
                             <inertial pos="0.00252515168164585 -0.001960054926157 0.0660467739648412" mass="0.38756" fullinertia="0.00059831308 0.00050077156 0.00018467082 5.60829e-06 2.87014e-06 3.4831e-06"/>
                             <geom class="hand_visual" mesh="hand_R_base_link"/>
                             <geom class="hand_collision" mesh="hand_R_base_link"/>
-                            <!-- Surface-following 36h11 id 0 AprilTag. The upper-left black
-                                 pixel of its 40 mm black square is 20 mm from the
-                                 little-finger rim and 72 mm from the z=0 flange datum. -->
-                            <body name="apriltag_0" pos="-0.0167393301541 -0.00054590719508 0.0919997377377" quat="0.708914668772 -0.00074545545918 -0.705293467481 -0.000749282864928">
-                              <geom name="apriltag_36h11_id0" type="mesh" mesh="hand_apriltag_36h11_id0_dorsal" material="apriltag_36h11_id0" rgba="1 1 1 1" contype="0" conaffinity="0" group="2" density="0"/>
-                              <site name="apriltag_0_frame" type="box" size="0.020 0.020 0.0006" rgba="0 0 0 0" group="4"/>
-                            </body>
                             <body name="thumb_link_0" pos="0.01696 0.02045 0.06635">
                               <inertial pos="0.000853491366153925 0.00482216769884483 -0.00481999614705116" mass="0.00483" fullinertia="1.9502e-07 1.4336e-07 1.6891e-07 -3.536e-08 -3.1e-09 -7.9e-09"/>
                               <joint name="thumb_joint_0" axis="0 0 -1" range="0 1.246165"/>

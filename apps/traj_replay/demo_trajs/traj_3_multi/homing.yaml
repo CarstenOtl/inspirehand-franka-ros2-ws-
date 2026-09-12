@@ -1,0 +1,42 @@
+schema_version: 1
+name: traj_3_multi_hardware_homing
+description: >
+  Matching home for traj_3_multi, taken from the first recorded sample of
+  cycle 1. The policy uses the current hardware orientation, so no artificial
+  offset is applied to fr3_joint7.
+units: radians
+
+joint_names:
+  - fr3_joint1
+  - fr3_joint2
+  - fr3_joint3
+  - fr3_joint4
+  - fr3_joint5
+  - fr3_joint6
+  - fr3_joint7
+  - pinky_proximal_joint
+  - ring_proximal_joint
+  - middle_proximal_joint
+  - index_proximal_joint
+  - thumb_proximal_pitch_joint
+  - thumb_proximal_yaw_joint
+positions:
+  - -0.5244667530059814
+  - 0.25081801414489746
+  - 0.13092449307441711
+  - -2.1765668392181396
+  - 1.6790497303009033
+  - 2.0574958324432373
+  - -1.0182874202728271
+  - 1.3329986333847046
+  - 1.332999587059021
+  - 1.332996129989624
+  - 0.21461309492588043
+  - 0.0001615418295841664
+  - 1.0861871242523193
+
+source:
+  artifact: replay_data.npz
+  cycle: 1
+  sample: 0
+  joint7_offset_rad: 0.0

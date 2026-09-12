@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<library path="src">
+  <class name="camera_calibration/RgbDepthView"
+         type="camera_calibration.rgb_depth_rqt.RgbDepthView"
+         base_class_type="rqt_gui_py::Plugin">
+    <description>
+      Display the RealSense RGB and metric depth streams side by side.
+    </description>
+    <qtgui>
+      <group>
+        <label>Visualization</label>
+        <icon type="theme">folder</icon>
+        <statustip>Plugins for visualizing ROS data.</statustip>
+      </group>
+      <label>RealSense RGB + Depth</label>
+      <icon type="theme">image-x-generic</icon>
+      <statustip>Automatically display the D415 RGB and depth topics.</statustip>
+    </qtgui>
+  </class>
+</library>

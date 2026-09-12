@@ -26,13 +26,11 @@
   <!--
     A combined rest pose, under a third name.
 
-    fr3.xml defines "home" (the arm's seven joints) and the hand asset defines
-    "open" (its twelve). Either one alone would be wrong here, because MuJoCo
-    zero-pads a keyframe to the full model: "home" would put the hand's
-    followers at 0 instead of -0.04545 and start the sim violating its own
-    equality constraints, while "open" would put the arm at all-zeros, fully
-    extended. Neither can be redefined - a duplicate key name is a hard error -
-    so the combined pose gets its own name and the launch selects it.
+    fr3.xml defines "home" for the arm's seven joints. It is wrong for this
+    combined scene because MuJoCo zero-pads it to the full model: the hand's
+    followers would be 0 instead of -0.04545 and start the sim violating its
+    own equality constraints. The combined pose therefore gets its own name
+    and the launch selects it.
 
     Order is model order: the arm's seven joints, then the hand's twelve as
     inspire_hand_right.xml declares them (thumb yaw, thumb pitch, thumb

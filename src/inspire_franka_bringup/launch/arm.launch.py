@@ -1,8 +1,8 @@
 """The Franka FR3 on real hardware, on its own.
 
-    ros2 launch inspire_franka_bringup arm.launch.py robot_ip:=172.16.0.2
+    ros2 launch inspire_franka_bringup arm.launch.py
     ros2 launch inspire_franka_bringup arm.launch.py \
-        robot_ip:=172.16.0.2 gravity_compensation:=true
+        gravity_compensation:=true
     ros2 launch inspire_franka_bringup arm.launch.py use_fake_hardware:=true
 
 A thin wrapper over upstream franka_bringup's franka.launch.py. It is here so

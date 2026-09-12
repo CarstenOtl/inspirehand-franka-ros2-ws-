@@ -1,6 +1,8 @@
 schema_version: 1
 name: threading_homing
-description: Calibrated forgeUltra franka-chi M24 threading reset pose.
+description: Legacy-mount source pose for deriving retargeted artifacts. Outdated
+  for direct arm replay with the current physical 180-degree flange mount; use
+  ../threading_cycle1_flange180/homing.yaml instead.
 units: radians
 
 # Commandable joints only. The six passive Inspire joints are populated by the
@@ -52,4 +54,3 @@ source:
     - index_joint_0
     - thumb_joint_1
     - thumb_joint_0
-

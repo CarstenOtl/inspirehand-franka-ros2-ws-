@@ -2,12 +2,11 @@
 
 Terminal-first: nothing opens a window unless you ask for it.
 
-    ros2 launch inspire_franka_sim sim.launch.py                    # both, headless
+    ros2 launch inspire_franka_sim sim.launch.py                    # arm + flange hand
     ros2 launch inspire_franka_sim sim.launch.py headless:=false    # MuJoCo viewer
     ros2 launch inspire_franka_sim sim.launch.py start_rviz:=true   # RViz
     ros2 launch inspire_franka_sim sim.launch.py hand:=false        # bare arm
     ros2 launch inspire_franka_sim sim.launch.py arm:=false         # hand only
-    ros2 launch inspire_franka_sim sim.launch.py hand_mount:=flange # hand on the flange
 
 The two assets are driven independently, through `arm_command_interface` and
 `hand_command_interface`. Either may be `none`, which leaves that asset
@@ -36,10 +35,12 @@ Move the arm:
 
 Both GUIs need `xhost +local:root` on the host.
 
-The MuJoCo viewer's own actuator sliders write mjData.ctrl, which the
-ros2_control plugin overwrites every cycle, so they will not hold against an
-active controller. To drive the model by hand from the viewer, launch with both
-command interfaces set to `none`.
+The current MuJoCo window provided by mujoco_ros2_control does not expose a
+joint/actuator slider panel. Setting either command interface to `none` only
+leaves those joints unclaimed; it does not add interactive GUI controls. Use ROS
+commands to drive this simulated plant. The separate passive viewer has local
+actuator sliders, but actuation is deliberately disabled there, so they do not
+pose its model or publish commands to this simulation or hardware.
 """
 
 import os
@@ -58,21 +59,18 @@ import xacro
 # to describe the same robot - ros2_control matches them by joint name - so one
 # set of launch arguments picks both, and they cannot drift apart by accident.
 SCENES = {
-    ("arm", "hand", "bench"): "inspire_franka_bench_scene.xml",
-    ("arm", "hand", "flange"): "inspire_franka_flange_scene.xml",
-    ("arm", None, "bench"): "fr3_scene.xml",
-    ("arm", None, "flange"): "fr3_scene.xml",
-    (None, "hand", "bench"): "inspire_hand_scene.xml",
+    ("arm", "hand"): "inspire_franka_flange_scene.xml",
+    ("arm", None): "fr3_scene.xml",
+    (None, "hand"): "inspire_hand_scene.xml",
 }
 
 # Each scene's rest keyframe. The combined scenes need their own ("start"),
-# because fr3.xml's "home" covers only the arm and the hand asset's "open"
-# covers only the hand, and MuJoCo zero-pads a keyframe to the whole model -
-# so either one alone would put the other asset somewhere wrong. See the
-# comment in inspire_franka_bench_scene.xml.
+# because fr3.xml's "home" covers only the arm and MuJoCo zero-pads a keyframe
+# to the whole model, which would put the hand followers somewhere wrong. See
+# the comment in inspire_franka_flange_scene.xml.
 KEYFRAMES = {
-    "inspire_franka_bench_scene.xml": "start",
     "inspire_franka_flange_scene.xml": "start",
+    "inspire_franka_flange_torque_scene.xml": "start",
     "fr3_scene.xml": "home",
     "inspire_hand_scene.xml": "open",
 }
@@ -99,7 +97,6 @@ def launch_setup(context, *args, **kwargs):
 
     with_arm, with_hand = flag("arm"), flag("hand")
     hardware_type = arg("hardware_type")
-    hand_mount = arg("hand_mount")
 
     if not (with_arm or with_hand):
         raise RuntimeError("arm and hand are both false; there is nothing to simulate")
@@ -111,17 +108,11 @@ def launch_setup(context, *args, **kwargs):
         raise RuntimeError(
             "hand_side:=left has no MuJoCo scene. mjcf/inspire_hand_left.xml is "
             "generated, but no scene binds it; write one modelled on "
-            "inspire_franka_bench_scene.xml and pass it as mjcf:=<file>. "
+            "inspire_franka_flange_scene.xml and pass it as mjcf:=<file>. "
             "hardware_type:=mock works with either side."
         )
 
-    key = ("arm" if with_arm else None, "hand" if with_hand else None, hand_mount)
-    if key not in SCENES:
-        raise RuntimeError(
-            f"no MuJoCo scene for arm={with_arm} hand={with_hand} "
-            f"hand_mount={hand_mount!r}. A hand-only scene has no flange to "
-            f"mount to; use hand_mount:=bench."
-        )
+    key = ("arm" if with_arm else None, "hand" if with_hand else None)
     scene = arg("mjcf") or SCENES[key]
 
     sim_share = get_package_share_directory("inspire_franka_sim")
@@ -135,7 +126,6 @@ def launch_setup(context, *args, **kwargs):
             "arm": "true" if with_arm else "false",
             "hand": "true" if with_hand else "false",
             "hand_side": arg("hand_side"),
-            "hand_mount": hand_mount,
             "ros2_control": "true",
             "hardware_type": hardware_type,
             "mujoco_model": mjcf_path,
@@ -240,14 +230,6 @@ def generate_launch_description():
                 "right hand; a left-handed scene needs its own MJCF.",
             ),
             DeclareLaunchArgument(
-                "hand_mount",
-                default_value="bench",
-                description="'bench' - the hand stands on the table beside the arm, "
-                "unattached (the default). 'flange' - bolted "
-                "to the arm with the current physical installation's 90-degree "
-                "clocking relative to the legacy mount.",
-            ),
-            DeclareLaunchArgument(
                 "hardware_type",
                 default_value="mujoco",
                 description="ros2_control backend: 'mujoco' for physics, 'mock' for "
@@ -284,7 +266,7 @@ def generate_launch_description():
                 default_value="",
                 description="Override the MuJoCo scene. A bare filename resolves inside "
                 "the package's mjcf/ directory; an absolute path is used as given. Empty "
-                "means pick the scene that matches arm/hand/hand_mount.",
+                "means pick the scene that matches the enabled arm/hand assets.",
             ),
             DeclareLaunchArgument(
                 "xacro_path",

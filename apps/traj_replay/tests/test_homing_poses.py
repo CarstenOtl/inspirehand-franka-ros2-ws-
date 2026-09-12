@@ -1,7 +1,10 @@
 """Validate the checked-in task homing poses against the local robot model."""
 
+import json
+import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 yaml = pytest.importorskip("yaml")
@@ -29,6 +32,96 @@ EXPECTED_ARM_POSITIONS = {
                        1.368818, 2.028677, -1.846102),
 }
 EXPECTED_HAND_POSITIONS = (1.0999, 1.0999, 1.0999, 0.44, 0.2, 1.14)
+
+
+def test_threading_hardware_baseline_encodes_the_validated_mount_retarget():
+    baseline_dir = APP_DIR / "demo_trajs" / "threading_cycle1_flange180"
+    with (baseline_dir / "homing.yaml").open(encoding="utf-8") as stream:
+        baseline_home = yaml.safe_load(stream)
+    with (HOMING_DIR / "threading.yaml").open(encoding="utf-8") as stream:
+        legacy_home = yaml.safe_load(stream)
+    metadata = json.loads((baseline_dir / "metadata.json").read_text(encoding="utf-8"))
+    with np.load(baseline_dir / "replay_data.npz", allow_pickle=False) as data:
+        arm = np.asarray(data["joint_pos_arm"])
+        names = [str(name) for name in data["arm_joint_names"]]
+
+    assert metadata["hardware_replay_status"] == "baseline"
+    assert metadata["cycles"] == [1]
+    assert names == list(ARM_JOINTS)
+    assert baseline_home["positions"][:6] == pytest.approx(legacy_home["positions"][:6])
+    assert baseline_home["positions"][6] == pytest.approx(
+        legacy_home["positions"][6] + math.pi / 2
+    )
+    assert arm[0] == pytest.approx(baseline_home["positions"][:7], abs=1e-7)
+    assert arm[-1] == pytest.approx(baseline_home["positions"][:7], abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "relative_metadata",
+    (
+        "traj_1/metadata.json",
+        "threading_5x/metadata.json",
+    ),
+)
+def test_other_threading_arm_artifacts_are_not_the_hardware_baseline(relative_metadata):
+    path = APP_DIR / "demo_trajs" / relative_metadata
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    assert metadata["hardware_replay_status"].startswith("outdated")
+    assert metadata["hardware_baseline"] == "../threading_cycle1_flange180"
+
+
+def test_five_cycle_current_mount_artifact_is_a_validated_extended_run():
+    path = APP_DIR / "demo_trajs" / "threading_5x_flange180" / "metadata.json"
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    assert metadata["hardware_replay_status"] == "validated_extended_run"
+    assert metadata["hardware_baseline"] == "../threading_cycle1_flange180"
+    assert metadata["hardware_validation"]["time_scale"] == 5.0
+    assert metadata["hardware_validation"]["interactive_pause"] is True
+
+
+def test_traj_3_multi_candidate_is_continuous_capped_and_returns_home():
+    source_dir = APP_DIR / "demo_trajs" / "traj_3_multi"
+    candidate_dir = APP_DIR / "demo_trajs" / "traj_3_multi_joint5_cap_2p8"
+    metadata = json.loads(
+        (candidate_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    source_metadata = json.loads(
+        (source_dir / "metadata.json").read_text(encoding="utf-8")
+    )
+    with (candidate_dir / "homing.yaml").open(encoding="utf-8") as stream:
+        home = yaml.safe_load(stream)
+    with np.load(source_dir / "replay_data.npz", allow_pickle=False) as source:
+        source_positions = np.asarray(source["joint_pos"][:, 0, :])
+    with np.load(candidate_dir / "replay_data.npz", allow_pickle=False) as candidate:
+        arm = np.asarray(candidate["joint_pos_arm"])
+        hand = np.asarray(candidate["joint_pos_hand"])
+        time = np.asarray(candidate["sample_time_s"])
+
+    cycle_samples = metadata["cycle_samples"]
+    source_columns = {
+        name: index for index, name in enumerate(source_metadata["joint_names"])
+    }
+    source_arm = source_positions[:, [source_columns[name] for name in ARM_JOINTS]]
+    forge_hand_names = (
+        "little_joint_0",
+        "ring_joint_0",
+        "middle_joint_0",
+        "index_joint_0",
+        "thumb_joint_1",
+        "thumb_joint_0",
+    )
+    source_hand = source_positions[:, [source_columns[name] for name in forge_hand_names]]
+    assert metadata["cycles"] == list(range(1, 11))
+    assert metadata["hardware_replay_status"].endswith("physical_validation_pending")
+    assert metadata["joint5_capped_samples"] == 171
+    assert len(time) == len(arm) == len(hand) == metadata["sample_count"] == 1112
+    assert np.all(np.diff(time) > 0)
+    assert arm[:cycle_samples, 4] == pytest.approx(np.minimum(source_arm[:, 4], 2.8))
+    assert arm[:cycle_samples, :4] == pytest.approx(source_arm[:, :4])
+    assert arm[:cycle_samples, 5:] == pytest.approx(source_arm[:, 5:])
+    assert hand[:cycle_samples] == pytest.approx(source_hand)
+    assert arm[-1] == pytest.approx(home["positions"][:7], abs=1e-12)
+    assert hand[-1] == pytest.approx(home["positions"][7:], abs=1e-12)
 
 
 @pytest.mark.parametrize("filename", EXPECTED_ARM_POSITIONS)

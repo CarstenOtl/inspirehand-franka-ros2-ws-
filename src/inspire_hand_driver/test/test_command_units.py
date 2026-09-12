@@ -21,13 +21,19 @@ rclpy = pytest.importorskip("rclpy")
 from inspire_hand_msgs.srv import SetAngles  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
 
+from inspire_hand_driver import command_overlays  # noqa: E402
 from inspire_hand_driver import kinematics as kin  # noqa: E402
-from inspire_hand_driver.driver_node import InspireHandNode  # noqa: E402
+from inspire_hand_driver.driver_node import (  # noqa: E402
+    InspireHandNode,
+    open_ratio_to_angle,
+)
 from inspire_hand_driver.protocol import ANGLE_MAX  # noqa: E402
 
 INDEX = kin.dof_index("index_proximal_joint")
 INDEX_CHANNEL = kin.DOFS[INDEX].channel
 PINKY = kin.dof_index("pinky_proximal_joint")
+THUMB_ABDUCTION = kin.dof_index("thumb_proximal_yaw_joint")
+THUMB_ABDUCTION_CHANNEL = kin.DOFS[THUMB_ABDUCTION].channel
 
 
 @pytest.fixture
@@ -77,6 +83,37 @@ def test_naming_may_be_mixed_now_that_it_does_not_select_a_unit(node):
     assert accepted, message
     assert commanded_ratio(node, PINKY) == pytest.approx(0.0)
     assert commanded_ratio(node, INDEX) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("ratio", [0.0, 0.1, 0.25, 0.5, 1.0])
+def test_thumb_abduction_rescale_is_universal_across_command_paths(node, ratio):
+    zero = command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO
+    # The rescale can land between register steps -- ANGLE is an integer
+    # 0..1000, so a commanded 0.25 maps to 0.4375 and is written as 438. Compare
+    # against the value the driver actually writes, not the exact real number.
+    expected = open_ratio_to_angle(zero + (1.0 - zero) * ratio) / ANGLE_MAX
+    written = []
+    for name in ("thumb_proximal_yaw_joint", THUMB_ABDUCTION_CHANNEL):
+        node._on_command(JointState(name=[name], position=[ratio]))
+        written.append(commanded_ratio(node, THUMB_ABDUCTION))
+        response = node._on_set_angles(
+            SetAngles.Request(name=[name], open_ratio=[ratio]), SetAngles.Response()
+        )
+        assert response.accepted, response.message
+        written.append(commanded_ratio(node, THUMB_ABDUCTION))
+    assert written == [pytest.approx(expected)] * 4
+
+
+def test_thumb_abduction_overlay_does_not_change_other_dofs(node):
+    node._on_command(JointState(name=[INDEX_CHANNEL], position=[0.0]))
+    assert commanded_ratio(node, INDEX) == pytest.approx(0.0)
+
+
+def test_unnamed_six_channel_topic_command_applies_thumb_abduction_overlay(node):
+    node._on_command(JointState(position=[0.0] * 6))
+    assert commanded_ratio(node, THUMB_ABDUCTION) == pytest.approx(0.25)
+    for index in range(5):
+        assert commanded_ratio(node, index) == pytest.approx(0.0)
 
 
 # -- the range check ------------------------------------------------------
@@ -141,3 +178,28 @@ def test_unaddressed_dof_hold_their_previous_target(node):
     node._on_command(JointState(name=["thumb_proximal_yaw_joint"], position=[0.3]))
     assert node._last_command[PINKY] == before
     assert commanded_ratio(node, INDEX) == pytest.approx(0.25)
+
+
+def test_state_extras_divisor_holds_current_and_force_between_reads():
+    """RS485 is half-duplex, so a read the replay never uses is a command lost."""
+    from inspire_hand_driver.protocol import REG_ANGLE_ACT, REG_CURRENT, REG_FORCE_ACT
+
+    rclpy.init(args=[
+        "--ros-args", "-p", "mock:=true", "-p", "state_extras_divisor:=3",
+    ])
+    instance = InspireHandNode()
+    reads = []
+    original = instance._transport.read_registers
+    instance._transport.read_registers = lambda addr, count: (
+        reads.append(addr) or original(addr, count)
+    )
+    try:
+        for _ in range(6):
+            instance._on_timer()
+    finally:
+        instance.destroy_node()
+        rclpy.shutdown()
+
+    assert reads.count(REG_ANGLE_ACT) == 6, "angles are joint_states, every cycle"
+    assert reads.count(REG_CURRENT) == 2, "current rides the divisor"
+    assert reads.count(REG_FORCE_ACT) == 2, "and so does force"

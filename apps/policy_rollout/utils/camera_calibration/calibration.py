@@ -19,6 +19,31 @@ def _tuple(values: Any, width: int, label: str) -> tuple[float, ...]:
 
 
 @dataclass(frozen=True)
+class CropRectangle:
+    """Pixel rectangle kept from a larger frame before it is resized."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        if self.x < 0 or self.y < 0 or self.width < 1 or self.height < 1:
+            raise ValueError(
+                "crop rectangle needs non-negative offsets and a positive size"
+            )
+
+    def fits(self, width: int, height: int) -> bool:
+        return self.x + self.width <= width and self.y + self.height <= height
+
+    def apply(self, image: np.ndarray) -> np.ndarray:
+        height, width = image.shape[:2]
+        if not self.fits(width, height):
+            raise ValueError(f"crop {self} exceeds a {width}x{height} frame")
+        return image[self.y : self.y + self.height, self.x : self.x + self.width]
+
+
+@dataclass(frozen=True)
 class CameraIntrinsics:
     width: int
     height: int
@@ -36,6 +61,20 @@ class CameraIntrinsics:
         if self.camera_matrix[6:] != (0.0, 0.0, 1.0):
             raise ValueError("camera_matrix must end in [0, 0, 1]")
 
+    def cropped(self, crop: CropRectangle) -> "CameraIntrinsics":
+        if not crop.fits(self.width, self.height):
+            raise ValueError("crop rectangle exceeds the calibrated frame")
+        matrix = list(self.camera_matrix)
+        matrix[2] -= crop.x
+        matrix[5] -= crop.y
+        return CameraIntrinsics(
+            width=crop.width,
+            height=crop.height,
+            camera_matrix=tuple(matrix),
+            distortion_model=self.distortion_model,
+            distortion_coefficients=self.distortion_coefficients,
+        )
+
     def scaled(self, width: int, height: int) -> "CameraIntrinsics":
         sx, sy = width / self.width, height / self.height
         if not math.isclose(sx, sy, abs_tol=1e-9):
@@ -52,6 +91,14 @@ class CameraIntrinsics:
             distortion_model=self.distortion_model,
             distortion_coefficients=self.distortion_coefficients,
         )
+
+    def policy_view(
+        self, crop: CropRectangle | None, width: int, height: int
+    ) -> "CameraIntrinsics":
+        """Intrinsics of this frame after an optional crop and an isotropic resize."""
+
+        view = self if crop is None else self.cropped(crop)
+        return view.scaled(width, height)
 
 
 @dataclass(frozen=True)
@@ -73,6 +120,7 @@ class CameraCalibrationProfile:
     training_model: str
     frame_id: str
     source_intrinsics: CameraIntrinsics
+    source_crop: CropRectangle | None
     policy_intrinsics: CameraIntrinsics
     training_world_pose: CameraPose
     dp3_point_cloud: dict[str, Any]
@@ -80,6 +128,10 @@ class CameraCalibrationProfile:
     depth_topic: str
     camera_info_topic: str
     physical_model: str
+    serial_number: str
+    physical_stream_size: tuple[int, int] | None
+    physical_stream_crop: CropRectangle | None
+    maximum_intrinsics_error_px: float
     measured_world_pose: CameraPose | None
     measured_pose_status: str
     maximum_translation_error_m: float
@@ -88,6 +140,74 @@ class CameraCalibrationProfile:
     @property
     def hardware_ready(self) -> bool:
         return not self.hardware_blockers()
+
+    @property
+    def policy_shape(self) -> tuple[int, int]:
+        return (self.policy_intrinsics.height, self.policy_intrinsics.width)
+
+    def frame_views(self) -> tuple[tuple[str, tuple[int, int], CropRectangle | None], ...]:
+        """Full-frame shapes ``prepare_rgbd`` accepts, each with its crop."""
+
+        views = [
+            (
+                "training source",
+                (self.source_intrinsics.height, self.source_intrinsics.width),
+                self.source_crop,
+            )
+        ]
+        if self.physical_stream_size is not None:
+            width, height = self.physical_stream_size
+            if (height, width) != views[0][1]:
+                views.append(("physical stream", (height, width), self.physical_stream_crop))
+        return tuple(views)
+
+    def crop_for_frame(self, shape: tuple[int, int]) -> CropRectangle | None:
+        for _label, view_shape, crop in self.frame_views():
+            if tuple(shape) == view_shape:
+                return crop
+        accepted = ", ".join(
+            f"the {label} {view_shape}" for label, view_shape, _crop in self.frame_views()
+        )
+        raise ValueError(
+            f"camera frame must be {accepted}, or the policy view "
+            f"{self.policy_shape}; got {tuple(shape)}"
+        )
+
+    def assert_live_camera_info(
+        self, width: int, height: int, camera_matrix: Any
+    ) -> CameraIntrinsics:
+        """Check a live ``CameraInfo`` maps onto the checkpoint's policy view."""
+
+        if self.physical_stream_size is None:
+            raise ValueError("camera profile declares no physical colour stream")
+        expected_width, expected_height = self.physical_stream_size
+        if (int(width), int(height)) != (expected_width, expected_height):
+            raise ValueError(
+                f"live colour stream is {int(width)}x{int(height)}; the profile "
+                f"expects {expected_width}x{expected_height}"
+            )
+        live = CameraIntrinsics(
+            width=int(width),
+            height=int(height),
+            camera_matrix=_tuple(camera_matrix, 9, "camera_matrix"),
+        )
+        view = live.policy_view(
+            self.physical_stream_crop,
+            self.policy_intrinsics.width,
+            self.policy_intrinsics.height,
+        )
+        error = max(
+            abs(actual - expected)
+            for actual, expected in zip(
+                view.camera_matrix, self.policy_intrinsics.camera_matrix
+            )
+        )
+        if error > self.maximum_intrinsics_error_px:
+            raise ValueError(
+                f"live intrinsics map onto the policy view with {error:.3f} px error "
+                f"(limit {self.maximum_intrinsics_error_px:.3f} px)"
+            )
+        return view
 
     def training_pose_error(self) -> tuple[float, float]:
         """Return physical-vs-training translation metres and rotation degrees."""
@@ -119,8 +239,15 @@ class CameraCalibrationProfile:
                 f"physical camera model {self.physical_model!r} does not match "
                 f"training model {self.training_model!r}"
             )
+        if not self.serial_number or self.serial_number.upper() == "PLACEHOLDER":
+            blockers.append("physical camera serial number is not recorded")
+        if self.physical_stream_size is None:
+            blockers.append("physical colour stream resolution and crop are not recorded")
         if self.measured_pose_status != "validated" or self.measured_world_pose is None:
-            blockers.append("measured world-to-camera pose is still a placeholder")
+            blockers.append(
+                "measured world-to-camera pose is not validated "
+                f"(status: {self.measured_pose_status})"
+            )
         else:
             measured = self.measured_world_pose
             expected = self.training_world_pose
@@ -150,7 +277,7 @@ class CameraCalibrationProfile:
         if encoder.get("type") != "rgb_pointcloud_dp3_encoder":
             raise ValueError("rollout requires the RGB point-cloud DP3 encoder")
         input_config = vision.get("input", {})
-        expected_shape = (self.policy_intrinsics.height, self.policy_intrinsics.width)
+        expected_shape = self.policy_shape
         if tuple(input_config.get("image_shape", ())) != expected_shape:
             raise ValueError(
                 f"checkpoint image shape must be {expected_shape}, got "
@@ -200,6 +327,17 @@ def _intrinsics(document: dict[str, Any]) -> CameraIntrinsics:
     )
 
 
+def _crop(document: dict[str, Any] | None) -> CropRectangle | None:
+    if document is None:
+        return None
+    return CropRectangle(
+        x=int(document["x"]),
+        y=int(document["y"]),
+        width=int(document["width"]),
+        height=int(document["height"]),
+    )
+
+
 def _pose(document: dict[str, Any]) -> CameraPose:
     return CameraPose(
         parent_frame_id=str(document["parent_frame_id"]),
@@ -207,6 +345,16 @@ def _pose(document: dict[str, Any]) -> CameraPose:
         translation_m=_tuple(document["translation_m"], 3, "translation_m"),
         rotation_wxyz=_tuple(document["rotation_wxyz"], 4, "rotation_wxyz"),
     )
+
+
+def _assert_isotropic(
+    width: int, height: int, policy: CameraIntrinsics, label: str
+) -> None:
+    if width * policy.height != height * policy.width:
+        raise ValueError(
+            f"{label} {width}x{height} does not have the policy aspect ratio "
+            f"{policy.width}x{policy.height}"
+        )
 
 
 def load_camera_calibration(path: str | Path | None = None) -> CameraCalibrationProfile:
@@ -218,14 +366,35 @@ def load_camera_calibration(path: str | Path | None = None) -> CameraCalibration
     training = document["training_camera"]
     physical = document["physical_camera"]
     source_intrinsics = _intrinsics(training["color"])
-    policy_intrinsics = _intrinsics(training["policy_input"])
-    scaled = source_intrinsics.scaled(policy_intrinsics.width, policy_intrinsics.height)
-    if not np.allclose(
-        scaled.camera_matrix, policy_intrinsics.camera_matrix, atol=1e-8
-    ):
+    policy_document = training["policy_input"]
+    policy_intrinsics = _intrinsics(policy_document)
+    source_crop = _crop(policy_document.get("source_crop_px"))
+    derived = source_intrinsics.policy_view(
+        source_crop, policy_intrinsics.width, policy_intrinsics.height
+    )
+    if not np.allclose(derived.camera_matrix, policy_intrinsics.camera_matrix, atol=1e-6):
         raise ValueError(
-            "policy camera matrix is not the exact scaled source calibration"
+            "policy camera matrix is not the exact cropped and scaled source calibration"
         )
+
+    stream = physical.get("color_stream")
+    stream_size = None
+    stream_crop = None
+    if stream is not None:
+        stream_size = (int(stream["width"]), int(stream["height"]))
+        stream_crop = _crop(stream.get("crop_px"))
+        if stream_crop is None:
+            _assert_isotropic(*stream_size, policy_intrinsics, "physical colour stream")
+        else:
+            if not stream_crop.fits(*stream_size):
+                raise ValueError("physical stream crop exceeds the stream resolution")
+            _assert_isotropic(
+                stream_crop.width,
+                stream_crop.height,
+                policy_intrinsics,
+                "physical colour stream crop",
+            )
+
     measured = physical["measured_world_pose"]
     measured_pose = None
     if (
@@ -239,6 +408,7 @@ def load_camera_calibration(path: str | Path | None = None) -> CameraCalibration
         training_model=str(training["model"]),
         frame_id=str(training["frame_id"]),
         source_intrinsics=source_intrinsics,
+        source_crop=source_crop,
         policy_intrinsics=policy_intrinsics,
         training_world_pose=_pose(training["world_pose"]),
         dp3_point_cloud=dict(training["dp3_point_cloud"]),
@@ -246,6 +416,12 @@ def load_camera_calibration(path: str | Path | None = None) -> CameraCalibration
         depth_topic=str(physical["depth_topic"]),
         camera_info_topic=str(physical["camera_info_topic"]),
         physical_model=str(physical["model"]),
+        serial_number=str(physical.get("serial_number", "PLACEHOLDER")),
+        physical_stream_size=stream_size,
+        physical_stream_crop=stream_crop,
+        maximum_intrinsics_error_px=float(
+            physical.get("maximum_intrinsics_error_px", 0.5)
+        ),
         measured_world_pose=measured_pose,
         measured_pose_status=str(measured.get("status", "PLACEHOLDER")).lower(),
         maximum_translation_error_m=float(limits["translation_m"]),
@@ -273,30 +449,27 @@ def prepare_rgbd(
     *,
     depth_units: str,
 ) -> PreparedRgbd:
-    """Validate, resize, and normalize one aligned camera observation."""
+    """Validate, crop, resize, and normalize one aligned camera observation.
+
+    Frames may arrive at the policy view directly, at the training source
+    resolution, or at the physical colour-stream resolution; the latter two
+    are cropped with the profile's rectangle and then resized isotropically.
+    """
 
     rgb = np.asarray(rgb)
     depth = np.asarray(depth)
-    expected_source = (
-        profile.source_intrinsics.height,
-        profile.source_intrinsics.width,
-    )
-    expected_policy = (
-        profile.policy_intrinsics.height,
-        profile.policy_intrinsics.width,
-    )
+    expected_policy = profile.policy_shape
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("RGB image must have shape [H,W,3]")
     if depth.ndim == 3 and depth.shape[2] == 1:
         depth = depth[..., 0]
     if depth.ndim != 2 or depth.shape != rgb.shape[:2]:
         raise ValueError("depth must be pixel-aligned with RGB")
-    if rgb.shape[:2] not in (expected_source, expected_policy):
-        raise ValueError(
-            f"camera frame must be source {expected_source} or policy {expected_policy}, "
-            f"got {rgb.shape[:2]}"
-        )
-    if rgb.shape[:2] == expected_source:
+    if rgb.shape[:2] != expected_policy:
+        crop = profile.crop_for_frame(rgb.shape[:2])
+        if crop is not None:
+            rgb = crop.apply(rgb)
+            depth = crop.apply(depth)
         rgb = _nearest_resize(rgb, *expected_policy)
         depth = _nearest_resize(depth, *expected_policy)
     rgb_float = rgb.astype(np.float32, copy=False)
@@ -323,6 +496,7 @@ __all__ = [
     "CameraCalibrationProfile",
     "CameraIntrinsics",
     "CameraPose",
+    "CropRectangle",
     "PreparedRgbd",
     "default_profile_path",
     "load_camera_calibration",

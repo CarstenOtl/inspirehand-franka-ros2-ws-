@@ -1,28 +1,82 @@
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from utils.camera_calibration import load_camera_calibration, prepare_rgbd
+from utils.camera_calibration import (
+    CropRectangle,
+    load_camera_calibration,
+    prepare_rgbd,
+)
+
+APP_ROOT = Path(__file__).resolve().parents[1]
+STUDENT_CHECKPOINT = (
+    APP_ROOT
+    / "checkpoints"
+    / "sequential_threading_cycle10_hybrid_teacher_d415_20ep"
+    / "checkpoint.pt"
+)
+
+# /camera/camera/color/camera_info as published by this workcell's RealSense
+# node at 1280x720 on 2026-09-11.
+LIVE_1280X720_K = (
+    903.0774536132812, 0.0, 621.9632568359375,
+    0.0, 901.0401000976562, 356.8915100097656,
+    0.0, 0.0, 1.0,
+)
 
 
-def test_checked_in_camera_profile_has_exact_policy_scaling_and_is_not_ready():
+def test_checked_in_camera_profile_derives_policy_view_from_640x480_calibration():
     profile = load_camera_calibration()
     assert profile.training_model == "Intel RealSense D415"
     assert profile.physical_model == "Intel RealSense D415"
     assert (profile.source_intrinsics.width, profile.source_intrinsics.height) == (
-        1280,
-        720,
+        640,
+        480,
     )
+    assert profile.source_crop == CropRectangle(x=0, y=60, width=640, height=360)
     assert (profile.policy_intrinsics.width, profile.policy_intrinsics.height) == (
         320,
         180,
     )
-    assert profile.policy_intrinsics.camera_matrix[0] == pytest.approx(
-        profile.source_intrinsics.camera_matrix[0] / 4.0
+    derived = profile.source_intrinsics.policy_view(profile.source_crop, 320, 180)
+    assert derived.camera_matrix == pytest.approx(
+        profile.policy_intrinsics.camera_matrix, abs=1e-9
     )
+    assert profile.policy_intrinsics.camera_matrix[0] == pytest.approx(
+        profile.source_intrinsics.camera_matrix[0] / 2.0
+    )
+    assert profile.policy_intrinsics.camera_matrix[5] == pytest.approx(
+        (profile.source_intrinsics.camera_matrix[5] - 60.0) / 2.0
+    )
+    assert profile.training_world_pose.parent_frame_id == "fr3_link0"
+
+
+def test_checked_in_camera_profile_is_not_hardware_ready():
+    profile = load_camera_calibration()
     assert not profile.hardware_ready
-    assert profile.hardware_blockers()
+    blockers = profile.hardware_blockers()
+    assert any("serial number" in item for item in blockers)
+    assert any("not validated" in item and "measured" in item for item in blockers)
+
+
+def test_live_1280x720_camera_info_maps_onto_the_policy_view():
+    profile = load_camera_calibration()
+    assert profile.physical_stream_size == (1280, 720)
+    assert profile.physical_stream_crop == CropRectangle(
+        x=160, y=90, width=960, height=540
+    )
+    view = profile.assert_live_camera_info(1280, 720, LIVE_1280X720_K)
+    assert view.camera_matrix == pytest.approx(
+        profile.policy_intrinsics.camera_matrix, abs=1e-3
+    )
+    with pytest.raises(ValueError, match="640x480"):
+        profile.assert_live_camera_info(640, 480, LIVE_1280X720_K)
+    shifted = list(LIVE_1280X720_K)
+    shifted[2] += 6.0  # two policy pixels
+    with pytest.raises(ValueError, match="px error"):
+        profile.assert_live_camera_info(1280, 720, shifted)
 
 
 def test_hardware_ready_requires_a_validated_matching_pose_and_camera_model():
@@ -30,6 +84,7 @@ def test_hardware_ready_requires_a_validated_matching_pose_and_camera_model():
     ready = replace(
         profile,
         physical_model=profile.training_model,
+        serial_number="000000000000",
         measured_pose_status="validated",
         measured_world_pose=profile.training_world_pose,
     )
@@ -39,7 +94,9 @@ def test_hardware_ready_requires_a_validated_matching_pose_and_camera_model():
         ready,
         measured_world_pose=replace(
             ready.training_world_pose,
-            translation_m=(1.0, 0.0, 0.4),
+            translation_m=tuple(
+                np.asarray(ready.training_world_pose.translation_m) + (0.1, 0.0, 0.0)
+            ),
         ),
     )
     assert not shifted.hardware_ready
@@ -62,12 +119,41 @@ def test_prepare_rgbd_converts_units_layout_and_invalid_depth():
     assert not prepared.valid_mask[0, 0, 0]
 
 
-def test_prepare_rgbd_rejects_unmodelled_aspect_ratio():
+@pytest.mark.parametrize(
+    ("shape", "crop"),
+    [
+        ((480, 640), CropRectangle(x=0, y=60, width=640, height=360)),
+        ((720, 1280), CropRectangle(x=160, y=90, width=960, height=540)),
+    ],
+)
+def test_prepare_rgbd_crops_full_frames_before_resizing(shape, crop):
     profile = load_camera_calibration()
-    with pytest.raises(ValueError, match="source .* or policy"):
+    # Everything outside the crop is poisoned; nothing of it may survive.
+    depth = np.full(shape, 9.0, dtype=np.float32)
+    rgb = np.zeros((*shape, 3), dtype=np.uint8)
+    depth[crop.y : crop.y + crop.height, crop.x : crop.x + crop.width] = 0.42
+    rgb[crop.y : crop.y + crop.height, crop.x : crop.x + crop.width] = 255
+    prepared = prepare_rgbd(rgb, depth, profile, depth_units="metres")
+    assert prepared.depth.shape == (1, 180, 320)
+    assert np.all(prepared.depth == pytest.approx(0.42))
+    assert np.all(prepared.rgb == 1.0)
+
+
+def test_prepare_rgbd_rejects_unmodelled_frame_shapes():
+    profile = load_camera_calibration()
+    with pytest.raises(ValueError, match="policy view"):
         prepare_rgbd(
-            np.zeros((480, 640, 3), dtype=np.uint8),
-            np.ones((480, 640), dtype=np.float32),
+            np.zeros((360, 640, 3), dtype=np.uint8),
+            np.ones((360, 640), dtype=np.float32),
             profile,
             depth_units="metres",
         )
+
+
+@pytest.mark.skipif(
+    not STUDENT_CHECKPOINT.is_file(), reason="student checkpoint not copied in"
+)
+def test_checked_in_profile_matches_the_student_checkpoint():
+    torch = pytest.importorskip("torch")
+    payload = torch.load(STUDENT_CHECKPOINT, map_location="cpu", weights_only=False)
+    load_camera_calibration().assert_checkpoint_compatible(payload["config"])

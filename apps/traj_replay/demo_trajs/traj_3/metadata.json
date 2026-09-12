@@ -1,0 +1,208 @@
+{
+  "replay": "policy",
+  "task": "Isaac-Forge-Franka-Threading-V2-M24-v0",
+  "checkpoint": "/home/chi-zhang/projects/franka-chi/forge_ultra/tasks/forge_franka_threading_v2/logs/rl_games/ForgeTg2/franka_threading_v2-Forge-franka-threading-v2-m24-fr3-threading-v2-no-adr-512-2026-09-11_02-10-17/nn/ForgeTg2.pth",
+  "dt": 0.06666666666666667,
+  "recording_frequency_hz": 15.0,
+  "joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+    "index_joint_0",
+    "little_joint_0",
+    "middle_joint_0",
+    "ring_joint_0",
+    "thumb_joint_0",
+    "index_joint_1",
+    "little_joint_1",
+    "middle_joint_1",
+    "ring_joint_1",
+    "thumb_joint_1",
+    "thumb_joint_2",
+    "thumb_joint_3"
+  ],
+  "arm_joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7"
+  ],
+  "arm_joint_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "hand_joint_names": [
+    "thumb_joint_0",
+    "thumb_joint_1",
+    "index_joint_0",
+    "middle_joint_0",
+    "ring_joint_0",
+    "little_joint_0"
+  ],
+  "hand_joint_ids": [
+    11,
+    16,
+    7,
+    9,
+    10,
+    8
+  ],
+  "physics_dt": 0.008333333333333333,
+  "decimation": 8,
+  "recording_clock": "policy_step",
+  "seed": 0,
+  "distillation": false,
+  "distillation_gravity_enabled": false,
+  "teacher_execution": "native_policy_action",
+  "rollout_mode": "deterministic_mean",
+  "distillation_teacher_gravity_matched": false,
+  "distillation_gravity_compensation_enabled": true,
+  "disturbance_mode": "none",
+  "impulse_time_range_s": [
+    0.25,
+    1.0
+  ],
+  "impulse_magnitude_range_ns": [
+    0.05,
+    0.25
+  ],
+  "impulse_seed": null,
+  "trajectory_name": "traj_3",
+  "schema_version": 2,
+  "created_at": "2026-09-11T11:28:21.537939",
+  "sample_count": 451,
+  "data_file": "replay_data.npz",
+  "fields": {
+    "step": [
+      451
+    ],
+    "joint_pos": [
+      451,
+      1,
+      19
+    ],
+    "joint_vel": [
+      451,
+      1,
+      19
+    ],
+    "tcp_pos": [
+      451,
+      1,
+      3
+    ],
+    "tcp_quat": [
+      451,
+      1,
+      4
+    ],
+    "nut_pos": [
+      451,
+      1,
+      3
+    ],
+    "nut_quat": [
+      451,
+      1,
+      4
+    ],
+    "joint_pos_target": [
+      451,
+      1,
+      19
+    ],
+    "nut_lin_vel": [
+      451,
+      1,
+      3
+    ],
+    "nut_ang_vel": [
+      451,
+      1,
+      3
+    ],
+    "threading_turn_start_quat": [
+      451,
+      1,
+      4
+    ],
+    "threading_target_pos": [
+      451,
+      1,
+      3
+    ],
+    "threading_target_quat": [
+      451,
+      1,
+      4
+    ],
+    "threading_turn_progress_rad": [
+      451,
+      1
+    ],
+    "threading_proper_grip": [
+      451,
+      1
+    ],
+    "threading_grasped_once": [
+      451,
+      1
+    ],
+    "threading_grasp_face_index": [
+      451,
+      1
+    ],
+    "threading_target_grasp_face_index": [
+      451,
+      1
+    ],
+    "debug_nut_frame_pos": [
+      451,
+      1,
+      3
+    ],
+    "debug_nut_frame_quat": [
+      451,
+      1,
+      4
+    ]
+  },
+  "trajectory_layout": "time, environment, component",
+  "temporal_alignment": {
+    "joint_pos_target": "post-step command: for policy transitions, observation[t] pairs with joint_pos_target[t+1]"
+  },
+  "coordinate_convention": {
+    "tcp_position": "environment-relative metres",
+    "nut_position": "environment-relative metres",
+    "quaternion": "WXYZ",
+    "joint_position": "radians",
+    "joint_velocity": "radians/second",
+    "joint_position_target": "radians; controller command active at sample time"
+  },
+  "home": "homing.yaml",
+  "hardware_orientation": {
+    "joint": "fr3_joint7",
+    "offset_rad": 0.0,
+    "note": "This policy uses the current hardware joint orientation. Replay fr3_joint7 exactly as recorded; do not apply the legacy +90-degree compensation."
+  },
+  "hardware_replay_status": "rejected_by_fr3_safety_preparation",
+  "hardware_replay_limitation": {
+    "joint": "fr3_joint5",
+    "recorded_max_rad": 2.80649995803833,
+    "first_saturated_sample": 59,
+    "first_saturated_time_s": 3.933333333333333,
+    "note": "The recorded joint reaches the FR3 position-dependent velocity boundary. Do not bypass the preparation guard; use a hardware-safe policy capture or an explicitly retargeted derivative."
+  }
+}

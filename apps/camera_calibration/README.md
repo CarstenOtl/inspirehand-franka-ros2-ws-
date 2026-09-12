@@ -1,9 +1,9 @@
 # RealSense D415 RGB eye-to-hand calibration
 
 This app estimates a fixed table camera's pose in the Franka `world` frame.
-An AprilTag is stuck rigidly to the back of the Inspire Hand. Its placement
-is the measured fixed pose represented by the current robot asset. The solver
-uses that known mount and estimates only `fr3_link0 -> camera`.
+An AprilTag is fixed rigidly to an end-effector flange-mounted holder. Its
+placement is the measured fixed pose represented by the current robot asset.
+The solver uses that known mount and estimates only `fr3_link0 -> camera`.
 
 The entry point is a passive recorder. It starts the camera and calibration
 node, but never starts a controller or sends a robot/hand command. Start the
@@ -12,8 +12,11 @@ while keeping the complete tag visible.
 
 ## Before running
 
-1. Print a supported AprilTag (default `tag36h11`, ID 0), keep it flat, and
-   attach it to the back of the palm—not to a moving finger.
+1. Print a supported AprilTag (default `tag36h11`, ID 0) and attach it to the
+   2.3 mm flat flange-mounted holder—not to a moving finger. The asset places
+   First rotate an intermediate mount frame `Rz1=-45 deg` about `fr3_link8` Z,
+   then place the printed face centre at `(60, 0, 35)` mm in `Rz1`. The print
+   has zero in-plane clocking within that frame.
 2. Measure the outer edge of the black square, excluding the white paper, in
    metres. Pose scale depends directly on this value.
 3. Start the combined robot bringup so `fr3_link0 -> fr3_link8` is available.
@@ -137,12 +140,16 @@ Defaults:
 - moving pose: `fr3_link0 -> fr3_link8`
 - calibrated pose: `fr3_link0 -> camera_link`
 
-The tag is physically fixed on the Inspire Hand. The recorder uses timestamped
-`fr3_link0 -> fr3_link8` FK generated from the arm's `/joint_states`, then applies
-the measured fixed `fr3_link8 -> apriltag_0` transform from the current physical
-asset, `assets/fr3_inspirehand/fr3_inspirehand.xml`. That transform includes the
-180-degree Z clocking and 10 mm adapter between the flange and palm. The tag
-mount is not estimated; only the fixed camera pose is calibrated.
+The tag is physically fixed to the end-effector flange. The recorder uses
+timestamped `fr3_link0 -> fr3_link8` FK generated from the arm's `/joint_states`,
+then applies the measured fixed `fr3_link8 -> apriltag_0` transform from the
+current physical asset, `assets/fr3_inspirehand/fr3_inspirehand.xml`. The MJCF
+first creates `apriltag_rz1` with `Rz=-45 deg` relative to
+`fr3_link8`, then places `apriltag_0` at `xyz=(0.060, 0, 0.035)` m in that
+intermediate frame. Consequently, the printed centre resolves to approximately
+`xyz=(0.0424264, -0.0424264, 0.035)` m in `fr3_link8`. Its origin is the printed
+face centre; the 2.3 mm backing plate extends behind it. The tag mount is not
+estimated; only the fixed camera pose is calibrated.
 
 `--manual` means hand-guided collection: move the hand across the image, vary
 its distance and orientation, and keep the complete tag visible. At each pose,
@@ -210,25 +217,40 @@ Capture the calibration output with `tee` (or copy just the JSON object after
 ```bash
 ./apps/camera_calibration/calibrate.py --manual 2>&1 | tee calibration.log
 
-./apps/camera_calibration/tests/visualize_calibrated_camera.py calibration.log
+./apps/camera_calibration/tests/visualize_calibrated_camera.py calibration.log --live
 ```
 
 The test uses the same combined FR3/Inspire MJCF as the calibration simulation.
-It adds the shared D415 mesh from `assets/camera/mesh/d415.stl`, coordinate-axis
-triads for both `camera_link` and `camera_color_optical_frame`, the calibrated
-TF translations, and a cyan view frustum. Axis colors follow the usual
-convention: +X red, +Y green, and +Z blue. The MuJoCo window is a passive
-viewer: it does not start ROS, publish commands, or step physics.
+It adds a non-colliding camera housing, RGB optical axes, and a cyan view
+frustum at the calibrated pose. With the robot bringup and one RealSense RGB
+producer still running, the live view compares the real image with the MuJoCo
+camera while updating the simulated arm from `/joint_states`. It subscribes
+only: it does not publish commands or step physics.
 
 - Press `C` or `2` for the calibrated RGB point of view.
 - Press `F` or `1` to return to the free overview and inspect the camera's
   location and viewing direction.
-- Free-overview mode explicitly enables MuJoCo geometry group 5, which contains
-  the D415 mesh, camera frames, TF lines, and frustum. Camera-POV mode hides the
-  same group so the camera cannot see its own visualization geometry.
 - Use `--start-in-pov` to open directly in the RGB view.
 - Use `--headless` to validate that the result and decorated MJCF compile
   without opening a window.
+
+This opens one side-by-side view: the latest real RGB frame on the left and a
+MuJoCo render through the calibrated camera on the right. The MuJoCo arm is
+updated from `fr3_joint1` through `fr3_joint7` on `/joint_states`; it is purely
+kinematic, creates no application publisher, and never sends robot commands.
+The viewer only subscribes to the existing camera producer, so it cannot
+contend for the D415 USB device. Use `--joint-state-topic` or `--image-topic`
+for non-default ROS names, and `--render-width` or `--max-fps` to tune display
+cost. Press `Q` or Esc to close it.
+
+The two panels use the most recently received image and joint state rather than
+hardware-triggered synchronization. Their title bars show message age so stale
+input is visible. The simulated view intentionally contains only geometry from
+the MuJoCo scene; unmodelled real workcell objects will appear only on the left.
+
+Omit `--live` to use the offline passive MuJoCo viewer instead. That mode does
+not start ROS; press `C` or `2` for the calibrated camera and `F` or `1` for the
+external overview.
 
 The POV uses the camera's vertical focal length and image height; keep the
 MuJoCo window at the printed RGB aspect ratio for matching horizontal coverage.

@@ -28,6 +28,11 @@ ros2 run franka_trajectory_replay replay_trajectory.py ~/trajs/policy.npz
 trajectory N times, `--no-record` / `--no-analyze` do what they say. Ctrl-C sends an abort:
 the controller decelerates over 0.5 s and holds.
 
+The controller also accepts `std_msgs/Empty` on `~/pause` and `~/resume`. During a pause it
+ramps the trajectory clock from full speed to zero over `pause_ramp_duration` (0.5 s), holds
+the resulting reference, and resumes the same trajectory rather than skipping elapsed wall
+time. Status includes `pause_requested`, `paused`, and `playback_rate`.
+
 ## Control modes
 
 | `command_interface` | what runs the joints | when |
@@ -37,6 +42,17 @@ the controller decelerates over 0.5 s and holds.
 
 Pick the mode with `controllers_yaml:=` on the launch; the controller reports which one it is
 in on its status topic and the report records it.
+
+In `effort` mode the stiffness is live-tunable. `stiffness_scale` multiplies the configured
+seven-element `k_gains` vector, and changes to that scale, `k_gains`, or `d_gains` are blended
+over `gain_ramp_duration` (1 s by default) in the real-time loop. For example, while active:
+
+```bash
+ros2 param set /trajectory_replay_controller stiffness_scale 1.25
+```
+
+This affects only the ROS-side effort law. It cannot change the position mode's internal
+libfranka impedance; set that through the robot's supported joint-impedance mechanism instead.
 
 ### What the controller guards
 
@@ -167,7 +183,7 @@ impedance, with hand-picked damping) is a plausibility model, not an identified 
 ## On the arm
 
 ```
-ros2 run franka_trajectory_replay preflight.py --host 10.7.7.7   # mode, brakes, FCI, user stop
+ros2 run franka_trajectory_replay preflight.py --host 172.16.0.2  # mode, brakes, FCI, user stop
 
 ros2 launch franka_trajectory_replay replay.launch.py \
     robot_config_file:=/ros2_ws/src/franka_bringup/config/tekken.config.yaml

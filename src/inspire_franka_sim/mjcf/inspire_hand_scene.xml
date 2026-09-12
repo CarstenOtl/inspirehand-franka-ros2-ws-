@@ -19,6 +19,11 @@
     </frame>
   </worldbody>
 
-  <!-- The hand's own "open" keyframe comes in with the attach; it is what the
-       launch selects for this scene. -->
+  <!-- Keep keyframes on the final scene, not the reusable hand model. A child
+       keyframe remains pending through <attach>, and nested attachment through
+       inspire_hand_on_flange.xml makes MuJoCo unable to namespace it safely. -->
+  <keyframe>
+    <key name="open"
+      qpos="0 0 0 0 0 -0.04545 0 -0.04545 0 -0.04545 0 -0.04545"/>
+  </keyframe>
 </mujoco>

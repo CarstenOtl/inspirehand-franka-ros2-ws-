@@ -1,5 +1,5 @@
 <mujoco model="inspire_franka_flange_scene">
-  <!-- The Inspire hand bolted to the FR3's flange. `hand_mount:=flange`.
+  <!-- The Inspire hand bolted to the FR3's flange (the combined default).
 
        Differs from the bench scene only in binding fr3.xml's `end_effector`
        slot to the hand wrapper instead of the empty stub. The mount transform

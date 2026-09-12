@@ -120,7 +120,7 @@ def check(status):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', default='10.7.7.7', help='robot address serving Desk')
+    parser.add_argument('--host', default='172.16.0.2', help='robot address serving Desk')
     parser.add_argument('--timeout', type=float, default=8.0)
     args = parser.parse_args()
 

@@ -43,7 +43,7 @@ The core and example folders are structured in the following way:
     ├── ...
     ├── image
     │       └── ...
-    └── text 
+    └── text
             └── ...
 ```
 
@@ -73,7 +73,7 @@ We provide [training examples](examples). Under this folder, you can find synthe
 
 #### Do you release pre-trained models?
 
-In this version, we don't release pre-trained models. All models under [examples](examples) can be trained from scratch by a single running command. 
+In this version, we don't release pre-trained models. All models under [examples](examples) can be trained from scratch by a single running command.
 
 #### How to contribute to this codebase?
 Please follow the [contribution guide](CONTRIBUTING.md).
@@ -88,12 +88,12 @@ If you found this repository useful, please cite the following.
 
 ```
 @misc{lipman2024flowmatchingguidecode,
-      title={Flow Matching Guide and Code}, 
+      title={Flow Matching Guide and Code},
       author={Yaron Lipman and Marton Havasi and Peter Holderrieth and Neta Shaul and Matt Le and Brian Karrer and Ricky T. Q. Chen and David Lopez-Paz and Heli Ben-Hamu and Itai Gat},
       year={2024},
       eprint={2412.06264},
       archivePrefix={arXiv},
       primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2412.06264}, 
+      url={https://arxiv.org/abs/2412.06264},
 }
 ```

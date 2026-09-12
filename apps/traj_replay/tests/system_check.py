@@ -3,7 +3,7 @@
 
 Run this from a shell in which the workspace has been built and sourced::
 
-    ./apps/traj_replay/tests/system_check.py --robot-ip 10.7.7.7
+    ./apps/traj_replay/tests/system_check.py --robot-ip 172.16.0.2
 
 By default the check does not send motion commands.  It launches the FR3 and
 Inspire hand through ``inspire_franka_bringup``, launches the RealSense wrapper

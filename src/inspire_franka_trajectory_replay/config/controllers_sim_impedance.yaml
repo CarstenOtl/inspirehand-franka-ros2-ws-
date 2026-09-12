@@ -1,0 +1,167 @@
+# Controllers for the *torque-controlled* replay stack against MuJoCo
+# (sim_replay.launch.py arm_controller:=joint-impedance|cartesian-impedance).
+#
+# The FR3 runs the same two replay controllers as hardware over the effort
+# interfaces, with the parameter blocks copied from
+# controllers_joint_impedance.yaml and controllers_cartesian_impedance.yaml.
+# What differs from hardware: there is no franka_robot_state_broadcaster and
+# no robot model, so the joint controller runs without coriolis compensation
+# (as on hardware) and the Cartesian controller takes its pose and Jacobian
+# from its built-in DH model (model_source: dh); the scene is gravity-free in
+# place of libfranka's gravity compensation; collision thresholds do not exist.
+#
+# The hand keeps its stock controllers, as in controllers_replay.yaml, with
+# inspire_hand_sim_bridge putting the driver's command path in front of them.
+
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    trajectory_replay_controller:
+      type: franka_trajectory_replay/TrajectoryReplayController
+
+    cartesian_trajectory_replay_controller:
+      type: franka_trajectory_replay/CartesianTrajectoryReplayController
+
+    hand_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    hand_position_forward_command_controller:
+      type: forward_command_controller/ForwardCommandController
+
+# --- FR3: joint-impedance waypoint replay (homing, and the joint-impedance mode) ---
+
+trajectory_replay_controller:
+  ros__parameters:
+    robot_type: fr3
+    arm_prefix: ""
+    command_interface: effort
+    # Exact gains of joint_impedance_example_controller (not the IK example).
+    # k_gains: [24.0, 24.0, 24.0, 24.0, 10.0, 6.0, 2.0]
+    # d_gains: [2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 0.5]
+    # First test: moderately firm
+    k_gains: [150.0, 150.0, 150.0, 150.0, 62.5, 37.5, 12.5]
+    d_gains: [15.0, 15.0, 15.0, 15.0, 5.0, 5.0, 2.5]
+    # Both k_gains and this multiplier can be changed while replay is active.
+    # The controller blends every live gain change over gain_ramp_duration so
+    # increasing stiffness cannot introduce a one-cycle torque discontinuity.
+    stiffness_scale: 1.0
+    gain_ramp_duration: 1.0
+    coriolis_compensation: false
+    # Pause/resume changes the trajectory clock continuously rather than
+    # freezing a moving reference in one controller cycle.
+    pause_ramp_duration: 0.5
+    # No additional controller-side limiter: keep the example's hardware path.
+    torque_rate_limit: 0.0
+    rate_limit: false  # position-mode limiter; unused for effort commands
+    set_collision_behavior: false
+    goto_max_velocity: 0.5
+    goto_max_acceleration: 1.0
+    goto_min_duration: 5.0
+    max_joint_step: 3.0
+    max_trajectory_start_error: 0.001
+    trajectory_velocity_scale: 1.0
+    trajectory_acceleration_scale: 1.0
+    abort_stop_duration: 0.5
+    status_rate: 50.0
+
+# --- FR3: Cartesian-impedance waypoint replay ----------------------------------
+
+cartesian_trajectory_replay_controller:
+  ros__parameters:
+    arm_id: fr3
+    arm_prefix: ""
+    base_frame: fr3_link0
+    # The controlled point, in the flange frame: the Inspire hand's grasp
+    # centre (thumb/index fingertip midpoint at the threading grip), 173 mm
+    # from the flange. The controller moves the measured pose and the Jacobian
+    # onto this frame, so the impedance acts about the grasp point and the
+    # robot's own F_T_EE stays at identity. Must equal replay.yaml's tcp
+    # block; the runner's preflight refuses a mismatch.
+    tool_offset_xyz: [-0.0874, -0.0327, 0.1453]
+    tool_offset_rpy: [0.0, 0.0, 0.0]
+    # Simulation: pose and Jacobian from the built-in FR3 DH model, no coriolis.
+    model_source: dh
+    ## The example's defaults. All four are live parameters; changes take
+    ## effect through the example's own 0.005 first-order filter.
+    translational_stiffness: 150.0
+    rotational_stiffness: 10.0
+    nullspace_stiffness: 20.0
+    # MuJoCo's FR3 (fr3.xml, class fr3) carries 1.137 Nm of joint friction loss
+    # and nothing compensates friction below a torque controller in the sim,
+    # so the example's 10 Nm/rad rotational stiffness cannot hold the wrist
+    # and the first headless run tripped the 0.35 rad tracking fault. Four
+    # times the example gains keeps the sim on the reference; hardware keeps
+    # 1.0 and tunes with --stiffness-scale.
+    stiffness_scale: 4.0
+    # The example low-passes its target pose every cycle with this factor
+    # (200 ms time constant at 1 kHz). 1.0 bypasses it; the replay reference
+    # is already smooth, so compare both on the same artifact.
+    target_filter: 0.005
+    # trajectory: the nullspace term follows the recorded joint configuration.
+    # fixed: freeze it at activation, exactly as the example does.
+    nullspace_target: trajectory
+    coriolis_compensation: true
+    # No additional controller-side limiter, as the joint profile.
+    torque_rate_limit: 0.0
+    goto_max_velocity: 0.10
+    goto_max_angular_velocity: 0.50
+    goto_max_nullspace_velocity: 0.50
+    goto_min_duration: 3.0
+    max_goto_step_m: 0.30
+    max_goto_step_rad: 1.0
+    max_trajectory_start_error_m: 0.002
+    max_trajectory_start_error_rad: 0.01
+    goto_settle_tolerance_m: 0.0005
+    goto_settle_tolerance_rad: 0.002
+    goto_settle_timeout: 2.0
+    # Base-frame box every goto target and waypoint must lie in. FR3 reach;
+    # tighten it for the bench.
+    workspace_min: [-0.855, -0.855, -0.36]
+    workspace_max: [0.855, 0.855, 1.19]
+    trajectory_velocity_scale: 1.0
+    # Tracking fault: the controller ramps its clock to zero and holds when
+    # the measured pose is this far from the filtered reference.
+    max_position_error: 0.08
+    max_orientation_error: 0.35
+    pause_ramp_duration: 0.5
+    abort_stop_duration: 0.5
+    status_rate: 50.0
+    set_collision_behavior: false
+
+# --- Inspire hand ------------------------------------------------------------
+# Joint order matches inspire_hand_driver.kinematics.DRIVEN_JOINTS.
+
+hand_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - pinky_proximal_joint
+      - ring_proximal_joint
+      - middle_proximal_joint
+      - index_proximal_joint
+      - thumb_proximal_pitch_joint
+      - thumb_proximal_yaw_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+hand_position_forward_command_controller:
+  ros__parameters:
+    joints:
+      - pinky_proximal_joint
+      - ring_proximal_joint
+      - middle_proximal_joint
+      - index_proximal_joint
+      - thumb_proximal_pitch_joint
+      - thumb_proximal_yaw_joint
+    interface_name: position

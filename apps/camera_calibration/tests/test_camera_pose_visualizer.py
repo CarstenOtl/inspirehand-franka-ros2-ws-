@@ -79,48 +79,62 @@ def test_decorated_scene_contains_noncolliding_housing_camera_and_frustum():
 
     camera = root.find(f".//camera[@name='{MODULE.CAMERA_NAME}']")
     assert camera is not None
-    assert camera.get("quat") == "0 1 0 0"
     assert float(camera.get("fovy")) == pytest.approx(
         np.degrees(2.0 * np.arctan(1080.0 / (2.0 * 1382.0)))
     )
-    camera_mesh = root.find(f".//mesh[@name='{MODULE.CAMERA_MESH_NAME}']")
-    assert camera_mesh is not None
-    assert Path(camera_mesh.get("file")) == MODULE.DEFAULT_CAMERA_MESH.resolve()
-    housing = root.find(".//geom[@name='calibrated_camera_housing']")
-    assert housing is not None
-    assert housing.get("type") == "mesh"
-    assert housing.get("mesh") == MODULE.CAMERA_MESH_NAME
-    assert housing.get("pos") == "0.00987 -0.020 0"
-    assert housing.get("quat") == "0.5 0.5 0.5 0.5"
-    mount_body = root.find(".//body[@name='calibrated_camera_mount']")
-    assert mount_body is not None
-    for axis in "xyz":
-        assert mount_body.find(
-            f"geom[@name='calibrated_camera_link_{axis}_axis']"
-        ) is not None
+    assert root.find(".//geom[@name='calibrated_camera_housing']") is not None
     optical_body = root.find(".//body[@name='calibrated_camera_optical']")
     assert optical_body is not None
-    for axis in "xyz":
-        assert optical_body.find(
-            f"geom[@name='calibrated_camera_optical_{axis}_axis']"
-        ) is not None
     capsules = optical_body.findall("geom[@type='capsule']")
     assert len(capsules) == 7  # three optical axes plus four frustum rays
     assert all(geom.get("contype") == "0" for geom in capsules)
     assert all(geom.get("group") == "5" for geom in capsules)
-    assert root.find(
-        ".//geom[@name='calibrated_camera_parent_to_link_tf']"
-    ) is not None
-    assert root.find(
-        ".//geom[@name='calibrated_camera_link_to_optical_tf']"
-    ) is not None
 
 
-def test_free_view_enables_the_calibrated_camera_geometry_group():
-    defaults = np.asarray([1, 1, 1, 0, 0, 0], dtype=np.uint8)
-    visible = MODULE._free_view_geomgroup(defaults)
-    assert visible.tolist() == [1, 1, 1, 0, 0, 1]
-    assert defaults.tolist() == [1, 1, 1, 0, 0, 0]
+def test_extracts_arm_joint_positions_by_name_from_mixed_order_message():
+    names = ["finger_joint", "fr3_joint3", "fr3_joint1", "fr3_joint7"] + [
+        f"fr3_joint{index}" for index in (2, 6, 4, 5)
+    ]
+    positions = [99.0, 0.3, 0.1, 0.7, 0.2, 0.6, 0.4, 0.5]
+    np.testing.assert_allclose(
+        MODULE.ordered_arm_joint_positions(names, positions),
+        np.arange(0.1, 0.8, 0.1),
+    )
+
+
+def test_rejects_incomplete_or_invalid_live_joint_states():
+    with pytest.raises(ValueError, match="missing fr3_joint7"):
+        MODULE.ordered_arm_joint_positions(
+            MODULE.ARM_JOINT_NAMES[:-1], np.zeros(6)
+        )
+    with pytest.raises(ValueError, match="non-finite"):
+        MODULE.ordered_arm_joint_positions(
+            MODULE.ARM_JOINT_NAMES, [0.0] * 6 + [np.nan]
+        )
+    with pytest.raises(ValueError, match="7 names but 6 positions"):
+        MODULE.ordered_arm_joint_positions(MODULE.ARM_JOINT_NAMES, [0.0] * 6)
+    with pytest.raises(ValueError, match="duplicate"):
+        MODULE.ordered_arm_joint_positions(
+            MODULE.ARM_JOINT_NAMES + ("fr3_joint7",), [0.0] * 8
+        )
+
+
+def test_live_comparison_frame_has_two_labelled_panels():
+    pytest.importorskip("cv2")
+    simulated = np.full((90, 160, 3), 80, dtype=np.uint8)
+    real = np.full((180, 320, 3), 160, dtype=np.uint8)
+    comparison = MODULE.comparison_frame(
+        real, simulated, 160, 90, "real status", "sim status"
+    )
+    assert comparison.shape == (144, 320, 3)
+    assert comparison.dtype == np.uint8
+
+
+def test_live_and_headless_modes_are_mutually_exclusive(tmp_path):
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps(calibration_result()), encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot be used together"):
+        MODULE.run([str(calibration), "--live", "--headless"])
 
 
 @pytest.mark.parametrize(

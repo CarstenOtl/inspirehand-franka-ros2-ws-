@@ -33,6 +33,29 @@ Services
     ``~/set_speed``      ``inspire_hand_msgs/srv/SetSpeed``
     ``~/set_force``      ``inspire_hand_msgs/srv/SetForce``
 
+Thumb-abduction calibration
+----------------------------
+Every angle command path receives the final overlays from
+:mod:`inspire_hand_driver.command_overlays`. At open ratio ``0.0`` the thumb
+swings past the palm plane, so the bottom of its commanded range is unusable.
+The current overlay therefore treats ``0.25`` as the thumb's zero and rescales
+the whole command onto the usable travel::
+
+    physical = 0.25 + 0.75 * commanded
+
+A command of ``0.0`` reaches the hand as ``0.25`` and ``1.0`` still reaches it
+as ``1.0``, so the mapping stays monotonic and every commanded value remains
+distinct -- unlike a floor, which would collapse the bottom quarter of the
+range onto one pose. The other five DOF are unchanged. Inputs are still
+validated against the public ``[0, 1]`` command range before the overlay is
+applied.
+
+``~/joint_states`` reports the hand's *physical* pose, not the pre-overlay
+command, because it feeds ``robot_state_publisher`` and TF. Commanding thumb
+abduction ``0.0`` therefore reads back ``0.25``; callers that need to compare
+feedback against a command should map the command forward with
+:func:`~inspire_hand_driver.command_overlays.apply_open_ratio_overlay`.
+
 Commanding in ratios, not radians
 ---------------------------------
 ``~/joint_states`` publishes radians because that is what ``robot_state_publisher``
@@ -57,6 +80,17 @@ stay in radians, because those files also carry the FR3's seven joints.
 Why the driven/follower split is visible in the interface: only six things can
 be commanded, but twelve have to be published or TF breaks. Commands therefore
 accept only driven names, while state carries all twelve.
+
+Sharing the bus with a command stream
+-------------------------------------
+RS485 is half-duplex, so every register read is time the line cannot be
+carrying a target. Publishing costs three reads -- angles, current, force -- and
+at the default 50 Hz that is a third of the bus at best. Only the angles are
+needed to publish joint states, so ``state_extras_divisor`` fetches the other
+two once per N publishes and holds them in between; ``1`` reads everything
+every cycle and is the default, while a replay streaming targets wants 5 or
+more. ``inspire_hand_driver.benchmark`` models and measures what the bus
+actually costs.
 """
 
 from __future__ import annotations
@@ -69,6 +103,7 @@ from sensor_msgs.msg import JointState
 
 from inspire_hand_msgs.srv import SetAngles, SetForce, SetSpeed
 
+from . import command_overlays
 from . import kinematics as kin
 from .protocol import (
     ANGLE_INVALID,
@@ -134,12 +169,27 @@ class InspireHandNode(Node):
         # Consecutive read failures tolerated before the node reports the hand
         # as lost. RS485 drops the odd frame under EMI; one miss is not a fault.
         self.declare_parameter("max_read_failures", 5)
+        # Publishing costs three read transactions -- angles, current, force --
+        # and RS485 is half-duplex, so those three are time the bus cannot be
+        # carrying commands. Only the angles are needed to publish joint states;
+        # this divides how often the other two are fetched, holding their last
+        # value in between. 1 reads everything every cycle, which is what the
+        # driver has always done and stays the default; a replay streaming
+        # targets at 50 Hz wants 5 or more. See inspire_hand_driver.benchmark
+        # for what the bus actually costs.
+        self.declare_parameter("state_extras_divisor", 1)
 
         self._mock = bool(self.get_parameter("mock").value)
         self._prefix = str(self.get_parameter("joint_prefix").value)
         self._max_failures = int(self.get_parameter("max_read_failures").value)
         self._failures = 0
         self._last_command: Optional[List[int]] = None
+        self._extras_divisor = max(1, int(self.get_parameter("state_extras_divisor").value))
+        self._ticks = 0
+        # Held between fetches when the divisor is above 1, and on the very
+        # first tick before either has been read once.
+        self._currents: List[int] = [0] * 6
+        self._forces: List[int] = [0] * 6
 
         self._joint_names = [self._prefix + j for j in kin.ALL_JOINTS]
         self._driven_names = [self._prefix + j for j in kin.DRIVEN_JOINTS]
@@ -166,7 +216,7 @@ class InspireHandNode(Node):
             f"inspire_hand_driver up: "
             f"transport={'mock' if self._mock else self._transport.port} "
             f"protocol={self._transport.protocol} id={self._transport.hand_id} "
-            f"rate={rate:.0f}Hz prefix={self._prefix!r}"
+            f"rate={rate:.0f}Hz extras=1/{self._extras_divisor} prefix={self._prefix!r}"
         )
 
     # -- setup -------------------------------------------------------------
@@ -208,10 +258,16 @@ class InspireHandNode(Node):
 
     # -- state publishing --------------------------------------------------
     def _on_timer(self) -> None:
+        # The angles are read every cycle because they are what joint_states
+        # is; current and force ride the divisor.
+        extras = self._ticks % self._extras_divisor == 0
+        self._ticks += 1
         try:
             angles = self._transport.read_angles()
-            currents = self._transport.read_registers(REG_CURRENT, 6)
-            forces = self._transport.read_forces()
+            if extras:
+                self._currents = self._transport.read_registers(REG_CURRENT, 6)
+                self._forces = self._transport.read_forces()
+            currents, forces = self._currents, self._forces
         except HandCommunicationError as exc:
             self._failures += 1
             if self._failures == self._max_failures:
@@ -295,7 +351,8 @@ class InspireHandNode(Node):
             except KeyError:
                 unknown.append(str(name))
                 continue
-            angles[index] = open_ratio_to_angle(float(value))
+            ratio = command_overlays.apply_open_ratio_overlay(index, float(value))
+            angles[index] = open_ratio_to_angle(ratio)
             touched = True
 
         if unknown:

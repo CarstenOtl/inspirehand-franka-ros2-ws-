@@ -26,6 +26,7 @@
 #include <ros2_control_test_assets/descriptions.hpp>
 
 #include <franka_trajectory_replay/trajectory_replay_controller.hpp>
+#include <franka_trajectory_replay/cartesian_trajectory_replay_controller.hpp>
 
 using franka_trajectory_replay::TrajectoryReplayController;
 
@@ -42,7 +43,44 @@ TEST(TestLoadTrajectoryReplayController, load_controller) {
   ASSERT_NE(cm.load_controller("test_trajectory_replay_controller",
                                "franka_trajectory_replay/TrajectoryReplayController"),
             nullptr);
+  ASSERT_NE(cm.load_controller("test_cartesian_trajectory_replay_controller",
+                               "franka_trajectory_replay/CartesianTrajectoryReplayController"),
+            nullptr);
   rclcpp::shutdown();
+}
+
+TEST(CartesianTrajectoryReplayControllerMath, sample_trajectory_slerps_and_hermites) {
+  using franka_trajectory_replay::CartesianTrajectoryReplayController;
+  CartesianTrajectoryReplayController::Trajectory trajectory;
+  trajectory.times = {0.0, 1.0, 2.0};
+  trajectory.positions = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}};
+  // 0, 90 and 180 degrees about z, with the last one on the opposite hemisphere on purpose.
+  trajectory.orientations = {{0, 0, 0, 1},
+                             {0, 0, std::sin(M_PI / 4), std::cos(M_PI / 4)},
+                             {0, 0, -1, 0}};
+  trajectory.velocities = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+  trajectory.has_velocities = true;
+  trajectory.nullspace = {{0, 0, 0, 0, 0, 0, 0}, {1, 1, 1, 1, 1, 1, 1}, {2, 2, 2, 2, 2, 2, 2}};
+  size_t hint = 0;
+  Eigen::Vector3d p;
+  Eigen::Quaterniond q;
+  Eigen::Matrix<double, 7, 1> n;
+  CartesianTrajectoryReplayController::sample_trajectory(trajectory, 1.0, hint, p, q, n);
+  EXPECT_NEAR(p.x(), 1.0, 1e-12);
+  EXPECT_NEAR(n(0), 1.0, 1e-12);
+  CartesianTrajectoryReplayController::sample_trajectory(trajectory, 0.5, hint, p, q, n);
+  EXPECT_NEAR(p.x(), 0.5, 1e-12);  // zero-velocity Hermite midpoint is the smoothstep value
+  EXPECT_NEAR(n(0), 0.5, 1e-12);   // nullspace is linear
+  EXPECT_NEAR(2.0 * std::atan2(q.z(), q.w()), M_PI / 4, 1e-12);  // slerp midpoint: 45 degrees
+  CartesianTrajectoryReplayController::sample_trajectory(trajectory, 1.5, hint, p, q, n);
+  // Slerp across the hemisphere flip must take the short way: 135 degrees, not -45.
+  const double angle = 2.0 * std::atan2(q.z(), q.w());
+  EXPECT_NEAR(std::abs(std::fmod(angle + 2 * M_PI, 2 * M_PI)), 3 * M_PI / 4, 1e-9);
+  CartesianTrajectoryReplayController::sample_trajectory(trajectory, 5.0, hint, p, q, n);
+  EXPECT_NEAR(p.y(), 1.0, 1e-12);  // clamped to the end
+  CartesianTrajectoryReplayController::sample_trajectory(trajectory, -1.0, hint, p, q, n);
+  EXPECT_NEAR(p.x(), 0.0, 1e-12);  // clamped to the start
+  EXPECT_DOUBLE_EQ(CartesianTrajectoryReplayController::quintic_blend(0.5), 0.5);
 }
 
 TEST(TrajectoryReplayControllerMath, quintic_blend_endpoints) {

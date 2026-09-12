@@ -1,0 +1,56 @@
+# Waypoint replay with the working JointImpedanceExampleController's PD law.
+# The replay plugin supplies homing, interpolation and abort handling; the
+# effort branch computes K * (q_reference - q) - D * dq_filtered, alpha=0.99.
+# franka_hardware uses startTorqueControl() and its existing torque rate limiter.
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+      thread_priority: 97
+      overruns:
+        manage: false
+        print_warnings: false
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+      trajectory_replay_controller:
+        type: franka_trajectory_replay/TrajectoryReplayController
+
+  franka_robot_state_broadcaster:
+    ros__parameters:
+      convenience_publish_rate: 100
+
+  trajectory_replay_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+      command_interface: effort
+      # Exact gains of joint_impedance_example_controller (not the IK example).
+      # k_gains: [24.0, 24.0, 24.0, 24.0, 10.0, 6.0, 2.0]
+      # d_gains: [2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 0.5]
+      # First test: moderately firm
+      k_gains: [150.0, 150.0, 150.0, 150.0, 62.5, 37.5, 12.5]
+      d_gains: [15.0, 15.0, 15.0, 15.0, 5.0, 5.0, 2.5]
+      # Both k_gains and this multiplier can be changed while replay is active.
+      # The controller blends every live gain change over gain_ramp_duration so
+      # increasing stiffness cannot introduce a one-cycle torque discontinuity.
+      stiffness_scale: 1.0
+      gain_ramp_duration: 1.0
+      coriolis_compensation: false
+      # Pause/resume changes the trajectory clock continuously rather than
+      # freezing a moving reference in one controller cycle.
+      pause_ramp_duration: 0.5
+      # No additional controller-side limiter: keep the example's hardware path.
+      torque_rate_limit: 0.0
+      rate_limit: false  # position-mode limiter; unused for effort commands
+      set_collision_behavior: false
+      goto_max_velocity: 0.5
+      goto_max_acceleration: 1.0
+      goto_min_duration: 5.0
+      max_joint_step: 3.0
+      max_trajectory_start_error: 0.001
+      trajectory_velocity_scale: 1.0
+      trajectory_acceleration_scale: 1.0
+      abort_stop_duration: 0.5
+      status_rate: 50.0

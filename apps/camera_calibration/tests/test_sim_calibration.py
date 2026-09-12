@@ -3,7 +3,7 @@
 
 The combined robot model already contains a 40 mm ``tag36h11`` ID 0 on the
 dorsal side of the hand.  This script adds a fixed pinhole camera with nominal
-Intel RealSense D415 RGB intrinsics, moves the FR3 through a small multi-axis
+Intel RealSense D435 RGB intrinsics, moves the FR3 through a small multi-axis
 trajectory, and for every rendered RGB image:
 
 1. detects the AprilTag with OpenCV;
@@ -21,7 +21,7 @@ starting Python, for example::
 
     MUJOCO_GL=egl python3 apps/camera_calibration/tests/test_sim_calibration.py --headless
 
-The physical D415's factory intrinsics vary by device.  The simulation uses a
+The physical D435's factory intrinsics vary by device.  The simulation uses a
 centered 1920x1080 pinhole model with fx=fy=1383.75 px; real calibration
 continues to use the measured ``CameraInfo`` values from the camera driver.
 """
@@ -63,7 +63,7 @@ from camera_calibration.model_geometry import (  # noqa: E402
 )
 
 
-CAMERA_NAME = "rs415_rgb"
+CAMERA_NAME = "rs435_rgb"
 CAMERA_ROLL_DEG = 90.0
 TAG_BODY_NAME = "apriltag_0"
 TAG_ID = 0
@@ -72,8 +72,8 @@ ARM_JOINTS = tuple(f"fr3_joint{index}" for index in range(1, 8))
 
 
 @dataclass(frozen=True)
-class D415RgbIntrinsics:
-    """Nominal full-resolution D415 RGB calibration for the virtual camera."""
+class D435RgbIntrinsics:
+    """Nominal full-resolution D435 RGB calibration for the virtual camera."""
 
     width: int = 1920
     height: int = 1080
@@ -98,9 +98,9 @@ class D415RgbIntrinsics:
     def validate(self) -> None:
         values = (self.fx, self.fy, self.cx, self.cy)
         if self.width <= 0 or self.height <= 0 or not all(np.isfinite(values)):
-            raise ValueError("D415 RGB intrinsics must be finite and positive")
+            raise ValueError("D435 RGB intrinsics must be finite and positive")
         if self.fx <= 0.0 or self.fy <= 0.0:
-            raise ValueError("D415 RGB focal lengths must be positive")
+            raise ValueError("D435 RGB focal lengths must be positive")
         if not np.isclose(self.fx, self.fy, rtol=0.0, atol=1.0e-9):
             raise ValueError("MuJoCo rendering requires fx == fy for this camera model")
         if not np.isclose(self.cx, self.width / 2.0, atol=1.0e-9) or not np.isclose(
@@ -231,7 +231,7 @@ def _initial_camera_pose(
 
 
 def _absolute_asset_xml_with_camera(
-    world_to_camera_mujoco: np.ndarray, intrinsics: D415RgbIntrinsics
+    world_to_camera_mujoco: np.ndarray, intrinsics: D435RgbIntrinsics
 ) -> str:
     """Return the scene XML with absolute assets and one fixed RGB camera."""
     if not ROBOT_SCENE.is_file():
@@ -248,23 +248,25 @@ def _absolute_asset_xml_with_camera(
                 raise FileNotFoundError(f"MuJoCo asset not found: {asset_path}")
             element.set("file", str(asset_path))
 
-    # The appearance model can wrap the tag over the curved hand shell, while
-    # IPPE_SQUARE (and a real tag fixed to a rigid backing) assumes a plane.
-    # Inject an explicitly UV-mapped 50 mm carrier.  The texture has a 640/800
-    # black-square ratio, hence its metric black edge is exactly 40 mm.
+    # Inject an explicitly UV-mapped copy of the 50 mm planar plate face. The
+    # texture has a 640/800 black-square ratio, hence its metric black edge is
+    # exactly 40 mm.
     asset = root.find("asset")
     tag_geom = root.find(".//geom[@name='apriltag_36h11_id0']")
     if asset is None or tag_geom is None:
         raise RuntimeError(f"{ROBOT_SCENE} has no AprilTag asset/geometry")
     planar_mesh_name = "sim_calibration_planar_apriltag"
+    printed_face_z = TAG_BODY_TO_PRINTED_TAG_XYZ[2]
     asset.append(
         ET.Element(
             "mesh",
             {
                 "name": planar_mesh_name,
                 "vertex": (
-                    "-0.025 -0.025 0.002  0.025 -0.025 0.002  "
-                    "0.025 0.025 0.002  -0.025 0.025 0.002"
+                    f"-0.025 -0.025 {printed_face_z}  "
+                    f"0.025 -0.025 {printed_face_z}  "
+                    f"0.025 0.025 {printed_face_z}  "
+                    f"-0.025 0.025 {printed_face_z}"
                 ),
                 # Preserve the existing tag texture's orientation relative to
                 # the apriltag_0 body: texture U=-Y and texture V=+X.
@@ -279,6 +281,9 @@ def _absolute_asset_xml_with_camera(
     tag_geom.set("type", "mesh")
     tag_geom.set("mesh", planar_mesh_name)
     tag_geom.attrib.pop("size", None)
+    # The generated mesh is already the zero-thickness printed surface. Remove
+    # the source plate's thickness offset while retaining its UV-yaw correction.
+    tag_geom.set("pos", "0 0 0")
 
     visual_global = root.find("./visual/global")
     if visual_global is None:
@@ -307,7 +312,7 @@ def _absolute_asset_xml_with_camera(
 
 
 def load_calibration_scene(
-    intrinsics: D415RgbIntrinsics = D415RgbIntrinsics(),
+    intrinsics: D435RgbIntrinsics = D435RgbIntrinsics(),
     camera_distance_m: float = 0.50,
 ) -> tuple[Any, Any, Any, np.ndarray]:
     """Load the robot and return its fixed camera pose in OpenCV coordinates."""
@@ -362,7 +367,7 @@ def _set_arm_pose(
 def _project_tag_corners(
     world_to_camera: np.ndarray,
     world_to_tag: np.ndarray,
-    intrinsics: D415RgbIntrinsics,
+    intrinsics: D435RgbIntrinsics,
 ) -> tuple[np.ndarray, np.ndarray]:
     half = TAG_SIZE_M * 0.5
     corners_tag = np.asarray(
@@ -391,8 +396,7 @@ def _project_tag_corners(
 def _world_to_printed_tag_from_fk(data: Any, tag_body_id: int) -> np.ndarray:
     """Return the printed tag frame in the robot/world frame from MuJoCo FK."""
     world_to_tag_body = _pose(data.xpos[tag_body_id], data.xmat[tag_body_id])
-    # The in-memory planar mesh is 2 mm above the tag body.  Its UV mapping
-    # rotates the printed AprilTag axes +90 degrees around the body's +Z.
+    # The body/site origin is the printed tag centre and detector frame.
     body_to_printed_tag = make_transform(
         quaternion_xyzw_to_matrix(TAG_BODY_TO_PRINTED_TAG_QUATERNION_XYZW),
         TAG_BODY_TO_PRINTED_TAG_XYZ,
@@ -485,7 +489,7 @@ def calibrate_fixed_camera_from_tag_poses(
 def _tag_is_safely_visible(
     world_to_camera: np.ndarray,
     world_to_tag: np.ndarray,
-    intrinsics: D415RgbIntrinsics,
+    intrinsics: D435RgbIntrinsics,
     border_px: float = 18.0,
 ) -> bool:
     image, corners_camera = _project_tag_corners(
@@ -513,7 +517,7 @@ def generate_visible_motion(
     model: Any,
     data: Any,
     world_to_camera: np.ndarray,
-    intrinsics: D415RgbIntrinsics,
+    intrinsics: D435RgbIntrinsics,
     frame_count: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Generate a smooth, joint-limited motion whose complete tag stays visible."""
@@ -573,9 +577,9 @@ def _tag_detector() -> Any:
 def detect_tag_pose(
     rgb: np.ndarray,
     detector: Any,
-    intrinsics: D415RgbIntrinsics,
+    intrinsics: D435RgbIntrinsics,
 ) -> TagObservation | None:
-    """Estimate the tag coordinate system in the D415 RGB optical frame."""
+    """Estimate the tag coordinate system in the D435 RGB optical frame."""
     gray = cv2.cvtColor(np.asarray(rgb, dtype=np.uint8), cv2.COLOR_RGB2GRAY)
     detected_corners, identifiers, _ = detector.detectMarkers(gray)
     if identifiers is None:
@@ -628,7 +632,7 @@ def detect_tag_pose(
 def _annotate_rgb(
     rgb: np.ndarray,
     observation: TagObservation | None,
-    intrinsics: D415RgbIntrinsics,
+    intrinsics: D435RgbIntrinsics,
     sample_number: int,
 ) -> np.ndarray:
     image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -646,7 +650,7 @@ def _annotate_rgb(
             2,
         )
     text = (
-        f"D415 RGB | tag36h11 id={TAG_ID} | samples={sample_number} | "
+        f"D435 RGB | tag36h11 id={TAG_ID} | samples={sample_number} | "
         f"detected={'yes' if observation is not None else 'NO'}"
     )
     cv2.putText(
@@ -669,7 +673,7 @@ def run_simulated_calibration(
     camera_distance_m: float = 0.50,
     interactive: bool = False,
     fps: float = 10.0,
-    intrinsics: D415RgbIntrinsics = D415RgbIntrinsics(),
+    intrinsics: D435RgbIntrinsics = D435RgbIntrinsics(),
 ) -> SimulationCalibrationRun:
     """Render RGB, collect OpenCV/FK pose pairs, and calibrate the camera."""
     if sample_count < 8:
@@ -709,7 +713,7 @@ def run_simulated_calibration(
     last_rgb = np.empty((intrinsics.height, intrinsics.width, 3), dtype=np.uint8)
     last_annotated = cv2.cvtColor(last_rgb, cv2.COLOR_RGB2BGR)
     next_frame_time = time.monotonic()
-    window_name = "RealSense D415 RGB - simulated eye-to-hand calibration"
+    window_name = "RealSense D435 RGB - simulated eye-to-hand calibration"
 
     try:
         for frame_index, arm_position in enumerate(arm_motion):
@@ -856,8 +860,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def test_nominal_d415_rgb_projection_contract() -> None:
-    intrinsics = D415RgbIntrinsics()
+def test_nominal_d435_rgb_projection_contract() -> None:
+    intrinsics = D435RgbIntrinsics()
     intrinsics.validate()
     assert (intrinsics.width, intrinsics.height) == (1920, 1080)
     assert intrinsics.matrix.shape == (3, 3)
@@ -897,7 +901,7 @@ def test_real_auto_waypoint_interpolations_keep_tag_in_simulated_view() -> None:
                 data.xpos[tag_body_id], data.xmat[tag_body_id]
             )
             assert _tag_is_safely_visible(
-                world_to_camera, world_to_tag, D415RgbIntrinsics()
+                world_to_camera, world_to_tag, D435RgbIntrinsics()
             )
 
 

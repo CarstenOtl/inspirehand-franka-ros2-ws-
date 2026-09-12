@@ -14,6 +14,7 @@ without the sim being broken.
 import math
 import os
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -26,6 +27,7 @@ SCENES = (
     "inspire_hand_scene.xml",
     "inspire_franka_bench_scene.xml",
     "inspire_franka_flange_scene.xml",
+    "inspire_franka_flange_torque_scene.xml",
 )
 
 ARM_JOINTS = [f"fr3_joint{i}" for i in range(1, 8)]
@@ -50,9 +52,10 @@ COUPLINGS = {
 # inspire_franka_description/urdf/inspire_franka.urdf.xacro.
 BENCH_XYZ = (0.45, -0.35, 0.0)
 
-# Current physical fr3_link8 -> palm mount quaternion (wxyz). The hand is
-# clocked 90 degrees from the legacy forgeUltra/franka-chi installation.
-PHYSICAL_FLANGE_TO_PALM_QUAT = (2**-0.5, -(2**-0.5), 0.0, 0.0)
+# The composed flange -> palm rotation with 180-degree flange clocking (wxyz).
+FLIPPED_FLANGE_TO_PALM_QUAT = (
+    math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0
+)
 
 
 def load(scene: str):
@@ -70,6 +73,12 @@ def joint_names(model):
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i)
         for i in range(model.njnt)
     ]
+
+
+@pytest.mark.parametrize("side", ["right", "left"])
+def test_reusable_hand_assets_have_no_pending_keyframes(side):
+    root = ET.parse(MJCF_DIR / f"inspire_hand_{side}.xml").getroot()
+    assert root.find("keyframe") is None
 
 
 @pytest.mark.parametrize("scene", SCENES)
@@ -165,7 +174,7 @@ def test_the_bench_hand_sits_where_the_urdf_puts_it():
     assert model.body_pos[body] == pytest.approx(BENCH_XYZ, abs=1e-9)
 
 
-def test_the_flange_mount_matches_the_physical_installation():
+def test_the_flange_mount_has_180_degree_clocking():
     model = load("inspire_franka_flange_scene.xml")
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
@@ -175,13 +184,9 @@ def test_the_flange_mount_matches_the_physical_installation():
     assert flange != -1
     assert palm != -1
 
-    # The 10 mm adapter moves the palm along the flange's local +z axis.
-    flange_rotation = data.xmat[flange].reshape(3, 3)
-    expected_palm_position = [
-        data.xpos[flange][i] + 0.010 * flange_rotation[i, 2]
-        for i in range(3)
-    ]
-    assert data.xpos[palm] == pytest.approx(expected_palm_position, abs=1e-9)
+    # The target mount has no translation. Compare world positions because both
+    # frames are body origins and are rigidly welded in this scene.
+    assert data.xpos[palm] == pytest.approx(data.xpos[flange], abs=1e-9)
 
     # q_relative = conjugate(q_flange) * q_palm. Quaternion signs are
     # equivalent, so compare the absolute dot product with the desired pose.
@@ -194,7 +199,7 @@ def test_the_flange_mount_matches_the_physical_installation():
         fw * pz - fx * py + fy * px - fz * pw,
     )
     alignment = abs(sum(a * b for a, b in zip(
-        relative, PHYSICAL_FLANGE_TO_PALM_QUAT
+        relative, FLIPPED_FLANGE_TO_PALM_QUAT
     )))
     assert alignment == pytest.approx(1.0, abs=1e-6)
 

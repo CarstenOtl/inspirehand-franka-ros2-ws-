@@ -1,0 +1,14 @@
+<mujoco model="inspire_franka_flange_torque_scene">
+  <!-- The flange scene for torque-controlled replay (the joint- and Cartesian-
+       impedance replay controllers, which command effort).
+
+       On the real arm libfranka compensates gravity underneath the torque
+       interface, so an impedance controller only ever sees a weightless arm.
+       mujoco_ros2_control applies effort commands as raw actuator torques, so
+       this scene switches gravity off instead: a perfectly gravity-compensated
+       arm and hand, and nothing else changes. The replay scenes hold no free
+       objects, which would otherwise float. The position-controlled default
+       scene keeps gravity, and so does its documented steady-state sag. -->
+  <include file="inspire_franka_flange_scene.xml"/>
+  <option gravity="0 0 0"/>
+</mujoco>

@@ -36,6 +36,8 @@ NODE_ARGS = (
     ("protocol", "modbus", str, "Wire protocol: 'modbus' or 'legacy'."),
     ("mock", "false", bool, "Run against a simulated hand instead of hardware."),
     ("publish_rate_hz", "50.0", float, "State publish rate."),
+    ("state_extras_divisor", "1", int, "Read current and force once per N publishes. "
+     "Raise it to free RS485 bandwidth for a command stream."),
     ("joint_prefix", "", str, "Prefix on every joint name; must match the description."),
     ("startup_speed", "0", int, "Speed applied to all DOF at startup (0 = leave alone)."),
     ("startup_force", "0", int, "Force threshold applied at startup (0 = leave alone)."),

@@ -54,12 +54,14 @@ def sample_local_ode(
         raise
 
     class CachedConditionVelocity(ModelWrapper):
-        def forward(self, value, time, **extras):
-            if time.ndim == 0:
-                time = time.expand(value.shape[0])
+        # The vendored ODESolver calls ``velocity_model(x=x, t=t, **extras)``
+        # with keyword arguments, so the parameter names must stay ``x``/``t``.
+        def forward(self, x, t, **extras):
+            if t.ndim == 0:
+                t = t.expand(x.shape[0])
             return self.model(
-                value,
-                time.to(value),
+                x,
+                t.to(x),
                 condition=extras["condition"],
             )
 

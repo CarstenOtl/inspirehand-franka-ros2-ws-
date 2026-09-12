@@ -23,7 +23,48 @@ prepare:
   jerk_margin: 0.5
   send_rate: 1000
 
+# The controlled point for the Cartesian impedance replay, and the frame the
+# TCP tracking metrics are computed for: the Inspire hand's grasp centre, i.e.
+# the thumb/index fingertip midpoint, measured on the RH56 model at the
+# threading grip. The URDF and the MuJoCo model agree on it to 0.1 mm, and the
+# Forge captures' own recorded `tcp_pos` is the same point on the training
+# hand. It sits 173 mm from the flange. The Cartesian controller applies this
+# offset itself (tool_offset_xyz), so the robot's F_T_EE stays at identity;
+# keep this block and the controller yaml in step, which the preflight checks.
+tcp:
+  frame: fr3_link8
+  offset_xyz: [-0.0874, -0.0327, 0.1453]
+  offset_rpy: [0.0, 0.0, 0.0]
+
+# --arm-controller cartesian-impedance: the pose stream is forward kinematics
+# of the prepared joint stream through the tcp transform (identity: the flange,
+# which is O_T_EE when the robot's F_T_EE is identity). The margins scale the
+# libfranka FR3 Cartesian limits. The robot does not enforce them on a torque
+# controller's reference and the joint-space check already bounds the motion,
+# so the velocity margin is the datasheet limit itself. The preflight
+# tolerances gate the controller swap.
+cartesian:
+  controller_name: cartesian_trajectory_replay_controller
+  base_frame: fr3_link0
+  robot_state_topic: franka_robot_state_broadcaster/robot_state
+  velocity_margin: 1.0
+  acceleration_margin: 0.5
+  jerk_margin: 0.5
+  send_rate: 1000
+  tool_tolerance_m: 0.0001
+  tool_tolerance_rad: 0.0001
+  fk_tolerance_m: 0.003
+  fk_tolerance_deg: 0.5
+
 timing:
   settle_seconds: 1.0
   cycles: 1
   goto_timeout: 60.0
+
+# Legacy position-JTC client's homing limits (--arm-controller position-jtc).
+# Hardware effort replay uses goto_* in controllers_joint_impedance.yaml.
+goto:
+  max_velocity: 0.5
+  max_acceleration: 1.0
+  min_duration: 5.0
+  max_joint_step: 3.0

@@ -1,0 +1,59 @@
+schema_version: 1
+name: threading_homing_flange180
+description: Validated five-cycle extended run for the current 180-degree flange
+  mount. Confirmed on the physical FR3 and RH56 at 5x slowdown with interactive
+  pause; use only with the trajectory colocated with this YAML.
+units: radians
+joint_names:
+- fr3_joint1
+- fr3_joint2
+- fr3_joint3
+- fr3_joint4
+- fr3_joint5
+- fr3_joint6
+- fr3_joint7
+- pinky_proximal_joint
+- ring_proximal_joint
+- middle_proximal_joint
+- index_proximal_joint
+- thumb_proximal_pitch_joint
+- thumb_proximal_yaw_joint
+positions:
+- -0.348916
+- -0.033274
+- -0.026434
+- -1.799153
+- 1.368818
+- 2.028677
+- -0.27530567320510335
+- 1.47
+- 1.47
+- 1.47
+- 0.44
+- 0.2
+- 1.14
+source:
+  repository: forgeUltra
+  branch: franka-chi
+  file: forge_ultra/tasks/forge_franka_threading/config/reset_pose_m24.yaml
+  source_joint_names:
+  - fr3_joint1
+  - fr3_joint2
+  - fr3_joint3
+  - fr3_joint4
+  - fr3_joint5
+  - fr3_joint6
+  - fr3_joint7
+  - little_joint_0
+  - ring_joint_0
+  - middle_joint_0
+  - index_joint_0
+  - thumb_joint_1
+  - thumb_joint_0
+retargeting:
+  joint: fr3_joint7
+  offset_rad: 1.5707963267948966
+  offset_deg: 90.0
+  reason: preserve the recorded hand world pose after the +90-degree flange clocking
+    change
+  source_home: ../homing/threading.yaml

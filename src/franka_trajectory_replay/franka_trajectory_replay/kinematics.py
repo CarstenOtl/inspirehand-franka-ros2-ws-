@@ -64,6 +64,33 @@ def flange_transform(q):
     return transform
 
 
+def flange_transforms(q_batch):
+    """(N, 4, 4) flange transforms for (N, 7) joint positions; the batched flange_transform."""
+    q_batch = np.atleast_2d(np.asarray(q_batch, dtype=float))
+    n = len(q_batch)
+    transform = np.tile(np.eye(4), (n, 1, 1))
+    for i in range(8):
+        a, d, alpha = _DH[i]
+        theta = q_batch[:, i] if i < 7 else np.zeros(n)
+        ca, sa = np.cos(alpha), np.sin(alpha)
+        ct, st = np.cos(theta), np.sin(theta)
+        step = np.zeros((n, 4, 4))
+        step[:, 0, 0] = ct
+        step[:, 0, 1] = -st
+        step[:, 0, 3] = a
+        step[:, 1, 0] = st * ca
+        step[:, 1, 1] = ct * ca
+        step[:, 1, 2] = -sa
+        step[:, 1, 3] = -d * sa
+        step[:, 2, 0] = st * sa
+        step[:, 2, 1] = ct * sa
+        step[:, 2, 2] = ca
+        step[:, 2, 3] = d * ca
+        step[:, 3, 3] = 1.0
+        transform = transform @ step
+    return transform
+
+
 def tool_transform(offset_xyz=(0.0, 0.0, 0.0), offset_rpy=(0.0, 0.0, 0.0)):
     """Fixed flange->TCP transform from a translation and roll/pitch/yaw (URDF convention)."""
     roll, pitch, yaw = offset_rpy

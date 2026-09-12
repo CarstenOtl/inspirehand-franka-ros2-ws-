@@ -167,3 +167,30 @@ def test_modbus_words_are_big_endian_against_captured_hardware_reply():
     t.write_angles([1000, 900, 800, 700, 600, 500])
     payload = sent["req"][7:-2]
     assert payload == bytes.fromhex("03e80384032002bc025801f4")
+
+
+def test_wire_model_matches_the_modbus_frame_sizes():
+    """The floor is arithmetic: 8N1 bytes on the wire, both frames."""
+    from inspire_hand_driver.benchmark import budget, frame_time, wire_time
+
+    # A 6-register read is 8 bytes out and 17 back; a write is 21 out and 8 back.
+    assert wire_time(115200, 6, write=False) == pytest.approx(frame_time(25, 115200))
+    assert wire_time(115200, 6, write=True) == pytest.approx(frame_time(29, 115200))
+    # Doubling the baud rate halves the byte time.
+    assert wire_time(230400, 6) == pytest.approx(wire_time(115200, 6) / 2)
+    # The spec's inter-frame silence is additional, and at 115200 it dominates.
+    assert wire_time(115200, 6, silence=True) > 2 * wire_time(115200, 6)
+
+
+def test_command_budget_is_what_polling_leaves_behind():
+    from inspire_hand_driver.benchmark import budget
+
+    # Three 2 ms reads per publish at 50 Hz is 0.3 s of every second.
+    commands, polling = budget(0.002, 0.002, 50.0)
+    assert polling == pytest.approx(0.3)
+    assert commands == pytest.approx(350.0)
+
+    # Polling that cannot even fit in a second leaves nothing for commands.
+    commands, polling = budget(0.010, 0.002, 50.0)
+    assert polling > 1.0
+    assert commands == 0.0

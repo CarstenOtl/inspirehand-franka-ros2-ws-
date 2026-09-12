@@ -1,8 +1,6 @@
 <mujoco model="inspire_hand_left">
   <compiler angle="radian" meshdir="assets_hand/"/>
 
-  <size nkey="1"/>
-
   <asset>
     <mesh name="base_link" content_type="model/stl" file="left/visual/base_link.stl"/>
     <mesh name="thumb_proximal_base" content_type="model/stl" file="left/visual/thumb_proximal_base.stl"/>
@@ -143,7 +141,4 @@
     <general name="thumb_proximal_yaw_joint" joint="thumb_proximal_yaw_joint" ctrlrange="-1 1" ctrllimited="true"/>
   </actuator>
 
-  <keyframe>
-    <key name="open" qpos="0 0 0 0 0 -0.04545 0 -0.04545 0 -0.04545 0 -0.04545"/>
-  </keyframe>
 </mujoco>

@@ -89,12 +89,40 @@ The URDF works in radians, and every driven joint has its **lower** limit at the
 open pose. So:
 
 ```
-angle_rad = lower + (1 - open_ratio) * (upper - lower)
+angle_rad   = lower + (1 - open_ratio) * (upper - lower)
+open_ratio  = 1 - (angle_rad - lower) / (upper - lower)
 ```
 
 Both forms are published, because both are useful: open ratios are the natural
 way to script a grasp, and radians are what `robot_state_publisher` needs to
 produce TF.
+
+The limits below are read straight out of
+`inspire_hand_description`'s URDF, and
+`inspire_hand_description/test/test_mimic_matches_driver.py` fails if the two
+ever disagree, so this table cannot drift from the description:
+
+| DOF            | ch | driven URDF joint          | ratio 1.0 (open) | ratio 0.0 (closed) | rad per register step |
+|----------------|----|----------------------------|------------------|--------------------|-----------------------|
+| pinky          | 1  | pinky_proximal_joint       | 0.000 rad        | 1.470 rad          | 0.00147               |
+| ring           | 2  | ring_proximal_joint        | 0.000 rad        | 1.470 rad          | 0.00147               |
+| middle         | 3  | middle_proximal_joint      | 0.000 rad        | 1.470 rad          | 0.00147               |
+| index          | 4  | index_proximal_joint       | 0.000 rad        | 1.470 rad          | 0.00147               |
+| thumb_bend     | 5  | thumb_proximal_pitch_joint | 0.000 rad        | 0.600 rad          | 0.00060               |
+| thumb_rotation | 6  | thumb_proximal_yaw_joint   | 0.000 rad        | 1.308 rad          | 0.00131               |
+
+Two consequences worth keeping in mind. The registers are integers 0..1000, so
+the last column is the finest step the hand can be commanded to take — a
+trajectory whose fingers move less than that per sample is being quantised, not
+tracked. And because *every* driven joint has its open pose at 0 rad, the two
+conventions run in opposite directions: **a rising joint_states value means a
+closing hand, and a rising commanded ratio means an opening one.**
+
+Code should not restate these numbers.
+`inspire_hand_driver.kinematics.rad_to_open_ratio` and its inverse are the
+conversion, and `inspire_franka_trajectory_replay` derives its own limit checks
+from `kinematics.DOFS` for exactly this reason: a copied constant that drifted
+would not fail a comparison, it would silently mis-scale every command.
 
 ## Six actuators, twelve joints
 
@@ -150,6 +178,31 @@ of travel, nothing logged either way.
 Any subset may be addressed. A DOF that is not named holds its previous target
 rather than snapping to a default — which is what makes a partial command safe.
 
+As a final calibration overlay, thumb abduction (`thumb_proximal_yaw_joint`,
+channel `"6"`) is rescaled from the commanded `[0.0, 1.0]` onto the open-ratio
+range `[0.25, 1.0]`, because at `0.0` the thumb swings past the palm plane:
+
+```
+physical = 0.25 + 0.75 * commanded
+```
+
+The rescale happens after normal range validation; every other DOF keeps the
+unmodified `[0.0, 1.0]` command range unchanged. This is enforced at the
+driver's shared command boundary, so it applies equally to topic commands,
+`set_angles` service calls, trajectory replay, and future command publishers.
+
+Because it is a rescale rather than a floor, the map stays monotonic and no two
+commands collapse onto the same pose — but the whole range contracts, so a
+commanded `0.5` now reaches `0.625` rather than `0.5`.
+
+For example, this deliberately publishes the raw value `0.0`; the driver then
+writes `0.25` (register value `250`) for thumb abduction:
+
+```bash
+ros2 topic pub -1 /inspire_hand/command sensor_msgs/msg/JointState \
+  "{name: [thumb_proximal_yaw_joint], position: [0.0]}"
+```
+
 Channel order is the hand's own register order, and is used consistently
 everywhere including the simulation's controller config:
 
@@ -192,3 +245,45 @@ register reads on a half-duplex bus, so this is not a control loop and should
 not be treated as one. RS485 drops the odd frame under EMI; the driver tolerates
 `max_read_failures` consecutive misses (5) before it reports the hand as lost,
 and says so again when it comes back.
+
+### How fast can the hand be commanded?
+
+Four ceilings, and the lowest wins.
+
+**The wire.** RS485 is half-duplex, so a request and its reply add rather than
+overlap. At 115200 baud, 8N1, a six-register block costs 25 bytes to read and 29
+to write — 2.17 ms and 2.52 ms of pure byte time. The Modbus spec also asks for
+a 1.75 ms silence either side of every frame at this baud rate; whether the hand
+and the USB-serial adapter actually impose it is not something a datasheet
+answers, and it more than doubles the cost if they do. So the wire alone allows
+somewhere between 170 and 400 transactions per second.
+
+**The device turnaround.** The gap between the end of a request and the start of
+the reply is the hand's own, and is not published anywhere.
+
+**The bus budget.** Commands share the line with the driver's state polling, and
+polling three blocks at 50 Hz costs 33–85 % of the bus before a single target is
+sent. That is why the driver has a `state_extras_divisor`: only the angles are
+needed to publish joint states, so current and force can be fetched once per N
+publishes and held in between. The replay launch sets it to 5, which drops
+polling to roughly 14–36 % of the bus. It defaults to 1 everywhere else, so
+ordinary bring-up is unchanged.
+
+**The hand.** Bench replay measured about 0.17 s of lag between a commanded step
+and the joint arriving — the actuator's own closed-loop response, and slower
+than everything above by two orders of magnitude.
+
+Both the model and the measurement are in one tool, which needs no hardware for
+the first half:
+
+```bash
+ros2 run inspire_hand_driver inspire_hand_benchmark /dev/ttyUSB0
+```
+
+It re-commands the pose the hand is already holding, so it does not move it;
+`--move` is required before it will command anything else.
+
+**In practice: stream at 50 Hz.** That is what the replay runner defaults to and
+what the bench run was verified at. The ceiling is not the reason — 0.17 s of
+actuator lag means the hand cannot use a faster stream — so raise the rate only
+if a trajectory's own smoothness demands it, and re-run the benchmark first.

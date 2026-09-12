@@ -13,6 +13,14 @@ Match the runner to whatever was launched: `--no-arm` for a hand-only session,
 `--no-hand` for an arm-only one. The runner reaches the arm through the
 controller manager, so a hand-only launch plus a coordinated run would block
 waiting for a controller that was never started.
+
+`arm_controller:=cartesian-impedance` selects the controllers yaml that also
+declares the Cartesian impedance replay controller and loads it inactive next
+to the joint controller; the runner's `--arm-controller cartesian-impedance`
+homes with the joint controller and swaps for the trajectory:
+
+    ros2 launch inspire_franka_trajectory_replay replay.launch.py \
+        arm_controller:=cartesian-impedance
 """
 
 from launch import LaunchDescription
@@ -20,7 +28,10 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+
+CARTESIAN_CONTROLLER = "cartesian_trajectory_replay_controller"
 
 
 def generate_launch_description():
@@ -39,6 +50,7 @@ def generate_launch_description():
                 ]
             ),
             "robot_ips": LaunchConfiguration("robot_ip"),
+            "controllers_yaml": LaunchConfiguration("controllers_yaml"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("arm")),
     )
@@ -55,16 +67,75 @@ def generate_launch_description():
             "mock": LaunchConfiguration("hand_mock"),
             "publish_description": "true",
             "description_namespace": LaunchConfiguration("description_namespace"),
+            "state_extras_divisor": LaunchConfiguration("hand_state_extras_divisor"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("hand")),
+    )
+    is_cartesian = PythonExpression(
+        ["'", LaunchConfiguration("arm_controller"), "' == 'cartesian-impedance'"]
+    )
+    cartesian_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            CARTESIAN_CONTROLLER,
+            "--inactive",
+            "--controller-manager-timeout",
+            "30",
+        ],
+        parameters=[LaunchConfiguration("controllers_yaml")],
+        output="screen",
+        condition=IfCondition(
+            PythonExpression(
+                ["'", LaunchConfiguration("arm"), "'.lower() in ('true', '1', 'yes', 'on') and (",
+                 is_cartesian, ")"]
+            )
+        ),
     )
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_ip", default_value="172.16.0.2"),
+            DeclareLaunchArgument(
+                "arm_controller",
+                default_value="joint-impedance",
+                choices=["joint-impedance", "cartesian-impedance"],
+                description="joint-impedance: the validated joint-impedance replay stack. "
+                "cartesian-impedance: additionally load the Cartesian impedance replay "
+                "controller (inactive) for --arm-controller cartesian-impedance.",
+            ),
+            # The simple joint-impedance example's effort law and gains, with
+            # the replay plugin supplying its reference from recorded waypoints.
+            # The Cartesian yaml is that file plus the Cartesian controller.
+            DeclareLaunchArgument(
+                "controllers_yaml",
+                default_value=PythonExpression(
+                    ["'", PathJoinSubstitution(
+                        [FindPackageShare("inspire_franka_trajectory_replay"), "config",
+                         "controllers_cartesian_impedance.yaml"]),
+                     "' if ", is_cartesian, " else '",
+                     PathJoinSubstitution(
+                        [FindPackageShare("inspire_franka_trajectory_replay"), "config",
+                         "controllers_joint_impedance.yaml"]),
+                     "'"]
+                ),
+                description="Controller manager configuration; follows arm_controller unless "
+                "given explicitly.",
+            ),
             DeclareLaunchArgument("hand_port", default_value="/dev/ttyUSB0"),
             DeclareLaunchArgument("hand_id", default_value="1"),
             DeclareLaunchArgument("hand_protocol", default_value="modbus"),
             DeclareLaunchArgument("hand_mock", default_value="false"),
+            # Replay is the one session that streams targets, and RS485 is
+            # half-duplex, so the driver's per-publish current and force reads
+            # are bandwidth taken from the command stream. Nothing in the
+            # replay path reads either, so they drop to 10 Hz here while
+            # joint_states stays at the full publish rate. Ordinary bringup
+            # leaves the driver's own default of 1 alone.
+            DeclareLaunchArgument(
+                "hand_state_extras_divisor",
+                default_value="5",
+                description="Read the hand's current and force once per N state publishes.",
+            ),
             DeclareLaunchArgument(
                 "arm", default_value="true", description="Bring up the FR3 replay controller."
             ),
@@ -83,6 +154,7 @@ def generate_launch_description():
                 description="Namespace for the hand's robot_state_publisher.",
             ),
             arm,
+            cartesian_spawner,
             hand,
         ]
     )
