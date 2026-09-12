@@ -98,6 +98,8 @@ const char* CartesianTrajectoryReplayController::phase_name(Phase phase) {
       return "trajectory";
     case Phase::kStopping:
       return "stopping";
+    case Phase::kPolicy:
+      return "policy";
   }
   return "unknown";
 }
@@ -551,6 +553,60 @@ void CartesianTrajectoryReplayController::trajectory_callback(
               100.0 * peak_angular_ratio, start_error_m, start_error_rad);
 }
 
+void CartesianTrajectoryReplayController::policy_command_callback(
+    const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg) {
+  if (!command_initialized_.load(std::memory_order_acquire)) {
+    reject("policy command arrived before the first update cycle");
+    return;
+  }
+  const auto phase = static_cast<Phase>(phase_.load(std::memory_order_acquire));
+  if (phase != Phase::kIdle && phase != Phase::kPolicy) {
+    reject("policy command while busy (phase " + std::string(phase_name(phase)) +
+           "); abort first");
+    return;
+  }
+  Eigen::Vector3d position;
+  Eigen::Quaterniond orientation;
+  if (!read_pose(msg->pose, position, orientation)) {
+    reject("policy command pose is not finite or has a degenerate quaternion");
+    return;
+  }
+  if (!inside_workspace(position)) {
+    reject("policy target " + format_pose(position, orientation) +
+           " is outside the workspace box");
+    return;
+  }
+
+  Eigen::Vector3d previous;
+  for (int i = 0; i < 3; ++i) {
+    previous(i) = target_position_snapshot_[i].load(std::memory_order_relaxed);
+  }
+  std::array<double, 4> previous_q{};
+  for (int i = 0; i < 4; ++i) {
+    previous_q[i] = target_orientation_snapshot_[i].load(std::memory_order_relaxed);
+  }
+  const double position_step = (position - previous).norm();
+  const double orientation_step = quaternion_angle(orientation, to_quaternion(previous_q));
+  if (position_step > max_policy_step_m_ || orientation_step > max_policy_step_rad_) {
+    reject("policy target step " + std::to_string(position_step) + " m / " +
+           std::to_string(orientation_step) + " rad exceeds max_policy_step_m/rad");
+    return;
+  }
+
+  Command command;
+  command.kind = CommandKind::kPolicy;
+  std::copy(position.data(), position.data() + 3, command.position.begin());
+  command.orientation = to_array(orientation);
+  if (!msg->nullspace_positions.empty()) {
+    if (!read_nullspace(msg->nullspace_positions, command.nullspace, "policy command")) {
+      return;
+    }
+    command.has_nullspace = true;
+  }
+  command.id = ++next_command_id_;
+  command_buffer_.writeFromNonRT(command);
+}
+
 void CartesianTrajectoryReplayController::pause_callback(
     const std_msgs::msg::Empty::SharedPtr /*msg*/) {
   if (static_cast<Phase>(phase_.load(std::memory_order_acquire)) != Phase::kTrajectory) {
@@ -636,6 +692,8 @@ void CartesianTrajectoryReplayController::publish_status() {
   add("position_error_m", std::to_string(position_error_.load()));
   add("orientation_error_rad", std::to_string(orientation_error_.load()));
   add("joint_limit_margin_rad", std::to_string(joint_limit_margin_.load()));
+  add("policy_command_age", std::to_string(policy_command_age_.load()));
+  add("policy_watchdog_stop", policy_watchdog_stop_.load() ? "true" : "false");
   add("tracking_fault", fault == Fault::kNone ? "false" : "true");
   add("last_fault", fault == Fault::kNone ? "" : (fault == Fault::kPosition
                                                        ? "position error exceeded max_position_error"
@@ -773,6 +831,18 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
           completed_command_id_.store(command->id);
         }
         break;
+      case CommandKind::kPolicy:
+        position_target_ = Eigen::Vector3d(command->position.data());
+        orientation_target_ = to_quaternion(command->orientation);
+        if (command->has_nullspace) {
+          nullspace_target_ = Vector7d(command->nullspace.data());
+        }
+        rt_elapsed_ = 0.0;
+        rt_duration_ = policy_command_timeout_;
+        rt_policy_command_age_ = 0.0;
+        policy_watchdog_stop_.store(false, std::memory_order_release);
+        rt_phase_ = Phase::kPolicy;
+        break;
       case CommandKind::kNone:
         break;
     }
@@ -790,6 +860,15 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
   const Phase sampled_as = rt_phase_ == Phase::kStopping ? rt_stopping_from_ : rt_phase_;
   switch (rt_phase_) {
     case Phase::kIdle:
+      break;
+    case Phase::kPolicy:
+      rt_policy_command_age_ += dt;
+      rt_elapsed_ = rt_policy_command_age_;
+      if (rt_policy_command_age_ > policy_command_timeout_) {
+        policy_watchdog_stop_.store(true, std::memory_order_release);
+        completed_command_id_.store(rt_command_id_);
+        rt_phase_ = Phase::kIdle;
+      }
       break;
     case Phase::kGoto:
     case Phase::kTrajectory:
@@ -867,7 +946,8 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
 
   const double position_error = terms.error.head(3).norm();
   const double orientation_error = quaternion_angle(orientation, orientation_d_);
-  if ((rt_phase_ == Phase::kGoto || rt_phase_ == Phase::kTrajectory) &&
+  if ((rt_phase_ == Phase::kGoto || rt_phase_ == Phase::kTrajectory ||
+       rt_phase_ == Phase::kPolicy) &&
       (position_error > max_position_error_ || orientation_error > max_orientation_error_)) {
     fault_.store(static_cast<int>(position_error > max_position_error_ ? Fault::kPosition
                                                                         : Fault::kOrientation));
@@ -908,6 +988,7 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
   phase_.store(static_cast<int>(rt_phase_));
   phase_elapsed_.store(rt_elapsed_);
   phase_duration_.store(rt_duration_);
+  policy_command_age_.store(rt_policy_command_age_, std::memory_order_relaxed);
   processed_command_id_.store(rt_command_id_);
 
   if (state_publisher_ && state_publisher_->trylock()) {
@@ -979,6 +1060,9 @@ CartesianTrajectoryReplayController::CallbackReturn CartesianTrajectoryReplayCon
     auto_declare<double>("max_goto_step_rad", 1.0);
     auto_declare<double>("max_trajectory_start_error_m", 0.002);
     auto_declare<double>("max_trajectory_start_error_rad", 0.01);
+    auto_declare<double>("max_policy_step_m", 0.036);
+    auto_declare<double>("max_policy_step_rad", 0.18);
+    auto_declare<double>("policy_command_timeout", 0.25);
     auto_declare<double>("goto_settle_tolerance_m", 0.0005);
     auto_declare<double>("goto_settle_tolerance_rad", 0.002);
     auto_declare<double>("goto_settle_timeout", 2.0);
@@ -1068,6 +1152,9 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
   max_goto_step_rad_ = node->get_parameter("max_goto_step_rad").as_double();
   max_trajectory_start_error_m_ = node->get_parameter("max_trajectory_start_error_m").as_double();
   max_trajectory_start_error_rad_ = node->get_parameter("max_trajectory_start_error_rad").as_double();
+  max_policy_step_m_ = node->get_parameter("max_policy_step_m").as_double();
+  max_policy_step_rad_ = node->get_parameter("max_policy_step_rad").as_double();
+  policy_command_timeout_ = node->get_parameter("policy_command_timeout").as_double();
   goto_settle_tolerance_m_ = node->get_parameter("goto_settle_tolerance_m").as_double();
   goto_settle_tolerance_rad_ = node->get_parameter("goto_settle_tolerance_rad").as_double();
   goto_settle_timeout_ = node->get_parameter("goto_settle_timeout").as_double();
@@ -1082,7 +1169,9 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
       !positive(goto_max_nullspace_velocity_) || !positive(goto_min_duration_) ||
       !positive(pause_ramp_duration_) || !positive(abort_stop_duration_) ||
       !positive(goto_settle_timeout_) || !positive(trajectory_velocity_scale_) ||
-      !positive(max_position_error_) || !positive(max_orientation_error_)) {
+      !positive(max_position_error_) || !positive(max_orientation_error_) ||
+      !positive(max_policy_step_m_) || !positive(max_policy_step_rad_) ||
+      !positive(policy_command_timeout_)) {
     RCLCPP_FATAL(node->get_logger(),
                  "goto_*, pause_ramp_duration, abort_stop_duration, trajectory_velocity_scale and "
                  "max_*_error must all be finite and > 0");
@@ -1249,6 +1338,12 @@ CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State&
           [this](const franka_trajectory_replay_msgs::msg::CartesianTrajectory::SharedPtr msg) {
             trajectory_callback(msg);
           });
+  policy_command_subscriber_ =
+      get_node()->create_subscription<franka_trajectory_replay_msgs::msg::CartesianGoto>(
+          "~/policy_command", rclcpp::QoS(1).reliable(),
+          [this](const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg) {
+            policy_command_callback(msg);
+          });
   pause_subscriber_ = get_node()->create_subscription<std_msgs::msg::Empty>(
       "~/pause", rclcpp::QoS(1),
       [this](const std_msgs::msg::Empty::SharedPtr msg) { pause_callback(msg); });
@@ -1334,6 +1429,9 @@ CartesianTrajectoryReplayController::on_activate(const rclcpp_lifecycle::State& 
   paused_.store(false, std::memory_order_release);
   playback_rate_.store(1.0, std::memory_order_release);
   fault_.store(static_cast<int>(Fault::kNone));
+  policy_command_age_.store(0.0);
+  policy_watchdog_stop_.store(false);
+  rt_policy_command_age_ = 0.0;
   rt_trajectory_.reset();
   command_buffer_.writeFromNonRT(Command{});
   last_rejection_.clear();

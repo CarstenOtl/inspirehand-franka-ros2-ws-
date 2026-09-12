@@ -27,14 +27,21 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 CARTESIAN_CONTROLLER = "cartesian_trajectory_replay_controller"
 
 
 def generate_launch_description():
+    arm_and_hand = PythonExpression(
+        [
+            "'", LaunchConfiguration("arm"), "'.lower() in ('true', '1', 'yes', 'on') and ",
+            "'", LaunchConfiguration("hand"), "'.lower() in ('true', '1', 'yes', 'on')",
+        ]
+    )
     arm = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -65,14 +72,67 @@ def generate_launch_description():
             "hand_id": LaunchConfiguration("hand_id"),
             "protocol": LaunchConfiguration("hand_protocol"),
             "mock": LaunchConfiguration("hand_mock"),
-            "publish_description": "true",
+            # With an arm, the rootless hand description below is attached to
+            # fr3_link8. A hand-only replay keeps its ordinary world-mounted
+            # description.
+            "publish_description": PythonExpression(
+                [
+                    "'false' if '", LaunchConfiguration("arm"),
+                    "'.lower() in ('true', '1', 'yes', 'on') else 'true'",
+                ]
+            ),
             "description_namespace": LaunchConfiguration("description_namespace"),
             "state_extras_divisor": LaunchConfiguration("hand_state_extras_divisor"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("hand")),
     )
-    is_cartesian = PythonExpression(
-        ["'", LaunchConfiguration("arm_controller"), "' == 'cartesian-impedance'"]
+    hand_description = ParameterValue(
+        Command(
+            [
+                "xacro ",
+                PathJoinSubstitution(
+                    [
+                        FindPackageShare("inspire_hand_description"),
+                        "urdf",
+                        "inspire_hand.urdf.xacro",
+                    ]
+                ),
+                " side:=right mount_to_world:=false ros2_control:=false",
+            ]
+        ),
+        value_type=str,
+    )
+    mounted_hand_description = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        namespace="hand",
+        parameters=[{"robot_description": hand_description}],
+        remappings=[
+            ("joint_states", "/inspire_hand/joint_states"),
+            ("/tf", "/tf"),
+            ("/tf_static", "/tf_static"),
+        ],
+        output="both",
+        condition=IfCondition(arm_and_hand),
+    )
+    hand_mount = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="inspire_hand_flange_mount",
+        arguments=[
+            "--x", "0", "--y", "0", "--z", "0",
+            "--roll", "0", "--pitch", "0", "--yaw", "3.141592653589793",
+            "--frame-id", "fr3_link8", "--child-frame-id", "hand_mount",
+        ],
+        output="screen",
+        condition=IfCondition(arm_and_hand),
+    )
+    loads_cartesian = PythonExpression(
+        ["'", LaunchConfiguration("arm_controller"),
+         "' in ('cartesian-impedance', 'policy')"]
+    )
+    is_policy = PythonExpression(
+        ["'", LaunchConfiguration("arm_controller"), "' == 'policy'"]
     )
     cartesian_spawner = Node(
         package="controller_manager",
@@ -88,7 +148,7 @@ def generate_launch_description():
         condition=IfCondition(
             PythonExpression(
                 ["'", LaunchConfiguration("arm"), "'.lower() in ('true', '1', 'yes', 'on') and (",
-                 is_cartesian, ")"]
+                 loads_cartesian, ")"]
             )
         ),
     )
@@ -98,10 +158,10 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "arm_controller",
                 default_value="joint-impedance",
-                choices=["joint-impedance", "cartesian-impedance"],
+                choices=["joint-impedance", "cartesian-impedance", "policy"],
                 description="joint-impedance: the validated joint-impedance replay stack. "
                 "cartesian-impedance: additionally load the Cartesian impedance replay "
-                "controller (inactive) for --arm-controller cartesian-impedance.",
+                "controller; policy: load it with bounded live-setpoint gains.",
             ),
             # The simple joint-impedance example's effort law and gains, with
             # the replay plugin supplying its reference from recorded waypoints.
@@ -111,12 +171,16 @@ def generate_launch_description():
                 default_value=PythonExpression(
                     ["'", PathJoinSubstitution(
                         [FindPackageShare("inspire_franka_trajectory_replay"), "config",
+                         "controllers_policy.yaml"]),
+                     "' if ", is_policy, " else ('",
+                     PathJoinSubstitution(
+                        [FindPackageShare("inspire_franka_trajectory_replay"), "config",
                          "controllers_cartesian_impedance.yaml"]),
-                     "' if ", is_cartesian, " else '",
+                     "' if ", loads_cartesian, " else '",
                      PathJoinSubstitution(
                         [FindPackageShare("inspire_franka_trajectory_replay"), "config",
                          "controllers_joint_impedance.yaml"]),
-                     "'"]
+                     "')"]
                 ),
                 description="Controller manager configuration; follows arm_controller unless "
                 "given explicitly.",
@@ -156,5 +220,7 @@ def generate_launch_description():
             arm,
             cartesian_spawner,
             hand,
+            mounted_hand_description,
+            hand_mount,
         ]
     )

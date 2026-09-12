@@ -81,6 +81,10 @@ TEST(CartesianTrajectoryReplayControllerMath, sample_trajectory_slerps_and_hermi
   CartesianTrajectoryReplayController::sample_trajectory(trajectory, -1.0, hint, p, q, n);
   EXPECT_NEAR(p.x(), 0.0, 1e-12);  // clamped to the start
   EXPECT_DOUBLE_EQ(CartesianTrajectoryReplayController::quintic_blend(0.5), 0.5);
+  EXPECT_STREQ(
+      CartesianTrajectoryReplayController::phase_name(
+          CartesianTrajectoryReplayController::Phase::kPolicy),
+      "policy");
 }
 
 TEST(TrajectoryReplayControllerMath, quintic_blend_endpoints) {

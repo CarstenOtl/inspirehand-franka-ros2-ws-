@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert a ForgeUltra dual-supervision episode into the rollout recording schema.
 
-This lets ``run_policy_rollout.py evaluate --reference`` compare a MuJoCo
+This lets the internal evaluation utilities compare a MuJoCo
 student rollout against the recorded teacher episode.
 """
 
@@ -13,7 +13,7 @@ import sys
 
 import numpy as np
 
-APP_ROOT = Path(__file__).resolve().parent
+APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 

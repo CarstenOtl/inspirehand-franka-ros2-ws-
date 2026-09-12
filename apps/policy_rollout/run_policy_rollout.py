@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect, dry-run, record, plot, and evaluate the distilled DP3 policy."""
+"""Run the distilled DP3 policy on either hardware or MuJoCo."""
 
 from __future__ import annotations
 
@@ -8,240 +8,122 @@ import json
 from pathlib import Path
 import sys
 
-import numpy as np
 
 APP_ROOT = Path(__file__).resolve().parent
+WORKSPACE_ROOT = APP_ROOT.parents[1]
+DEFAULT_CHECKPOINT = (
+    APP_ROOT
+    / "checkpoints/sequential_threading_cycle10_hybrid_teacher_d415_20ep/checkpoint.pt"
+)
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
-from policy_rollout.hardware import assess_hardware_readiness, run_hardware_placeholder
-from utils.camera_calibration import load_camera_calibration
 
-
-def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("checkpoint", help="ForgeUltra offline-flow .pt checkpoint")
-    parser.add_argument("--device", default="cpu", help="PyTorch device (default: cpu)")
+def _hardware_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="run_policy_rollout.py hardware",
+        description="Run the distilled policy on the physical FR3 and Inspire RH56.",
+    )
+    parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--camera-calibration", default=None)
     parser.add_argument(
-        "--camera-calibration",
-        default=None,
-        help=(
-            "camera profile YAML (default: "
-            "utils/camera_calibration/fr3_realsense_dp3.yaml)"
+        "--config",
+        default=str(
+            WORKSPACE_ROOT
+            / "src/inspire_franka_trajectory_replay/config/replay.yaml"
         ),
     )
-
-
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    inspect = commands.add_parser(
-        "inspect", help="strictly load and describe a checkpoint"
+    parser.add_argument(
+        "--home",
+        default=str(
+            WORKSPACE_ROOT / "apps/traj_replay/demo_trajs/traj_2/homing.yaml"
+        ),
     )
-    _add_common(inspect)
-    dry_run = commands.add_parser("dry-run", help="run one synthetic RGB-D policy step")
-    _add_common(dry_run)
-    dry_run.add_argument("--integration-steps", type=int, default=16)
-    dry_run.add_argument(
-        "--recording-dir",
-        default=None,
-        help="write the synthetic step using the rollout recording schema",
-    )
-    dry_run.add_argument(
-        "--record-rgbd",
-        action="store_true",
-        help="include prepared policy RGB-D arrays in --recording-dir",
-    )
-    run = commands.add_parser(
-        "run", help="physical entrypoint placeholder; always fails closed for now"
-    )
-    _add_common(run)
-    camera = commands.add_parser("camera-check", help="show physical camera blockers")
-    camera.add_argument("--camera-calibration", default=None)
-    plot = commands.add_parser("plot", help="plot an existing rollout artifact")
-    plot.add_argument("recording")
-    plot.add_argument("--reference", default=None)
-    plot.add_argument("--output-dir", default=None)
-    evaluate = commands.add_parser(
-        "evaluate",
-        help="evaluate an existing rollout and optionally compare a reference",
-    )
-    evaluate.add_argument("recording")
-    evaluate.add_argument("--reference", default=None)
-    evaluate.add_argument("--output-dir", default=None)
-    evaluate.add_argument("--required-cycles", type=int, default=6)
-    evaluate.add_argument("--no-plots", action="store_true")
+    parser.add_argument("--rate", type=float, default=15.0)
+    parser.add_argument("--cycles", type=int, default=10)
+    parser.add_argument("--max-steps", type=int, default=1500)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--yes", "-y", action="store_true")
+    parser.add_argument("--recording-root", default="logs/policy_rollout")
+    parser.add_argument("--record-rgbd", action="store_true")
+    parser.add_argument("--hand-topic", default="/inspire_hand/command")
+    parser.add_argument("--hand-state-topic", default="/inspire_hand/joint_states")
+    parser.add_argument("--hand-timeout", type=float, default=20.0)
+    parser.add_argument("--hand-tolerance", type=float, default=0.08)
+    parser.add_argument("--input-timeout", type=float, default=15.0)
+    parser.add_argument("--max-state-age", type=float, default=0.5)
+    parser.add_argument("--max-frame-skew", type=float, default=0.04)
+    parser.add_argument("--max-home-delta", type=float, default=0.01)
     return parser
 
 
-def _runner(args):
-    from policy_rollout.flow_policy import FlowPolicyRunner
+def _top_help() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="backend")
+    commands.add_parser(
+        "hardware", add_help=False, help="physical FR3 + RH56 + RealSense"
+    )
+    commands.add_parser(
+        "mujoco", add_help=False, help="closed-loop MuJoCo simulation"
+    )
+    return parser
+
+
+def _run_hardware(argv) -> int:
+    args = _hardware_parser().parse_args(argv)
+    for name in (
+        "rate",
+        "hand_timeout",
+        "input_timeout",
+        "max_state_age",
+        "max_frame_skew",
+    ):
+        if getattr(args, name) <= 0:
+            raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    if args.cycles < 1 or args.max_steps < 1:
+        raise ValueError("--cycles and --max-steps must be positive")
+    if args.hand_tolerance < 0 or args.max_home_delta < 0:
+        raise ValueError("hand tolerance and max home delta must be non-negative")
+
+    from policy_rollout.hardware import assess_hardware_readiness, run_hardware_rollout
+    from utils.camera_calibration import load_camera_calibration
 
     calibration = load_camera_calibration(args.camera_calibration)
-    runner = FlowPolicyRunner(
-        args.checkpoint,
-        device=args.device,
-        integration_steps=getattr(args, "integration_steps", 16),
-    )
+    readiness = assess_hardware_readiness(calibration)
+    if not readiness.ready:
+        details = "\n".join(f"- {item}" for item in readiness.blockers)
+        raise RuntimeError(
+            "physical policy execution is disabled by readiness checks:\n" + details
+        )
+
+    from policy_rollout.flow_policy import FlowPolicyRunner
+
+    runner = FlowPolicyRunner(args.checkpoint, device=args.device)
     calibration.assert_checkpoint_compatible(runner.config.to_dict())
-    return runner, calibration
-
-
-def _summary(runner, calibration) -> dict:
-    metadata = runner.metadata()
-    config = metadata["config"]
-    return {
-        "checkpoint": metadata["checkpoint"],
-        "sha256": metadata["sha256"],
-        "weight_source": metadata["weight_source"],
-        "epoch": metadata["epoch"],
-        "student": {
-            "control_domain": config["student_control_domain"],
-            "action_representation": config["osc_action_representation"],
-            "action_dim": config["joint_dim"],
-            "action_horizon": config["action_horizon"],
-            "proprio_dim": config["proprio_dim"],
-            "vision_encoder": config["vision_encoder_config"]["encoder"]["type"],
-            "image_shape": config["vision_encoder_config"]["input"]["image_shape"],
-            "trajectory_progress_conditioning": config[
-                "trajectory_progress_conditioning"
-            ],
-            "cyclic_process_phase_conditioning": config[
-                "cyclic_process_phase_conditioning"
-            ],
-        },
-        "camera_profile": str(calibration.source_path),
-        "physical_camera_ready": calibration.hardware_ready,
-        "camera_blockers": list(calibration.hardware_blockers()),
-    }
+    report = run_hardware_rollout(runner, calibration, args)
+    print(json.dumps(report, indent=2))
+    return 0 if report["status"] in {"step_budget", "completed"} else 1
 
 
 def main(argv=None) -> int:
-    parser = _parser()
-    args = parser.parse_args(argv)
-    try:
-        if args.command == "plot":
-            from utils.plotting import plot_rollout
-
-            paths = plot_rollout(
-                args.recording,
-                reference=args.reference,
-                output_dir=args.output_dir,
-            )
-            print(json.dumps({"plots": [str(path) for path in paths]}, indent=2))
-            return 0
-        if args.command == "evaluate":
-            from utils.evaluation import evaluate_rollout
-
-            report_path, report = evaluate_rollout(
-                args.recording,
-                reference=args.reference,
-                output_dir=args.output_dir,
-                required_cycles=args.required_cycles,
-            )
-            plots = []
-            if not args.no_plots:
-                from utils.plotting import plot_rollout
-
-                plots = plot_rollout(
-                    args.recording,
-                    reference=args.reference,
-                    output_dir=report_path.parent,
-                )
-            print(
-                json.dumps(
-                    {
-                        "evaluation": str(report_path),
-                        "task_outcome": report["metrics"]["task_outcome"],
-                        "plots": [str(path) for path in plots],
-                    },
-                    indent=2,
-                )
-            )
-            return 0
-        if args.command == "camera-check":
-            calibration = load_camera_calibration(args.camera_calibration)
-            readiness = assess_hardware_readiness(calibration)
-            print(
-                json.dumps(
-                    {"ready": readiness.ready, "blockers": readiness.blockers}, indent=2
-                )
-            )
-            return 0 if readiness.ready else 2
-
-        runner, calibration = _runner(args)
-        if args.command == "inspect":
-            print(json.dumps(_summary(runner, calibration), indent=2))
-            return 0
-        if args.command == "run":
-            run_hardware_placeholder(calibration)
-
-        from policy_rollout.session import PolicyRolloutSession
-
-        collector = None
-        if args.record_rgbd and args.recording_dir is None:
-            raise ValueError("--record-rgbd requires --recording-dir")
-        if args.recording_dir is not None:
-            from utils.data_collection import RolloutDataCollector
-
-            metadata = runner.metadata()
-            collector = RolloutDataCollector(
-                args.recording_dir,
-                metadata={
-                    "checkpoint": metadata["checkpoint"],
-                    "checkpoint_sha256": metadata["sha256"],
-                    "checkpoint_weight_source": metadata["weight_source"],
-                    "camera_profile": str(calibration.source_path),
-                    "collection_mode": "synthetic_dry_run",
-                },
-                record_rgbd=args.record_rgbd,
-            )
-
-        session = PolicyRolloutSession(runner, calibration, collector=collector)
-        session.reset(previous_filtered_native_action=np.zeros(9), seed=0)
-        height, width = (
-            calibration.policy_intrinsics.height,
-            calibration.policy_intrinsics.width,
-        )
-        synthetic_depth_m = float(
-            calibration.dp3_point_cloud["xyz_center_m"][2]
-        )
-        progress = 0.0 if runner.config.trajectory_progress_conditioning else None
-        phase = "policy" if runner.config.cyclic_process_phase_conditioning else None
-        result = session.step(
-            joint_position=np.zeros(10),
-            joint_velocity=np.zeros(10),
-            rgb=np.zeros((height, width, 3), dtype=np.uint8),
-            depth=np.full((height, width), synthetic_depth_m, dtype=np.float32),
-            depth_units="metres",
-            trajectory_progress=progress,
-            process_phase=phase,
-            sample_time_s=0.0,
-        )
-        artifact = collector.close() if collector is not None else None
-        print(
-            json.dumps(
-                {
-                    **_summary(runner, calibration),
-                    "dry_run": {
-                        "policy_action": result.policy_action.tolist(),
-                        "filtered_native_action": (
-                            result.filtered_native_action.tolist()
-                        ),
-                        "clipped_elements": result.clipped_elements,
-                        "note": (
-                            "synthetic observation only; no ROS or robot command "
-                            "was sent"
-                        ),
-                        "recording": str(artifact.data_path) if artifact else None,
-                    },
-                },
-                indent=2,
-            )
-        )
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] in {"-h", "--help"}:
+        _top_help().print_help()
         return 0
+    backend, backend_argv = argv[0], argv[1:]
+    try:
+        if backend == "hardware":
+            return _run_hardware(backend_argv)
+        if backend == "mujoco":
+            from utils.mujoco_student_rollout import main as run_mujoco
+
+            return run_mujoco(backend_argv)
+        _top_help().error(f"unknown backend {backend!r}; choose hardware or mujoco")
     except (ImportError, OSError, RuntimeError, ValueError, KeyError) as exc:
         print(f"policy rollout error: {exc}", file=sys.stderr)
         return 2
+    return 2
 
 
 if __name__ == "__main__":

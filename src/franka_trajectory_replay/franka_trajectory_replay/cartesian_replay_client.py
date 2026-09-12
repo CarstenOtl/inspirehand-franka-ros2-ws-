@@ -112,7 +112,8 @@ class CartesianReplayClient(ReplayClient):
             'torque_rate_limit', 'max_trajectory_start_error_m', 'max_trajectory_start_error_rad',
             'goto_max_velocity', 'goto_max_angular_velocity', 'pause_ramp_duration',
             'max_position_error', 'max_orientation_error', 'base_frame',
-            'set_collision_behavior', 'model_source', 'tool_offset_xyz', 'tool_offset_rpy'])
+            'set_collision_behavior', 'model_source', 'tool_offset_xyz', 'tool_offset_rpy',
+            'max_policy_step_m', 'max_policy_step_rad', 'policy_command_timeout'])
 
     def ensure_active(self, log=print):
         controllers = self.list_controllers()
@@ -120,7 +121,8 @@ class CartesianReplayClient(ReplayClient):
         if controller is None or controller.type != CONTROLLER_TYPE:
             raise Rejected(
                 'Cartesian replay requires %s of type %s; restart replay.launch.py with '
-                'arm_controller:=cartesian-impedance' % (self.controller, CONTROLLER_TYPE))
+                'arm_controller:=cartesian-impedance (trajectory replay) or '
+                'arm_controller:=policy (live policy)' % (self.controller, CONTROLLER_TYPE))
         parameters = self.controller_parameters()
         if parameters.get('base_frame') != self.base_frame:
             raise Rejected('controller base_frame %r does not match the configured %r'

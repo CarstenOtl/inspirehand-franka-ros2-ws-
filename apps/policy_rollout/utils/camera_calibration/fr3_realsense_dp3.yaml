@@ -57,9 +57,10 @@ training_camera:
     # fit to the recorded training depth puts the camera 0.491 m above the
     # table at 22.4 deg, exactly this pose's height and tilt. In the replay
     # MJCF that root is 0.333 m above the fr3_link0 body (see
-    # smoke_test_mujoco.py). On the physical cell the transform is relative
-    # to the real base plate, so the training view is reproduced only if the
-    # base plate is flush with the table surface; confirm that before rollout.
+    # tests/smoke_test_mujoco.py). On the physical cell the transform is
+    # relative to the real base plate, so the training view is reproduced only
+    # if the base plate is flush with the table surface; confirm that before
+    # rollout.
     parent_frame_id: fr3_link0
     child_frame_id: camera_color_optical_frame
     translation_m: [0.032024625343287656, 0.5514171438029323, 0.4903332221249476]

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Closed-loop student rollout in MuJoCo with the ported ForgeUltra control path.
 
 The DP3 flow student sees the calibrated camera render and MuJoCo joint
@@ -19,7 +18,7 @@ import time
 
 import numpy as np
 
-APP_ROOT = Path(__file__).resolve().parent
+APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
@@ -47,7 +46,9 @@ RESET_HAND_POSTURE = {
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="run_policy_rollout.py mujoco", description=__doc__
+    )
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
     parser.add_argument("--episode", default=str(DEFAULT_EPISODE), help="reference episode (nut spawn pose)")
     parser.add_argument("--cycles", type=int, default=10)
@@ -257,7 +258,3 @@ def main(argv=None) -> int:
     (output / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

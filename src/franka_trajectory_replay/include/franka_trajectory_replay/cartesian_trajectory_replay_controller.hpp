@@ -60,6 +60,9 @@ namespace franka_trajectory_replay {
  *    within ``max_trajectory_start_error_m`` / ``_rad`` of the current target. Positions are
  *    interpolated with cubic Hermite splines when the points carry linear velocities, linearly
  *    otherwise; orientations are slerped; nullspace configurations are linear.
+ *  - ``~/policy_command`` (CartesianGoto): bounded live pose/nullspace targets for a
+ *    non-realtime policy process. Each command is checked against the previous target and a
+ *    watchdog returns the controller to an idle hold when the stream stops.
  *  - ``~/pause`` / ``~/resume`` / ``~/abort`` (std_msgs/Empty): exactly the joint controller's
  *    clock-rate ramps. Abort ramps the phase clock to zero and holds.
  *  - live parameters ``translational_stiffness``, ``rotational_stiffness``,
@@ -90,7 +93,13 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   static constexpr int kNumJoints = 7;
   static constexpr int kPoseInterfaces = 16;
 
-  enum class Phase : int { kIdle = 0, kGoto = 1, kTrajectory = 2, kStopping = 3 };
+  enum class Phase : int {
+    kIdle = 0,
+    kGoto = 1,
+    kTrajectory = 2,
+    kStopping = 3,
+    kPolicy = 4,
+  };
   static const char* phase_name(Phase phase);
 
   /// Quintic blend 10s^3 - 15s^4 + 6s^5: zero velocity and acceleration at both ends.
@@ -127,7 +136,7 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
 
  private:
-  enum class CommandKind : int { kNone = 0, kGoto, kTrajectory, kAbort };
+  enum class CommandKind : int { kNone = 0, kGoto, kTrajectory, kAbort, kPolicy };
   enum class Fault : int { kNone = 0, kPosition = 1, kOrientation = 2 };
 
   struct Command {
@@ -167,6 +176,8 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   void goto_callback(const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg);
   void trajectory_callback(
       const franka_trajectory_replay_msgs::msg::CartesianTrajectory::SharedPtr msg);
+  void policy_command_callback(
+      const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg);
   void pause_callback(const std_msgs::msg::Empty::SharedPtr msg);
   void resume_callback(const std_msgs::msg::Empty::SharedPtr msg);
   void abort_callback(const std_msgs::msg::Empty::SharedPtr msg);
@@ -202,6 +213,9 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   double max_goto_step_rad_{1.0};
   double max_trajectory_start_error_m_{0.002};
   double max_trajectory_start_error_rad_{0.01};
+  double max_policy_step_m_{0.036};
+  double max_policy_step_rad_{0.18};
+  double policy_command_timeout_{0.25};
   double goto_settle_tolerance_m_{0.0005};
   double goto_settle_tolerance_rad_{0.002};
   double goto_settle_timeout_{2.0};
@@ -221,6 +235,8 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
       goto_subscriber_;
   rclcpp::Subscription<franka_trajectory_replay_msgs::msg::CartesianTrajectory>::SharedPtr
       trajectory_subscriber_;
+  rclcpp::Subscription<franka_trajectory_replay_msgs::msg::CartesianGoto>::SharedPtr
+      policy_command_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr pause_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr resume_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr abort_subscriber_;
@@ -260,6 +276,8 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   std::atomic<double> position_error_{0.0};
   std::atomic<double> orientation_error_{0.0};
   std::atomic<double> joint_limit_margin_{0.0};
+  std::atomic<double> policy_command_age_{0.0};
+  std::atomic<bool> policy_watchdog_stop_{false};
   std::string last_rejection_;  ///< executor thread only
   uint64_t rejections_{0};
 
@@ -272,6 +290,7 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   double rt_elapsed_{0.0};
   double rt_duration_{0.0};
   double rt_settle_elapsed_{0.0};
+  double rt_policy_command_age_{0.0};
   double rt_playback_rate_{1.0};
   double rt_playback_target_{1.0};
   double rt_rate_ramp_start_{1.0};

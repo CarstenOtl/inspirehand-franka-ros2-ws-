@@ -14,14 +14,18 @@
   <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>franka_trajectory_replay</exec_depend>
   <exec_depend>inspire_franka_bringup</exec_depend>
+  <exec_depend>inspire_hand_description</exec_depend>
   <exec_depend>inspire_hand_driver</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>xacro</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
 
