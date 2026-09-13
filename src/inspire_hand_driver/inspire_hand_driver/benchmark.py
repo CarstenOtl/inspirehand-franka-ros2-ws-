@@ -16,9 +16,10 @@ It is what the measurement here is for.
 
 **The bus budget.** Commands share the line with the driver's state polling,
 and :meth:`~inspire_hand_driver.driver_node.InspireHandNode._on_timer` spends
-three read transactions per publish -- angles, currents, forces -- so at
-``publish_rate_hz`` those cost ``3 * T_read * rate`` of every second before a
-single command is sent. :func:`budget` divides what is left by the cost of one
+three read transactions per publish -- angles, currents, forces -- plus a
+fourth for the status/error block, so at ``publish_rate_hz`` those cost
+``3 * T_read * rate`` (or more) of every second before a single command is
+sent. :func:`budget` divides what is left by the cost of one
 write.
 
 Above all three sits the hand itself: bench replay measured about 0.17 s of lag

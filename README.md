@@ -821,6 +821,57 @@ Four things that bite:
   `0.625`. Speed and force are volatile registers and are forgotten on power
   cycle.
 
+### Grip-force threshold and stall guard
+
+A finger that cannot reach its target does not wait: it pushes until the
+actuator's protection trips, the firmware latches an error for that DOF, and
+the finger is dead until the error is cleared or the hand is power-cycled. The
+driver has two defences, both on by default, both configurable.
+
+**The force threshold** is the hand's own `FORCE_SET` register, in grams on a
+0–1000 scale. A DOF stops closing the moment its fingertip force reaches it,
+reports "stopped at force threshold", and raises no error. The driver writes it
+to all six DOF at startup, writes it again if the hand comes back after going
+silent, and reads it back every two seconds so a hand that rebooted in between
+gets it back too. It is never committed to flash.
+
+| Where | How | Scope |
+|---|---|---|
+| combined bringup | `ros2 launch inspire_franka_bringup inspire_franka.launch.py hand_startup_force:=500` | the session, all six DOF |
+| hand alone | `ros2 launch inspire_franka_bringup hand.launch.py startup_force:=500` (same argument on the driver's own launch) | the session, all six DOF |
+| replay launch | inherits the driver default; override with the argument above on the driver launch it includes | the session |
+| at runtime | `ros2 service call /inspire_hand/set_force inspire_hand_msgs/srv/SetForce "{name: ['4'], force: [200]}"` | per DOF, until the next call or power cycle; the readback then expects this value |
+| capture presets | `force:` per preset and jog block in `src/inspire_franka_trajectory_replay/config/hand_presets.yaml` | applied before each preset's angles |
+
+The default is `500`, half scale. Lower it for delicate objects (the capture
+presets pinch at 150–200), raise it if a grasp slips, and pass `0` to leave the
+hand's own power-on value alone, which is what the driver did before. The
+threshold only sees the fingertip sensor: contact elsewhere on the finger, or
+thumb rotation jammed against the palm, still ends in a latched error.
+
+**The stall guard** (`stall_guard`, `hand_stall_guard` on the combined bringup)
+covers that case. Every extras cycle the driver reads the firmware's STATUS and
+ERROR blocks; a DOF stopped on a fault is backed off `stall_backoff` counts
+(default 30, 3 % of travel) towards open from where it actually is, the error
+is cleared with `CLEAR_ERROR`, and for `stall_holdoff_sec` (1 s) commands that
+would drive that DOF back past the backed-off angle are clamped. A replay
+stream re-sending an unreachable target therefore stalls a finger at most once
+per second instead of killing it. Every stall, backoff, clear and clamp is
+logged with the finger's name and the firmware's own status word.
+
+```bash
+# Per-finger status, error bits, temperature and the threshold in effect.
+# ERROR while a finger is stalled, WARN while parked at the force threshold.
+ros2 topic echo /inspire_hand/diagnostics --once
+
+# Clear latched errors by hand (the guard does this itself when it is on).
+ros2 service call /inspire_hand/clear_errors std_srvs/srv/Trigger
+```
+
+Both mechanisms were written against the driver's mock and have not yet been
+exercised on the real hand; `docs/hand.md` lists what to watch for on first
+contact.
+
 Under `sim.launch.py` there is no driver, so there is no `/inspire_hand/command`
 — the simulated hand is driven through its trajectory controller instead, in
 **radians**, where `0.0` is the open pose:

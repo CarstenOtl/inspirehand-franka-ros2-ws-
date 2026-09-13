@@ -29,6 +29,10 @@ ARGS = (
     ("publish_rate_hz", "50.0", "State publish rate."),
     ("state_extras_divisor", "1", "Read current and force once per N publishes. "
                                   "Raise it to free RS485 bandwidth for a command stream."),
+    ("startup_force", "500", "Grip-force threshold (0..1000 g) applied to every DOF; a DOF "
+                             "stops closing when it is reached. 0 = hand's power-on value."),
+    ("stall_guard", "true", "Back off and clear the error on a DOF the firmware stopped on a "
+                            "fault, instead of leaving it dead until a power cycle."),
     ("node_name", "inspire_hand", "Node name, which is also the topic namespace."),
     ("side", "right", "Which hand's geometry to describe: 'left' or 'right'."),
     ("joint_prefix", "", "Prefix on every joint name; must match the description."),

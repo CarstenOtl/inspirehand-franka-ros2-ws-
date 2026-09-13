@@ -149,6 +149,7 @@ coexist as two nodes with different names and different ports.
 | `~/joint_states` | `sensor_msgs/JointState` | all twelve joints, radians — feeds `robot_state_publisher` |
 | `~/state` | `sensor_msgs/JointState` | channels `"1".."6"`, position as open ratio, effort as raw current |
 | `~/grip_force` | `sensor_msgs/JointState` | measured grip force per channel |
+| `~/diagnostics` | `diagnostic_msgs/DiagnosticArray` | per-DOF firmware status, error bits, temperature; see [Force threshold and stall guard](#force-threshold-and-stall-guard) |
 | `~/command` | `sensor_msgs/JointState` | subscribed; see below |
 
 | Service | Type |
@@ -156,6 +157,7 @@ coexist as two nodes with different names and different ports.
 | `~/set_angles` | `inspire_hand_msgs/srv/SetAngles` |
 | `~/set_speed` | `inspire_hand_msgs/srv/SetSpeed` |
 | `~/set_force` | `inspire_hand_msgs/srv/SetForce` |
+| `~/clear_errors` | `std_srvs/srv/Trigger` |
 
 `~/command` and `set_angles` both take **open ratios: `1.0` fully open, `0.0`
 fully closed.** Names say only *which* DOF to address — channel ids
@@ -236,13 +238,87 @@ ros2 service call /inspire_hand/set_speed inspire_hand_msgs/srv/SetSpeed \
 
 Speed and force live in volatile registers. The driver never commits them to
 flash, so they are forgotten on power cycle — deliberately, because a bad value
-written to flash is awkward to undo.
+written to flash is awkward to undo. The driver re-applies its own force
+threshold when it notices the hand has lost it; see the next section.
+
+## Force threshold and stall guard
+
+The hand is position controlled, and a finger that cannot reach its target does
+not wait politely. It pushes until the actuator's protection trips, the
+firmware latches a locked-rotor or over-current error for that DOF, and from
+then on the DOF ignores every target until `CLEAR_ERROR` is written or the hand
+is power-cycled. That is the "finger died, reboot fixed it" failure. The driver
+now does two things about it, both on by default.
+
+**The force threshold** is the firmware's own mechanism (`FORCE_SET`, the
+register `~/set_force` writes). A DOF whose fingertip force reaches it stops
+there, reports "stopped at force threshold", and raises no error. The driver
+applies `startup_force` (default `500`, on the hand's 0–1000 g scale) to all six
+DOF at startup, re-applies it when the hand comes back after going silent, and
+reads `FORCE_SET` back every `limits_check_interval_sec` (2 s) so a hand that
+rebooted between two reads gets its threshold back too. `~/set_force` still
+overrides it per DOF — the capture presets ask for 150–200 g pinches and get
+them — and what a service call set is what the readback then expects. Pass
+`startup_force:=0` to leave the hand's power-on value alone, which is the old
+behaviour.
+
+The threshold only sees force at the fingertip sensor. Contact elsewhere on the
+finger, a thumb rotation jammed against the palm, or a stall that happens before
+the threshold was applied still ends in a latched error, which is where the
+second mechanism comes in.
+
+**The stall guard** (`stall_guard`) reads the `STATUS` and `ERROR` blocks every
+extras cycle. When the firmware reports a DOF stopped on a fault (status 5, 6 or
+7, or a clearable error bit), the driver:
+
+1. backs that DOF's target off to where it actually is plus `stall_backoff`
+   counts towards open (default 30, i.e. 3 % of travel), leaving the other DOF
+   where they were;
+2. writes `CLEAR_ERROR`, at most once per `clear_error_interval_sec`;
+3. for `stall_holdoff_sec` (1 s) clamps any command that would take that DOF
+   back past the backed-off angle, and logs that it is doing so.
+
+Backing off comes before clearing so the cleared finger is not driven straight
+back into the same obstacle. The hold-off is what makes a 50 Hz replay stream
+safe: re-sending the same unreachable target stalls the finger at most once per
+second rather than continuously. After the hold-off, commands pass again, and
+if the obstacle is still there the cycle repeats — which is the intended
+outcome, since the alternative is a dead finger.
+
+Every stall, backoff, clear and clamp is logged with the finger's name and the
+firmware's own status and error words. `~/diagnostics` carries the same per DOF
+(level `ERROR` while stalled, `WARN` when parked at the force threshold), so
+`ros2 topic echo /inspire_hand/diagnostics` is the first thing to look at when a
+finger stops. `~/clear_errors` writes `CLEAR_ERROR` on request, for when the
+guard is off or for checking whether a stopped finger answers without a power
+cycle:
+
+```bash
+ros2 service call /inspire_hand/clear_errors std_srvs/srv/Trigger
+```
+
+`CLEAR_ERROR` (address 1004) shares a Modbus register with `SAVE` (1005), which
+commits every volatile parameter to flash. The driver writes exactly `1` there
+and nowhere else, and the mock counts flash saves so the tests can assert it
+stays at zero. Over-temperature is the one error the write does not clear; the
+manual says it clears itself once the actuator cools.
+
+Neither mechanism has been exercised on the real hand yet: the mock models a
+finger that stops at an obstacle, and the tests in
+`inspire_hand_driver/test/test_stall_guard.py` run against that. Two things
+worth watching on first hardware contact are whether the hand accepts the
+nine-register health read spanning `ERROR`, `STATUS` and `TEMP` (the driver
+falls back to three reads if it refuses), and whether the byte order of those
+byte-per-DOF blocks matches the vendor example the driver follows (lower
+address in the low byte). `ros2 run inspire_hand_driver inspire_hand_probe`
+prints the raw words.
 
 ## Rates
 
-The driver polls at 50 Hz by default (`publish_rate_hz`). Each cycle is three
-register reads on a half-duplex bus, so this is not a control loop and should
-not be treated as one. RS485 drops the odd frame under EMI; the driver tolerates
+The driver polls at 50 Hz by default (`publish_rate_hz`). Each cycle is up to
+four register reads on a half-duplex bus (angles, current, force, and the
+status/error block), so this is not a control loop and should not be treated as
+one. RS485 drops the odd frame under EMI; the driver tolerates
 `max_read_failures` consecutive misses (5) before it reports the hand as lost,
 and says so again when it comes back.
 
@@ -263,9 +339,10 @@ the reply is the hand's own, and is not published anywhere.
 
 **The bus budget.** Commands share the line with the driver's state polling, and
 polling three blocks at 50 Hz costs 33–85 % of the bus before a single target is
-sent. That is why the driver has a `state_extras_divisor`: only the angles are
-needed to publish joint states, so current and force can be fetched once per N
-publishes and held in between. The replay launch sets it to 5, which drops
+sent (the health block the stall guard reads is a fourth). That is why the
+driver has a `state_extras_divisor`: only the angles are needed to publish joint
+states, so current, force and health can be fetched once per N publishes and
+held in between. The replay launch sets it to 5, which drops
 polling to roughly 14–36 % of the bus. It defaults to 1 everywhere else, so
 ordinary bring-up is unchanged.
 

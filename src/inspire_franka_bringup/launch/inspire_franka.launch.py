@@ -85,6 +85,10 @@ HAND_ARGS = (
     ("hand_side", "side", "right", "Which hand's geometry to describe."),
     ("hand_publish_rate_hz", "publish_rate_hz", "50.0", "Hand state publish rate."),
     ("hand_joint_prefix", "joint_prefix", "", "Prefix on every hand joint name."),
+    ("hand_startup_force", "startup_force", "500", "Grip-force threshold (0..1000 g) for every "
+     "hand DOF; a DOF stops closing when it is reached. 0 = hand's power-on value."),
+    ("hand_stall_guard", "stall_guard", "true", "Back off and clear a hand DOF the firmware "
+     "stopped on a fault, instead of leaving it dead until a power cycle."),
 )
 
 

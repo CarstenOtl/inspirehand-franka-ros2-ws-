@@ -194,3 +194,162 @@ def test_command_budget_is_what_polling_leaves_behind():
     commands, polling = budget(0.010, 0.002, 50.0)
     assert polling > 1.0
     assert commands == 0.0
+
+
+# -- health block, error clearing, and the mock's stall model ------------------
+
+def test_byte_registers_unpack_lower_address_from_the_low_byte():
+    """ERROR/STATUS/TEMP are one byte per DOF, two to a Modbus register.
+
+    The vendor's own example unpacks the lower address from the low byte;
+    getting this backwards would swap every finger's status with its
+    neighbour's and the stall guard would back off the wrong DOF.
+    """
+    from inspire_hand_driver.protocol import pack_bytes, unpack_bytes
+
+    assert unpack_bytes([0x0201, 0x0403, 0x0605]) == [1, 2, 3, 4, 5, 6]
+    assert pack_bytes([1, 2, 3, 4, 5, 6]) == [0x0201, 0x0403, 0x0605]
+    assert unpack_bytes(pack_bytes([7, 0, 0, 0, 0, 3])) == [7, 0, 0, 0, 0, 3]
+
+
+class _HealthSerial:
+    """Answers reads at 1606 either with all nine registers or a refusal."""
+
+    is_open = True
+
+    def __init__(self, refuse_span: bool):
+        self.refuse_span = refuse_span
+        self.requests = []
+        self._reply = b""
+
+    def reset_input_buffer(self):
+        pass
+
+    def flush(self):
+        pass
+
+    def write(self, data):
+        self.requests.append(data)
+        addr = int.from_bytes(data[2:4], "big")
+        count = int.from_bytes(data[4:6], "big")
+        if self.refuse_span and count > 3:
+            body = bytes([1, 0x83, 0x02])  # illegal data address
+        else:
+            block = {1606: [0x01, 0, 0, 0x04, 0, 0], 1612: [6, 2, 2, 5, 3, 0],
+                     1618: [40, 41, 42, 43, 44, 45]}
+            raw = block[1606] + block[1612] + block[1618]
+            raw = raw[addr - 1606: addr - 1606 + 2 * count]
+            from inspire_hand_driver.protocol import pack_bytes
+            words = pack_bytes(raw)
+            body = bytes([1, 0x03, 2 * len(words)]) + b"".join(
+                w.to_bytes(2, "big") for w in words
+            )
+        self._reply = body + crc16_modbus(body)
+
+    def read(self, n):
+        out, self._reply = self._reply[:n], self._reply[n:]
+        return out
+
+
+def test_read_health_fetches_error_status_and_temperature_in_one_read():
+    t = HandTransport(hand_id=1, protocol="modbus")
+    t._serial = _HealthSerial(refuse_span=False)
+    health = t.read_health()
+    assert health.errors == [1, 0, 0, 4, 0, 0]
+    assert health.status == [6, 2, 2, 5, 3, 0]
+    assert health.temperatures == [40, 41, 42, 43, 44, 45]
+    assert len(t._serial.requests) == 1
+    # locked rotor on the pinky, current protection on the index; the thumb
+    # stopped at its force threshold is not a stall.
+    assert health.stalled() == [0, 3]
+
+
+def test_read_health_falls_back_to_three_reads_if_the_hand_refuses_the_span():
+    from inspire_hand_driver.protocol import HandProtocolError
+
+    t = HandTransport(hand_id=1, protocol="modbus")
+    t._serial = _HealthSerial(refuse_span=True)
+    health = t.read_health()
+    assert health.status == [6, 2, 2, 5, 3, 0]
+    assert t._split_health_reads, "the refusal must be remembered"
+    assert len(t._serial.requests) == 4  # one refused, then three
+    t.read_health()
+    assert len(t._serial.requests) == 7, "and not retried every time"
+    with pytest.raises(HandProtocolError):
+        t.read_registers(1606, 9)
+
+
+def test_clear_errors_writes_exactly_one_and_never_touches_save():
+    """1004 CLEAR_ERROR and 1005 SAVE share a register; only the low byte may be set."""
+    from inspire_hand_driver.protocol import REG_CLEAR_ERROR
+
+    t = HandTransport(hand_id=1, protocol="modbus")
+    sent = {}
+
+    class FakeSerial:
+        is_open = True
+
+        def reset_input_buffer(self):
+            pass
+
+        def write(self, data):
+            sent["req"] = data
+
+        def flush(self):
+            pass
+
+        def read(self, n):
+            body = bytes([1, 0x10]) + (1004).to_bytes(2, "big") + (1).to_bytes(2, "big")
+            return body + crc16_modbus(body)
+
+    t._serial = FakeSerial()
+    t.clear_errors()
+    req = sent["req"]
+    assert req[1] == 0x10
+    assert int.from_bytes(req[2:4], "big") == REG_CLEAR_ERROR
+    assert int.from_bytes(req[4:6], "big") == 1
+    assert req[7:9] == b"\x00\x01", "high byte is SAVE and must stay clear"
+
+
+def test_mock_finger_stops_at_the_force_threshold_without_an_error():
+    from inspire_hand_driver.protocol import STATUS_AT_FORCE
+
+    m = MockTransport(slew_per_sec=1e6, stall_after_sec=0.01)
+    m.connect()
+    m.write_forces([500] * 6)
+    m.obstacles[3] = 400  # something in the index finger's way
+    m.write_angles([0] * 6)
+    time.sleep(0.05)
+    assert m.read_angles()[3] == 400
+    time.sleep(0.05)
+    assert m.read_angles()[3] == 400
+    assert m.status_codes()[3] == STATUS_AT_FORCE
+    assert m.read_forces()[3] == 500
+    assert m.latched_errors() == [0] * 6
+
+
+def test_mock_finger_without_a_threshold_latches_until_cleared():
+    from inspire_hand_driver.protocol import (
+        ERROR_LOCKED_ROTOR,
+        STATUS_AT_TARGET,
+        STATUS_LOCKED_ROTOR,
+    )
+
+    m = MockTransport(slew_per_sec=1e6, stall_after_sec=0.01)
+    m.connect()
+    m.obstacles[3] = 400
+    m.write_angles([0] * 6)
+    time.sleep(0.02)
+    m.read_angles()  # arrives at the obstacle and starts pushing
+    time.sleep(0.02)
+    assert m.status_codes()[3] == STATUS_LOCKED_ROTOR
+    assert m.read_health().errors[3] == ERROR_LOCKED_ROTOR
+    # Dead: a reachable target does nothing.
+    m.write_angles([1000] * 6)
+    time.sleep(0.02)
+    assert m.read_angles()[3] == 400
+    m.clear_errors()
+    time.sleep(0.02)
+    assert m.read_angles()[3] == 1000
+    assert m.status_codes()[3] == STATUS_AT_TARGET
+    assert m.clear_error_writes == 1 and m.flash_saves == 0

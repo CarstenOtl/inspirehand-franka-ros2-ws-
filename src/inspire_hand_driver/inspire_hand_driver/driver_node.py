@@ -19,6 +19,11 @@ Published
         convenient form for scripting a grasp, and the form the registers use.
     ``~/grip_force``     ``sensor_msgs/JointState``
         Measured grip force per channel, in the hand's register units.
+    ``~/diagnostics``    ``diagnostic_msgs/DiagnosticArray``
+        One entry per DOF with the firmware's STATUS code, ERROR bits and
+        actuator temperature, plus a summary entry. Level ``ERROR`` on any
+        DOF the firmware has stopped on a fault. Published at the
+        ``state_extras_divisor`` cadence, with the current and force reads.
 
 Subscribed
     ``~/command``        ``sensor_msgs/JointState``
@@ -32,6 +37,47 @@ Services
     ``~/set_angles``     ``inspire_hand_msgs/srv/SetAngles``
     ``~/set_speed``      ``inspire_hand_msgs/srv/SetSpeed``
     ``~/set_force``      ``inspire_hand_msgs/srv/SetForce``
+    ``~/clear_errors``   ``std_srvs/srv/Trigger``
+        Write CLEAR_ERROR by hand. The stall guard below does this on its
+        own; the service is for when it is off, or for a look at whether a
+        finger that stopped can be talked to without a power cycle.
+
+Force threshold and stall guard
+-------------------------------
+The hand is position controlled, and a finger that cannot reach its target
+does not merely wait: it pushes until the actuator's protection trips, the
+firmware latches a locked-rotor or over-current error, and the DOF then
+ignores every target until CLEAR_ERROR is written or the hand is
+power-cycled. On the bench this was "the finger died and stayed dead until
+reboot". Two things in this node address it.
+
+*The force threshold* (``startup_force``, FORCE_SET in the registers) is the
+firmware's own answer: a DOF whose fingertip force reaches it stops there,
+cleanly, with status "stopped at force threshold", and no error. It is on by
+default now, at 500 g of the 1000 g scale, and re-applied whenever the hand
+appears to have forgotten it (a reconnect after the hand went silent, or a
+periodic readback of FORCE_SET that disagrees with what was written). It is
+still volatile -- never committed to flash -- and ``~/set_force`` still
+overrides it per DOF, so a capture preset asking for a gentler pinch gets one.
+
+*The stall guard* (``stall_guard``) covers what the threshold cannot: contact
+away from the fingertip sensor, a thumb rotation jammed against the palm, a
+finger stalled before the threshold had been applied. Every extras cycle the
+node reads the STATUS and ERROR blocks; a DOF the firmware has stopped on a
+fault is backed off -- its target is moved to where it actually is plus
+``stall_backoff`` register counts towards open -- and then CLEAR_ERROR is
+written, at most once per ``clear_error_interval_sec``. Backing off comes
+first so that clearing does not simply drive the finger into the same
+obstacle again. For ``stall_holdoff_sec`` afterwards, commands that would
+take that DOF back past the backed-off angle are clamped to it; a 50 Hz
+stream re-sending the same unreachable target therefore stalls the finger at
+most once per hold-off rather than continuously. The clamp is logged, and the
+finger's target in ``~/state`` shows where it was held.
+
+Neither mechanism commands anything on its own beyond that backoff, and
+neither ever writes SAVE: the register that clears errors shares a word with
+the one that commits to flash, and :meth:`HandTransport.clear_errors` is the
+only writer.
 
 Thumb-abduction calibration
 ----------------------------
@@ -84,22 +130,27 @@ accept only driven names, while state carries all twelve.
 Sharing the bus with a command stream
 -------------------------------------
 RS485 is half-duplex, so every register read is time the line cannot be
-carrying a target. Publishing costs three reads -- angles, current, force -- and
-at the default 50 Hz that is a third of the bus at best. Only the angles are
-needed to publish joint states, so ``state_extras_divisor`` fetches the other
-two once per N publishes and holds them in between; ``1`` reads everything
-every cycle and is the default, while a replay streaming targets wants 5 or
-more. ``inspire_hand_driver.benchmark`` models and measures what the bus
-actually costs.
+carrying a target. Publishing costs four reads -- angles, current, force, and
+the status/error block the stall guard watches -- and at the default 50 Hz
+that is well over a third of the bus at best. Only the angles are needed to
+publish joint states, so ``state_extras_divisor`` fetches the other three once
+per N publishes and holds them in between; ``1`` reads everything every cycle
+and is the default, while a replay streaming targets wants 5 or more.
+``inspire_hand_driver.benchmark`` models and measures what the bus actually
+costs.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+import math
+import time
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import rclpy
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_srvs.srv import Trigger
 
 from inspire_hand_msgs.srv import SetAngles, SetForce, SetSpeed
 
@@ -109,10 +160,16 @@ from .protocol import (
     ANGLE_INVALID,
     ANGLE_MAX,
     CHANNEL_IDS,
+    DOF_ORDER,
     REG_CURRENT,
+    STATUS_AT_FORCE,
     HandCommunicationError,
+    HandHealth,
+    HandProtocolError,
     HandTransport,
     MockTransport,
+    describe_error,
+    describe_status,
 )
 
 
@@ -163,9 +220,31 @@ class InspireHandNode(Node):
         # setup can put both hands in one URDF. Must match the description's
         # `prefix` argument exactly.
         self.declare_parameter("joint_prefix", "")
-        # Applied once at startup; the hand keeps these in volatile registers.
+        # Applied at startup and re-applied whenever the hand looks to have
+        # lost them; the hand keeps these in volatile registers. 0 = leave the
+        # hand's own power-on value alone.
         self.declare_parameter("startup_speed", 0)
-        self.declare_parameter("startup_force", 0)
+        # The grip-force threshold, in the hand's 0..1000 (gram) units. A DOF
+        # stops closing when its fingertip force reaches this, instead of
+        # pushing until the actuator's protection latches an error. 500 is
+        # half scale: firm enough for every grasp this rig has needed, and
+        # the capture presets lower it per posture through ~/set_force.
+        self.declare_parameter("startup_force", 500)
+        # How often FORCE_SET is read back and compared with what was written.
+        # A hand that rebooted in the gap between two reads comes back with
+        # its power-on defaults, and this is what notices. 0 disables.
+        self.declare_parameter("limits_check_interval_sec", 2.0)
+        # Stall guard: see the module docstring.
+        self.declare_parameter("stall_guard", True)
+        # Register counts (0..1000 scale) to back a stalled DOF off towards
+        # open from where it stopped, so that clearing the error does not
+        # drive it straight back into the same obstacle.
+        self.declare_parameter("stall_backoff", 30)
+        # For this long after a stall, commands for that DOF are clamped to
+        # the backed-off angle.
+        self.declare_parameter("stall_holdoff_sec", 1.0)
+        # Minimum gap between CLEAR_ERROR writes.
+        self.declare_parameter("clear_error_interval_sec", 1.0)
         # Consecutive read failures tolerated before the node reports the hand
         # as lost. RS485 drops the odd frame under EMI; one miss is not a fault.
         self.declare_parameter("max_read_failures", 5)
@@ -190,6 +269,34 @@ class InspireHandNode(Node):
         # first tick before either has been read once.
         self._currents: List[int] = [0] * 6
         self._forces: List[int] = [0] * 6
+        self._health: Optional[HandHealth] = None
+
+        # The speed and force limits this node believes the hand is holding.
+        # None means "never told it anything, leave its power-on value".
+        speed = int(self.get_parameter("startup_speed").value)
+        force = int(self.get_parameter("startup_force").value)
+        self._speed_cache: Optional[List[int]] = [speed] * 6 if speed > 0 else None
+        self._force_cache: Optional[List[int]] = [force] * 6 if force > 0 else None
+        self._limits_check_interval = float(
+            self.get_parameter("limits_check_interval_sec").value
+        )
+        self._last_limits_check = -math.inf
+        self._limits_readback_supported = True
+
+        self._stall_guard = bool(self.get_parameter("stall_guard").value)
+        self._stall_backoff = max(0, int(self.get_parameter("stall_backoff").value))
+        self._stall_holdoff = max(0.0, float(self.get_parameter("stall_holdoff_sec").value))
+        self._clear_interval = max(
+            0.0, float(self.get_parameter("clear_error_interval_sec").value)
+        )
+        # Per DOF: (minimum angle, monotonic expiry) while a stall is being
+        # held off, else None.
+        self._stall_floor: List[Optional[Tuple[int, float]]] = [None] * 6
+        self._stalled: Set[int] = set()
+        self._last_clear = -math.inf
+        self._clears = 0
+        self._stalls = 0
+        self._last_clamp_log = -math.inf
 
         self._joint_names = [self._prefix + j for j in kin.ALL_JOINTS]
         self._driven_names = [self._prefix + j for j in kin.DRIVEN_JOINTS]
@@ -200,6 +307,7 @@ class InspireHandNode(Node):
         self._joint_state_pub = self.create_publisher(JointState, "~/joint_states", 10)
         self._state_pub = self.create_publisher(JointState, "~/state", 10)
         self._force_pub = self.create_publisher(JointState, "~/grip_force", 10)
+        self._diag_pub = self.create_publisher(DiagnosticArray, "~/diagnostics", 10)
         self._command_sub = self.create_subscription(
             JointState, "~/command", self._on_command, 10
         )
@@ -208,6 +316,7 @@ class InspireHandNode(Node):
         )
         self._speed_srv = self.create_service(SetSpeed, "~/set_speed", self._on_set_speed)
         self._force_srv = self.create_service(SetForce, "~/set_force", self._on_set_force)
+        self._clear_srv = self.create_service(Trigger, "~/clear_errors", self._on_clear_errors)
 
         rate = max(1.0, float(self.get_parameter("publish_rate_hz").value))
         self._timer = self.create_timer(1.0 / rate, self._on_timer)
@@ -216,7 +325,9 @@ class InspireHandNode(Node):
             f"inspire_hand_driver up: "
             f"transport={'mock' if self._mock else self._transport.port} "
             f"protocol={self._transport.protocol} id={self._transport.hand_id} "
-            f"rate={rate:.0f}Hz extras=1/{self._extras_divisor} prefix={self._prefix!r}"
+            f"rate={rate:.0f}Hz extras=1/{self._extras_divisor} prefix={self._prefix!r} "
+            f"force_threshold={force if force > 0 else 'hand default'} "
+            f"stall_guard={'on' if self._stall_guard else 'off'}"
         )
 
     # -- setup -------------------------------------------------------------
@@ -233,8 +344,6 @@ class InspireHandNode(Node):
 
     def _connect(self) -> None:
         self._transport.connect()
-        if self._mock:
-            return
         hand_id = self._transport.ping()
         if hand_id is None:
             self.get_logger().error(
@@ -245,16 +354,58 @@ class InspireHandNode(Node):
                 f"protocol. Run 'ros2 run inspire_hand_driver inspire_hand_probe' to scan."
             )
             return
-        self.get_logger().info(f"hand answered, reports ID {hand_id}")
-        speed = int(self.get_parameter("startup_speed").value)
-        force = int(self.get_parameter("startup_force").value)
+        if not self._mock:
+            self.get_logger().info(f"hand answered, reports ID {hand_id}")
+        self._apply_limits("startup")
+
+    def _apply_limits(self, reason: str) -> bool:
+        """(Re)write the cached speed and force limits to the hand.
+
+        Called at startup, when the hand comes back after going silent, and
+        when a readback shows the force threshold is not what was written --
+        all three are how a power-cycled hand, back on its power-on defaults,
+        gets its threshold back without anyone noticing it was gone.
+        """
         try:
-            if speed > 0:
-                self._transport.write_speeds([speed] * 6)
-            if force > 0:
-                self._transport.write_forces([force] * 6)
+            if self._speed_cache is not None:
+                self._transport.write_speeds(self._speed_cache)
+            if self._force_cache is not None:
+                self._transport.write_forces(self._force_cache)
         except HandCommunicationError as exc:
-            self.get_logger().warn(f"failed to apply startup speed/force: {exc}")
+            self.get_logger().warn(f"failed to apply speed/force limits ({reason}): {exc}")
+            return False
+        self._last_limits_check = time.monotonic()
+        if self._force_cache is not None:
+            self.get_logger().info(
+                f"force threshold {self._force_cache} applied ({reason})"
+            )
+        return True
+
+    def _check_limits(self) -> None:
+        """Read FORCE_SET back and re-apply if the hand has lost it."""
+        if (
+            self._force_cache is None
+            or not self._limits_readback_supported
+            or self._limits_check_interval <= 0
+            or time.monotonic() - self._last_limits_check < self._limits_check_interval
+        ):
+            return
+        try:
+            actual = self._transport.read_force_thresholds()
+        except HandProtocolError as exc:
+            # Some firmware makes FORCE_SET write-only; nothing to be done.
+            self._limits_readback_supported = False
+            self.get_logger().warn(f"hand refuses FORCE_SET readback, not checking again: {exc}")
+            return
+        except HandCommunicationError:
+            return
+        self._last_limits_check = time.monotonic()
+        if list(actual) != list(self._force_cache):
+            self.get_logger().warn(
+                f"force threshold on the hand is {list(actual)}, expected "
+                f"{self._force_cache}: the hand has probably rebooted; re-applying"
+            )
+            self._apply_limits("readback mismatch")
 
     # -- state publishing --------------------------------------------------
     def _on_timer(self) -> None:
@@ -267,6 +418,7 @@ class InspireHandNode(Node):
             if extras:
                 self._currents = self._transport.read_registers(REG_CURRENT, 6)
                 self._forces = self._transport.read_forces()
+                self._health = self._transport.read_health()
             currents, forces = self._currents, self._forces
         except HandCommunicationError as exc:
             self._failures += 1
@@ -278,7 +430,15 @@ class InspireHandNode(Node):
 
         if self._failures >= self._max_failures:
             self.get_logger().info("hand responsive again")
+            # Silence long enough to count as lost is, in practice, a power
+            # cycle, which wipes the volatile limits.
+            self._apply_limits("hand back after being unresponsive")
         self._failures = 0
+
+        if extras:
+            if self._health is not None:
+                self._supervise(angles, self._health)
+            self._check_limits()
 
         stamp = self.get_clock().now().to_msg()
 
@@ -312,6 +472,186 @@ class InspireHandNode(Node):
         force_msg.name = list(CHANNEL_IDS)
         force_msg.effort = [float(f) for f in forces]
         self._force_pub.publish(force_msg)
+
+        if extras and self._health is not None:
+            self._diag_pub.publish(self._diagnostics(stamp, angles, currents, forces, self._health))
+
+    # -- stall guard -------------------------------------------------------
+    def _dof_label(self, index: int) -> str:
+        return f"{DOF_ORDER[index]} (channel {CHANNEL_IDS[index]})"
+
+    def _supervise(self, angles: Sequence[int], health: HandHealth) -> None:
+        """Back off and clear any DOF the firmware has stopped on a fault."""
+        now = time.monotonic()
+        stalled = health.stalled()
+        for index in sorted(self._stalled.difference(stalled)):
+            self.get_logger().info(
+                f"{self._dof_label(index)} recovered: {describe_status(health.status[index])}"
+            )
+        fresh = [index for index in stalled if index not in self._stalled]
+        self._stalled = set(stalled)
+        if not stalled:
+            return
+
+        for index in fresh:
+            self._stalls += 1
+            self.get_logger().warn(
+                f"{self._dof_label(index)} stalled: status "
+                f"'{describe_status(health.status[index])}', error "
+                f"{describe_error(health.errors[index])}"
+                + ("" if self._stall_guard else " (stall_guard off: not intervening)")
+            )
+        if not self._stall_guard:
+            return
+
+        # Back off first, so that the cleared finger is not immediately driven
+        # back into whatever stopped it.
+        base = list(self._last_command) if self._last_command is not None else [
+            a if a != ANGLE_INVALID else ANGLE_MAX for a in angles
+        ]
+        moved = []
+        for index in stalled:
+            actual = angles[index] if angles[index] != ANGLE_INVALID else base[index]
+            floor = min(ANGLE_MAX, int(actual) + self._stall_backoff)
+            self._stall_floor[index] = (floor, now + self._stall_holdoff)
+            if base[index] < floor:
+                base[index] = floor
+                moved.append(f"{self._dof_label(index)} -> {angle_to_open_ratio(floor):.3f}")
+        if moved:
+            self.get_logger().warn("backing off stalled DOF: " + ", ".join(moved))
+            self._send(base)
+
+        if now - self._last_clear >= self._clear_interval:
+            try:
+                self._transport.clear_errors()
+            except HandCommunicationError as exc:
+                self.get_logger().warn(f"CLEAR_ERROR write failed: {exc}")
+                return
+            self._last_clear = now
+            self._clears += 1
+            self.get_logger().warn(
+                f"wrote CLEAR_ERROR for {', '.join(self._dof_label(i) for i in stalled)}"
+            )
+
+    def _clamp_to_stall_floors(self, angles: List[int]) -> List[int]:
+        """Hold DOF that recently stalled at their backed-off angle.
+
+        Returns the DOF indices that were clamped, and drops floors whose
+        hold-off has expired.
+        """
+        now = time.monotonic()
+        clamped = []
+        for index, floor in enumerate(self._stall_floor):
+            if floor is None:
+                continue
+            minimum, expires = floor
+            if now >= expires:
+                self._stall_floor[index] = None
+                continue
+            if angles[index] < minimum:
+                angles[index] = minimum
+                clamped.append(index)
+        if clamped and now - self._last_clamp_log >= 1.0:
+            self._last_clamp_log = now
+            self.get_logger().warn(
+                "holding recently stalled DOF at their backed-off angle: "
+                + ", ".join(
+                    f"{self._dof_label(i)} >= {angle_to_open_ratio(self._stall_floor[i][0]):.3f}"
+                    for i in clamped
+                )
+            )
+        return clamped
+
+    def _on_clear_errors(self, request, response):
+        try:
+            self._transport.clear_errors()
+        except HandCommunicationError as exc:
+            response.success, response.message = False, str(exc)
+            return response
+        self._last_clear = time.monotonic()
+        self._clears += 1
+        response.success = True
+        response.message = (
+            "CLEAR_ERROR written"
+            if self._health is None
+            else "CLEAR_ERROR written; before: " + ", ".join(
+                f"{DOF_ORDER[i]}={describe_status(self._health.status[i])}/"
+                f"{describe_error(self._health.errors[i])}"
+                for i in range(6)
+            )
+        )
+        return response
+
+    def _diagnostics(
+        self,
+        stamp,
+        angles: Sequence[int],
+        currents: Sequence[int],
+        forces: Sequence[int],
+        health: HandHealth,
+    ) -> DiagnosticArray:
+        hardware = f"{self._transport.port}#{self._transport.hand_id}"
+        targets = self._last_command
+        thresholds = self._force_cache
+        array = DiagnosticArray()
+        array.header.stamp = stamp
+        stalled = set(health.stalled())
+        worst = DiagnosticStatus.OK
+        for index in range(6):
+            status = DiagnosticStatus()
+            status.name = f"{self.get_name()}: {DOF_ORDER[index]}"
+            status.hardware_id = f"{hardware}/{CHANNEL_IDS[index]}"
+            if index in stalled:
+                status.level = DiagnosticStatus.ERROR
+            elif health.errors[index] or health.status[index] == STATUS_AT_FORCE:
+                status.level = DiagnosticStatus.WARN
+            else:
+                status.level = DiagnosticStatus.OK
+            worst = max(worst, status.level)
+            status.message = describe_status(health.status[index])
+            if health.errors[index]:
+                status.message += f"; error {describe_error(health.errors[index])}"
+            if index in stalled and self._stall_floor[index] is not None:
+                status.message += "; backed off, held"
+            status.values = [
+                KeyValue(key="status", value=str(health.status[index])),
+                KeyValue(key="error", value=str(health.errors[index])),
+                KeyValue(key="temperature_c", value=str(health.temperatures[index])),
+                KeyValue(key="current", value=str(currents[index])),
+                KeyValue(key="force", value=str(forces[index])),
+                KeyValue(
+                    key="force_threshold",
+                    value=str(thresholds[index]) if thresholds is not None else "hand default",
+                ),
+                KeyValue(
+                    key="open_ratio",
+                    value=f"{angle_to_open_ratio(angles[index]):.3f}"
+                    if angles[index] != ANGLE_INVALID else "invalid",
+                ),
+                KeyValue(
+                    key="target_open_ratio",
+                    value=f"{angle_to_open_ratio(targets[index]):.3f}"
+                    if targets is not None else "none",
+                ),
+            ]
+            array.status.append(status)
+
+        summary = DiagnosticStatus()
+        summary.name = f"{self.get_name()}: hand"
+        summary.hardware_id = hardware
+        summary.level = worst
+        summary.message = (
+            "ok" if not stalled
+            else f"{len(stalled)} DOF stalled: " + ", ".join(DOF_ORDER[i] for i in sorted(stalled))
+        )
+        summary.values = [
+            KeyValue(key="stall_guard", value="on" if self._stall_guard else "off"),
+            KeyValue(key="stalls_seen", value=str(self._stalls)),
+            KeyValue(key="errors_cleared", value=str(self._clears)),
+            KeyValue(key="read_failures", value=str(self._failures)),
+        ]
+        array.status.insert(0, summary)
+        return array
 
     # -- command paths -----------------------------------------------------
     def _resolve(self, name: str) -> int:
@@ -359,6 +699,7 @@ class InspireHandNode(Node):
             self.get_logger().warn(f"ignoring unknown hand channels: {', '.join(unknown)}")
         if not touched:
             return None, f"no recognised channel named (got: {', '.join(map(str, names))})"
+        self._clamp_to_stall_floors(angles)
         return angles, ""
 
     def _send(self, angles: List[int]) -> Tuple[bool, str]:
@@ -432,10 +773,10 @@ class InspireHandNode(Node):
             return False, f"name has {len(names)} entries but {what} has {len(values)}"
         if not names:
             return False, "no channels named"
-        # Read-modify-write is not possible (these registers are write-only on
-        # some firmware), so an unaddressed DOF is rewritten with the value this
-        # node last sent, defaulting to the hand's own mid-scale.
-        cache = getattr(self, f"_{what}_cache", None) or [500] * 6
+        # Read-modify-write is not relied on (these registers are write-only
+        # on some firmware), so an unaddressed DOF is rewritten with the value
+        # this node last sent, defaulting to the hand's own mid-scale.
+        cache = getattr(self, f"_{what}_cache") or [500] * 6
         out = list(cache)
         unknown, touched = [], False
         for name, value in zip(names, values):

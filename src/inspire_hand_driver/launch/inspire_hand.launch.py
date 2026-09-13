@@ -40,7 +40,15 @@ NODE_ARGS = (
      "Raise it to free RS485 bandwidth for a command stream."),
     ("joint_prefix", "", str, "Prefix on every joint name; must match the description."),
     ("startup_speed", "0", int, "Speed applied to all DOF at startup (0 = leave alone)."),
-    ("startup_force", "0", int, "Force threshold applied at startup (0 = leave alone)."),
+    ("startup_force", "500", int, "Grip-force threshold (0..1000 g) applied to all DOF at "
+     "startup and re-applied if the hand loses it. A DOF stops closing when it is reached. "
+     "0 = leave the hand's power-on value alone."),
+    ("stall_guard", "true", bool, "Back off and clear the error on any DOF the firmware has "
+     "stopped on a fault, instead of leaving it dead until a power cycle."),
+    ("stall_backoff", "30", int, "How far (0..1000 counts) to back a stalled DOF off towards "
+     "open before clearing its error."),
+    ("stall_holdoff_sec", "1.0", float, "How long after a stall commands for that DOF are "
+     "clamped to the backed-off angle."),
 )
 
 
