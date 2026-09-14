@@ -91,6 +91,97 @@ Remove `--dry-run` only after the normal hardware checks and replay launch. Add
 `--close-support-fingers` only when deliberately overriding the recorded pinky,
 ring, and middle positions with their fully closed limits.
 
+## Sequential multi-nut threading: `traj_4_m30` and `traj_4_m36`
+
+Ten-cycle sequential threading captures from the
+`Isaac-Forge-Franka-Threading-V2-Multi-v0` policy, one per nut. Each cycle is
+the policy turn (`policy`), the scripted release and retreat
+(`follow_waypoints`), and the return to the start pose (`return_to_reset`),
+recorded back to back at 15 Hz. `hardware_trajectory_focused/` holds the same
+motion as CSV with its manifest.
+
+Each `replay_data.npz` is a batched capture of three simulated nuts, and the
+focused nut is not environment 0:
+
+| Folder | Nut | `--env` | Cycles | Source | 5x replay |
+| --- | --- | --- | --- | --- | --- |
+| `traj_4_m30` | M30, 3.5 mm pitch | `1` | 10 | 1286 samples, 85.7 s | 430 s |
+| `traj_4_m36` | M36, 4.0 mm pitch | `2` | 10 | 1139 samples, 75.9 s | 381 s |
+
+Always pass `--env`: the default environment 0 is the M24 nut, whose joint 7
+comes within 0.04 rad of its limit. Neither folder carries a `homing.yaml`;
+both start exactly at the `traj_3` home (arm delta 0.000 rad), so use
+`traj_3/homing.yaml`. The recorded joint-7 values use the current orientation
+(no offset). Ignore `trajectory_name: "traj_1"` and the humanoid
+`impedance_joint_pd_command_names` in `metadata.json`; they are exporter
+leftovers that the replay does not read.
+
+Replay a complete recording as it is with `--all-cycles`. The phases stay
+embedded: `--intervene` reads each cycle's release point from the capture's
+own `cycle` and `replay_phase` fields. The run ends at the last recorded
+sample, about 0.01 rad short of home.
+
+```bash
+D=apps/traj_replay/demo_trajs
+
+# M30, joint impedance (default controller)
+ros2 run inspire_franka_trajectory_replay replay_trajectory $D/traj_4_m30 \
+  --env 1 --all-cycles \
+  --home $D/traj_3/homing.yaml \
+  --time-scale 5 \
+  --interactive-pause \
+  --max-prepared-duration 500 \
+  --dry-run
+
+# M36, joint impedance (default controller)
+ros2 run inspire_franka_trajectory_replay replay_trajectory $D/traj_4_m36 \
+  --env 2 --all-cycles \
+  --home $D/traj_3/homing.yaml \
+  --time-scale 5 \
+  --interactive-pause \
+  --max-prepared-duration 450 \
+  --dry-run
+```
+
+For Cartesian impedance, launch the bringup with the Cartesian controller
+loaded, then add `--arm-controller cartesian-impedance` to either command. The
+arm homes with the joint controller and switches for the trajectory; the runner
+refuses before homing if the launch did not load it. `--stiffness-scale` scales
+the Cartesian stiffness. `--intervene` is joint-impedance only.
+
+```bash
+ros2 launch inspire_franka_trajectory_replay replay.launch.py arm_controller:=cartesian-impedance
+
+ros2 run inspire_franka_trajectory_replay replay_trajectory $D/traj_4_m30 \
+  --env 1 --all-cycles \
+  --home $D/traj_3/homing.yaml \
+  --arm-controller cartesian-impedance \
+  --time-scale 5 \
+  --interactive-pause \
+  --max-prepared-duration 500 \
+  --dry-run
+```
+
+To validate or run one cycle, replace `--all-cycles` with `--cycle N` (1–10)
+and drop `--time-scale` and `--max-prepared-duration`; the runner picks a
+2.4–3.7x slowdown per cycle. For a hand-only check, replace
+`--time-scale 5 --interactive-pause --max-prepared-duration ...` with
+`--no-arm --hand-time-scale 1`.
+
+All ten cycles of both nuts, and both complete runs in either controller, pass
+replay preparation. What to expect and watch:
+
+- Joint 5 reaches 2.81 rad, as in `traj_3`; this is within the corrected FR3
+  limits.
+- The release waypoints move further than `traj_3`: joint 7 to −2.81 rad (M30)
+  and joint 6 to 2.54 rad (M36, 73 % of the house speed limit at 5x).
+- The hand motion is small: pinky, ring, and middle stay closed; the index
+  bends to 0.62 rad and the thumb yaw swings between 1.09 and 0.74 rad.
+- In simulation the proper grip holds for under half of each policy phase, and
+  M36 cycle 10 never registers a grasp. Stop at the pause before it if needed.
+
+Remove `--dry-run` only after the normal hardware checks and replay launch.
+
 ## Legacy `traj_1` hardware baselines
 
 The de facto one-cycle baseline remains `threading_cycle1_flange180`. It was

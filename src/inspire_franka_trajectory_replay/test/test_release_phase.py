@@ -150,6 +150,33 @@ def test_load_reads_a_directory_or_its_npz(tmp_path):
     assert len(release_phase.load(tmp_path / "replay_data.npz")) == 1
 
 
+def test_a_complete_forge_capture_numbers_its_own_releases(tmp_path):
+    cycles, phases = _phases()
+    npz = tmp_path / "replay_data.npz"
+    np.savez(npz, cycle=cycles, replay_phase=phases,
+             sample_time_s=np.arange(len(cycles)) / 15.0)
+
+    index = release_phase.from_forge_capture(npz, len(cycles))
+
+    assert [entry.release_sample for entry in index.releases] == [10, 30, 50]
+    assert index.rate_hz == pytest.approx(15.0)
+
+
+def test_a_capture_that_was_not_loaded_whole_is_not_numbered_by_its_fields(tmp_path):
+    cycles, phases = _phases()
+    npz = tmp_path / "replay_data.npz"
+    np.savez(npz, cycle=cycles, replay_phase=phases)
+
+    with pytest.raises(ValueError, match="complete recording"):
+        release_phase.from_forge_capture(npz, len(cycles) - 20)
+
+
+def test_a_capture_without_phase_fields_has_no_forge_release_index(tmp_path):
+    npz = tmp_path / "replay_data.npz"
+    np.savez(npz, cycle=np.array([1, 1, 2, 2]))
+    assert release_phase.from_forge_capture(npz, 4) is None
+
+
 # --- placing a sample on the controller's prepared clock ----------------------------------
 
 

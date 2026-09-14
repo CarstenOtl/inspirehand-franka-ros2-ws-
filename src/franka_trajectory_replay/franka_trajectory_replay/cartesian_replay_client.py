@@ -116,14 +116,22 @@ class CartesianReplayClient(ReplayClient):
             'max_policy_step_m', 'max_policy_step_rad', 'policy_command_timeout',
             'state_publish_rate'])
 
-    def ensure_active(self, log=print):
-        controllers = self.list_controllers()
-        controller = controllers.get(self.controller)
+    def require_loaded(self):
+        """Refuse unless the launch loaded the Cartesian controller.
+
+        Read-only, so a runner can ask before it moves anything: without it the
+        first sign of a joint-impedance-only launch is a parameter-service
+        timeout after the arm has already been homed.
+        """
+        controller = self.list_controllers().get(self.controller)
         if controller is None or controller.type != CONTROLLER_TYPE:
             raise Rejected(
                 'Cartesian replay requires %s of type %s; restart replay.launch.py with '
                 'arm_controller:=cartesian-impedance (trajectory replay) or '
                 'arm_controller:=policy (live policy)' % (self.controller, CONTROLLER_TYPE))
+
+    def ensure_active(self, log=print):
+        self.require_loaded()
         parameters = self.controller_parameters()
         if parameters.get('base_frame') != self.base_frame:
             raise Rejected('controller base_frame %r does not match the configured %r'

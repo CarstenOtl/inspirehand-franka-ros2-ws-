@@ -792,6 +792,10 @@ class _Segment:
     #: Artifact sample index of this stream's first sample, so a pause inside a
     #: rejoined segment reports where the *artifact* is, not where the slice is.
     sample_offset: int = 0
+    #: The Cartesian pose stream built from ``prepared``, for
+    #: --arm-controller cartesian-impedance. The Cartesian client sends poses,
+    #: not joint positions; ``prepared`` still sets the clock the hand follows.
+    pose_stream: object = None
     description: str = "trajectory"
     allow_intervene: bool = False
     #: Set on every segment the runner itself queues: its opening move is a
@@ -903,6 +907,12 @@ def main(argv=None):
         type=int,
         default=None,
         help="one rollout cycle from a multi-cycle Forge recording",
+    )
+    parser.add_argument(
+        "--all-cycles",
+        action="store_true",
+        help="replay a multi-cycle Forge recording complete, every cycle back to back "
+             "exactly as recorded (combine with --env for a batched capture)",
     )
     parser.add_argument(
         "--segment",
@@ -1165,12 +1175,19 @@ def main(argv=None):
 
     try:
         trajectory = load_trajectory(
-            args.trajectory, args.rate, args.env, args.cycle, args.segment
+            args.trajectory, args.rate, args.env, args.cycle, args.segment,
+            all_cycles=args.all_cycles,
         )
         # The release flags are read from the artifact rather than recovered
         # from the source capture it was cut from: the artifact is what gets
         # replayed, and its sample numbering is the one a pause reports.
         releases = release_phase.load(trajectory.source)
+        if releases is None and args.all_cycles:
+            # A complete source capture is its own artifact: every row is
+            # replayed, so its per-sample phase fields number it directly.
+            releases = release_phase.from_forge_capture(
+                trajectory.source, len(trajectory.time)
+            )
         if args.intervene and releases is None:
             raise ValueError(
                 f"{trajectory.source.parent} carries no release flags, so an "
@@ -1264,6 +1281,9 @@ def main(argv=None):
         )
     if trajectory.cycle is not None:
         print(f"Forge rollout cycle: {trajectory.cycle}")
+    if args.all_cycles:
+        count = "all" if releases is None else f"all {len(releases)}"
+        print(f"Forge rollout cycles: {count}, replayed as recorded (environment {args.env})")
     if trajectory.segment is not None:
         print(f"Forge episode segment: {trajectory.segment}")
     if args.close_support_fingers:
@@ -1377,6 +1397,12 @@ def main(argv=None):
     try:
         if not args.no_arm:
             node.ensure_active(print)
+        if arm is not None:
+            # Before anything moves: a launch without the Cartesian controller, or
+            # one whose controlled point is not the stream's, must not cost a
+            # homing move to discover.
+            arm.require_loaded()
+            arm.check_tool(pose_stream.tool, print)
         devices = " and ".join(
             ([] if args.no_arm else ["the FR3"]) + ([] if args.no_hand else ["the Inspire hand"])
         )
@@ -1394,9 +1420,8 @@ def main(argv=None):
             # Cartesian controller. Both claim the effort interfaces, so the
             # swap keeps franka_hardware in torque control. The preflight refuses
             # a robot whose end-effector frame is not the one the stream assumes.
-            # The controlled point is checked in both worlds; the robot's own frames only
-            # exist on hardware.
-            arm.check_tool(pose_stream.tool, print)
+            # The controlled point was checked before homing; the robot's own
+            # frames only exist on hardware.
             if arm.uses_dh_model():
                 print(
                     "SIMULATION MODEL: the Cartesian controller computes its pose and "
@@ -1518,8 +1543,13 @@ def main(argv=None):
 
             try:
                 if arm is not None:
+                    if segment.pose_stream is None:
+                        raise Rejected(
+                            f"{segment.description} has no Cartesian pose stream; "
+                            "nothing was sent"
+                        )
                     arm.send_trajectory(
-                        segment.prepared,
+                        segment.pose_stream,
                         config["cartesian"]["send_rate"],
                         timeout_margin=args.timeout_margin,
                         on_accept=accepted,
@@ -1631,6 +1661,7 @@ def main(argv=None):
                     sample_offset=0,
                     description="trajectory",
                     allow_intervene=args.intervene,
+                    pose_stream=pose_stream,
                 )
             ])
             while pending:

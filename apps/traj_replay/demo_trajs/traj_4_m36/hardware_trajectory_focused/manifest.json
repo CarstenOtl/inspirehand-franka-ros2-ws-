@@ -1,0 +1,89 @@
+{
+  "source": "logs/replays/sequential-threading-m36-10cycles-20260914-162919-977202/data/traj_1",
+  "checkpoint": "/home/carsten.oertel/code/forgeUltra/forge_ultra/tasks/forge_franka_threading_v2/logs/rl_games/ForgeTg2/franka_threading_v2-Forge-franka-threading-v2-multi-fr3-multi-nut-v2-z20mm-2026-09-13_18-22-12/nn/last_ForgeTg2_ep_200_rew_8202.691.pth",
+  "task": "Isaac-Forge-Franka-Threading-V2-Multi-v0",
+  "rate_hz": 15.0,
+  "joint_order": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+    "thumb_joint_0",
+    "thumb_joint_1",
+    "index_joint_0",
+    "middle_joint_0",
+    "ring_joint_0",
+    "little_joint_0"
+  ],
+  "arm_joint_count": 7,
+  "hand_joint_count": 6,
+  "units": {
+    "pos": "rad",
+    "vel": "rad/s",
+    "cmd": "rad",
+    "time": "s"
+  },
+  "segments": [
+    {
+      "file": "M36_sequential_threading_10_cycles_15Hz.csv",
+      "environment_index": 2,
+      "source_range": null,
+      "sample_count": 1139,
+      "duration_s": 75.93333333333334,
+      "grasped_fraction": 0.5706760316066726,
+      "proper_grip_fraction": 0.2589991220368745,
+      "source_cycle_ranges": [
+        [
+          0,
+          119
+        ],
+        [
+          119,
+          239
+        ],
+        [
+          239,
+          351
+        ],
+        [
+          351,
+          468
+        ],
+        [
+          468,
+          575
+        ],
+        [
+          575,
+          680
+        ],
+        [
+          680,
+          788
+        ],
+        [
+          788,
+          894
+        ],
+        [
+          894,
+          1025
+        ],
+        [
+          1025,
+          1139
+        ]
+      ],
+      "successful_cycle_count": 10,
+      "variant": "m36",
+      "threading_success_ever": false,
+      "maximum_turn_deg": 58.14476776123047,
+      "thread_pitch_m": 0.004000000189989805,
+      "spawn_depth_fraction": 0.0,
+      "spawn_z_drop_m": 0.0
+    }
+  ]
+}

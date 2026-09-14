@@ -308,6 +308,47 @@ def test_a_step_the_arm_could_make_is_not_read_as_a_reset(tmp_path):
     assert len(trajectory.arm) == 20
 
 
+def test_all_cycles_replays_the_complete_recording_as_recorded(tmp_path):
+    positions, time_s = _episodes([40])
+    path = _forge(tmp_path, positions, time_s, cycle=np.array([1] * 20 + [2] * 20))
+
+    trajectory = load_trajectory(path, all_cycles=True)
+
+    assert trajectory.cycle is None
+    assert np.array_equal(trajectory.arm, positions[:, 0, :7])
+    assert np.allclose(trajectory.time, time_s)
+
+
+def test_all_cycles_reads_the_requested_environment_of_a_batched_capture(tmp_path):
+    positions, time_s = _episodes([30])
+    batched = np.concatenate([positions, positions + 0.5], axis=1)
+    path = _forge(tmp_path, batched, time_s, cycle=np.array([1] * 15 + [2] * 15))
+
+    trajectory = load_trajectory(path, environment=1, all_cycles=True)
+
+    assert np.allclose(trajectory.arm, batched[:, 1, :7])
+
+
+def test_all_cycles_still_refuses_a_reset_inside_the_recording(tmp_path):
+    positions, time_s = _episodes([20, 20])
+    path = _forge(tmp_path, positions, time_s, cycle=np.array([1] * 20 + [2] * 20))
+
+    with pytest.raises(ValueError, match="--segment N"):
+        load_trajectory(path, all_cycles=True)
+
+
+def test_all_cycles_conflicts_with_cycle_and_needs_a_cycle_field(tmp_path):
+    positions, time_s = _episodes([20])
+    with_cycles = _forge(tmp_path, positions, time_s, cycle=np.array([1] * 10 + [2] * 10))
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_trajectory(with_cycles, cycle=1, all_cycles=True)
+
+    other = tmp_path / "plain"
+    other.mkdir()
+    with pytest.raises(ValueError, match="no cycle field"):
+        load_trajectory(_forge(other, positions, time_s), all_cycles=True)
+
+
 def test_cycle_selection_still_applies_before_segmentation(tmp_path):
     positions, time_s = _episodes([20, 20])
     path = _forge(tmp_path, positions, time_s, cycle=np.array([1] * 20 + [2] * 20))

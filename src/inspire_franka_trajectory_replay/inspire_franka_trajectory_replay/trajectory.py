@@ -192,22 +192,36 @@ def _columns(names, expected, label):
     return [names.index(name) for name in expected]
 
 
-def _forge_rows(data, cycle: Optional[int]) -> tuple[np.ndarray, Optional[int]]:
-    """Select one continuous rollout from a multi-cycle Forge recording."""
+def _forge_rows(data, cycle: Optional[int],
+                all_cycles: bool = False) -> tuple[np.ndarray, Optional[int]]:
+    """Select one continuous rollout from a multi-cycle Forge recording.
+
+    ``all_cycles`` keeps the whole recording instead. A sequential threading
+    capture already holds its cycles back to back with continuous seams, so
+    the complete file is itself one run the FR3 can follow; the reset check in
+    :func:`_segment_rows` still runs afterwards and refuses it if it is not.
+    """
     count = len(data["joint_pos"])
+    if all_cycles and cycle is not None:
+        raise ValueError("--all-cycles and --cycle are mutually exclusive")
     if "cycle" not in data:
         if cycle is not None:
             raise ValueError("--cycle was supplied, but this Forge NPZ has no cycle field")
+        if all_cycles:
+            raise ValueError("--all-cycles was supplied, but this Forge NPZ has no cycle field")
         return np.arange(count), None
 
     recorded = np.asarray(data["cycle"])
     if recorded.ndim != 1 or len(recorded) != count:
         raise ValueError("Forge cycle field must have shape (time,)")
+    if all_cycles:
+        return np.arange(count), None
     available = [int(value) for value in np.unique(recorded)]
     if cycle is None and len(available) > 1:
         raise ValueError(
             "Forge recording contains multiple rollout cycles "
-            f"{available}; select one continuous run with --cycle N"
+            f"{available}; select one continuous run with --cycle N, "
+            "or replay the complete recording with --all-cycles"
         )
     selected = available[0] if cycle is None else cycle
     if selected not in available:
@@ -278,7 +292,7 @@ def _segment_rows(arm: np.ndarray, time: np.ndarray, segment: Optional[int]):
 
 
 def _load_forge(data, metadata: dict, environment: int, cycle: Optional[int],
-                segment: Optional[int]):
+                segment: Optional[int], all_cycles: bool = False):
     positions = np.asarray(data["joint_pos"], dtype=float)
     if positions.ndim != 3:
         return None
@@ -289,7 +303,7 @@ def _load_forge(data, metadata: dict, environment: int, cycle: Optional[int],
     names = tuple(str(name) for name in metadata.get("joint_names", ()))
     if len(names) != positions.shape[2]:
         raise ValueError("metadata joint_names does not match joint_pos width")
-    rows, selected_cycle = _forge_rows(data, cycle)
+    rows, selected_cycle = _forge_rows(data, cycle, all_cycles)
     selected = positions[rows, environment, :]
     arm = selected[:, _columns(names, ARM_JOINTS, "arm")]
     hand = selected[:, _columns(names, FORGE_HAND_JOINTS, "Forge hand")]
@@ -308,13 +322,14 @@ def load_trajectory(
     environment: int = 0,
     cycle: Optional[int] = None,
     segment: Optional[int] = None,
+    all_cycles: bool = False,
 ) -> CoordinatedTrajectory:
     """Load a coordinated NPZ or the raw ``replay_data.npz`` Forge format."""
     source = resolve_trajectory(path)
     metadata = _metadata(source)
     with np.load(source, allow_pickle=False) as data:
         forge = (
-            _load_forge(data, metadata, environment, cycle, segment)
+            _load_forge(data, metadata, environment, cycle, segment, all_cycles)
             if "joint_pos" in data
             else None
         )
@@ -323,6 +338,8 @@ def load_trajectory(
         else:
             if cycle is not None:
                 raise ValueError("--cycle is only valid for a Forge NPZ with a cycle field")
+            if all_cycles:
+                raise ValueError("--all-cycles is only valid for a Forge NPZ with a cycle field")
             if segment is not None:
                 raise ValueError("--segment is only valid for a Forge NPZ")
             selected_cycle = None

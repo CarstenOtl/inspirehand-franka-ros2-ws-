@@ -235,6 +235,35 @@ def load(source) -> Optional[ReleaseIndex]:
     return from_metadata(metadata, metadata_path)
 
 
+def from_forge_capture(npz_path, sample_count: int) -> Optional[ReleaseIndex]:
+    """The release index of a complete Forge capture, read from its own fields.
+
+    For replaying a source capture whole (``--all-cycles``), where no
+    ``make_cycles`` step has written ``cycle_index``. The capture's row numbers
+    are the replayed sample numbers only if every row was kept, so
+    ``sample_count`` -- the length of what was loaded -- must equal the
+    capture's; anything else is refused rather than misnumbered. ``None`` when
+    the capture carries no ``cycle``/``replay_phase`` fields.
+    """
+    path = Path(npz_path)
+    with np.load(path, allow_pickle=False) as data:
+        if not all(name in data for name in SOURCE_FIELDS):
+            return None
+        cycles = np.asarray(data["cycle"])
+        phases = np.asarray(data["replay_phase"])
+        rate = None
+        if "sample_time_s" in data and len(data["sample_time_s"]) > 1:
+            rate = 1.0 / float(np.median(np.diff(data["sample_time_s"])))
+    if len(cycles) != int(sample_count):
+        raise ValueError(
+            f"the capture has {len(cycles)} samples but {sample_count} were loaded; "
+            "its cycle/replay_phase fields only number the complete recording"
+        )
+    return ReleaseIndex(
+        releases_from_fields(cycles, phases), RELEASE_PHASE, rate or 15.0, path
+    )
+
+
 # --- placing a sample on the controller's clock ------------------------------------------
 
 

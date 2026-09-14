@@ -197,6 +197,27 @@ def test_impedance_client_rejects_a_running_position_controller_before_activatio
         node.ensure_active()
 
 
+def test_cartesian_client_names_the_launch_argument_without_touching_parameters():
+    # A joint-impedance-only launch: the Cartesian controller's parameter
+    # services do not exist, so the check must not reach for them.
+    node = CartesianReplayClient.__new__(CartesianReplayClient)
+    node.controller = "cartesian_trajectory_replay_controller"
+    node.list_controllers = lambda: {
+        "trajectory_replay_controller": SimpleNamespace(
+            type="franka_trajectory_replay/TrajectoryReplayController"
+        )
+    }
+
+    def unavailable():
+        raise TimeoutError("service /cartesian_trajectory_replay_controller/get_parameters")
+
+    node.controller_parameters = unavailable
+    with pytest.raises(Rejected, match="arm_controller:=cartesian-impedance"):
+        node.require_loaded()
+    with pytest.raises(Rejected, match="arm_controller:=cartesian-impedance"):
+        node.ensure_active()
+
+
 def test_impedance_client_delegates_gravity_controller_switch(monkeypatch):
     node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
     node.controller = "trajectory_replay_controller"
@@ -668,6 +689,106 @@ def test_cartesian_dry_run_prints_both_summaries(tmp_path, capsys):
     assert "arm controller: cartesian-impedance" in out
     assert "cartesian:" in out and "within limits" in out
     assert "dry run" in out
+
+
+def test_cartesian_run_sends_the_pose_stream_not_the_joint_stream(tmp_path, monkeypatch):
+    # A live run with the ROS side faked: the arm-facing Cartesian client must
+    # receive poses. Sending the joint stream failed on the real arm with
+    # "'Prepared' object has no attribute 'p'" right after the approach goto.
+    from inspire_franka_trajectory_replay import replay
+
+    npz, home = _write_capture(tmp_path)
+    events = []
+
+    class FakeJointClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_active(self, *_args, **_kwargs):
+            events.append("joint active")
+
+        def goto(self, positions, *_args, **_kwargs):
+            events.append("home")
+
+        def current_joint_positions(self, *_args, **_kwargs):
+            return list(READY_POSE)
+
+        def abort(self):
+            events.append("joint abort")
+
+        def destroy_node(self):
+            pass
+
+    class FakeCartesianClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def require_loaded(self):
+            events.append("cartesian loaded")
+
+        def check_tool(self, *_args, **_kwargs):
+            pass
+
+        def uses_dh_model(self):
+            return False
+
+        def preflight(self, *_args, **_kwargs):
+            pass
+
+        def ensure_active(self, *_args, **_kwargs):
+            events.append("cartesian active")
+
+        def goto(self, *_args, **_kwargs):
+            events.append("approach")
+
+        def status(self):
+            return None
+
+        def send_trajectory(self, stream, _send_rate, timeout_margin, on_accept,
+                            allow_pauses):
+            # What cartesian.trajectory_message reads from every point.
+            assert stream.p.shape[1] == 3 and stream.quat.shape[1] == 4
+            events.append(("sent", len(stream.p)))
+            on_accept()
+
+        def abort(self):
+            events.append("cartesian abort")
+
+        def destroy_node(self):
+            pass
+
+    class FakeExecutor:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def add_node(self, _node):
+            pass
+
+        def spin(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(replay, "CoordinatedReplayClient", FakeJointClient)
+    monkeypatch.setattr(replay, "CartesianReplayClient", FakeCartesianClient)
+    monkeypatch.setattr(replay, "MultiThreadedExecutor", FakeExecutor)
+    monkeypatch.setattr(replay.rclpy, "init", lambda **_kwargs: None)
+    monkeypatch.setattr(replay.rclpy, "shutdown", lambda: None)
+
+    code = main([
+        str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+        "--arm-controller", "cartesian-impedance", "--time-scale", "2",
+        "--no-hand", "--yes",
+    ])
+
+    assert code == 0
+    # Loaded before anything moves, then home, handover, approach, stream.
+    assert events[:5] == [
+        "joint active", "cartesian loaded", "home", "cartesian active", "approach",
+    ]
+    assert events[5][0] == "sent" and events[5][1] > 1
+    assert "cartesian abort" not in events
 
 
 def test_cartesian_only_flags_are_refused_on_the_other_paths(tmp_path):
