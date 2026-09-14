@@ -85,7 +85,13 @@ class CoordinatedTrajectory:
 
 
 def scale_finger_flexion(hand, scale):
-    """Scale only index- and thumb-MCP waypoint angles from their open pose."""
+    """Scale only index- and thumb-MCP waypoint angles from their open pose.
+
+    The result saturates at each joint's URDF range (open pose to fully
+    closed). Recordings carry sensor noise a few 1e-5 rad below the open pose,
+    and scaling would otherwise push that past the hand-limit tolerance; a
+    large scale likewise just closes the finger fully instead of failing.
+    """
     if not np.isfinite(scale) or scale <= 0:
         raise ValueError("finger flexion scale must be finite and positive")
     if hand is None:
@@ -93,7 +99,9 @@ def scale_finger_flexion(hand, scale):
             "--finger-flexion-scale requires Inspire hand positions in the trajectory"
         )
     scaled = np.array(hand, dtype=float, copy=True)
-    scaled[..., list(FINGER_FLEXION_INDICES)] *= scale
+    for index in FINGER_FLEXION_INDICES:
+        dof = hand_kinematics.DOFS[hand_kinematics.dof_index(HAND_JOINTS[index])]
+        scaled[..., index] = np.clip(scaled[..., index] * scale, dof.lower, dof.upper)
     return scaled
 
 

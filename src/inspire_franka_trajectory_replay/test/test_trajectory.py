@@ -13,7 +13,7 @@ from inspire_hand_driver import kinematics as hand_kinematics
 
 
 def test_finger_flexion_scale_changes_only_index_and_thumb_mcp_waypoints():
-    hand = np.arange(18, dtype=float).reshape(3, 6) / 20.0
+    hand = np.arange(18, dtype=float).reshape(3, 6) / 60.0
     original = hand.copy()
 
     scaled = scale_finger_flexion(hand, 1.3)
@@ -23,6 +23,24 @@ def test_finger_flexion_scale_changes_only_index_and_thumb_mcp_waypoints():
     assert scaled[:, flexion] == pytest.approx(original[:, flexion] * 1.3)
     assert scaled[:, untouched] == pytest.approx(original[:, untouched])
     assert hand == pytest.approx(original)
+
+
+def test_finger_flexion_scale_saturates_at_the_joint_range():
+    hand = np.zeros((3, 6))
+    flexion = list(FINGER_FLEXION_INDICES)
+    hand[0, flexion] = -0.000075
+    hand[1, flexion] = 0.05
+    hand[2, flexion] = 1.4
+
+    scaled = scale_finger_flexion(hand, 1.7)
+
+    upper = [
+        hand_kinematics.DOFS[hand_kinematics.dof_index(HAND_JOINTS[i])].upper
+        for i in flexion
+    ]
+    assert scaled[0, flexion] == pytest.approx([0.0, 0.0])
+    assert scaled[1, flexion] == pytest.approx([0.085, 0.085])
+    assert scaled[2, flexion] == pytest.approx(upper)
 
 
 @pytest.mark.parametrize("scale", [0.0, -1.0, np.nan, np.inf])
