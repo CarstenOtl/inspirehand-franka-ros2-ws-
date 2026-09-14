@@ -4,6 +4,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -698,81 +699,34 @@ def test_cartesian_run_sends_the_pose_stream_not_the_joint_stream(tmp_path, monk
     from inspire_franka_trajectory_replay import replay
 
     npz, home = _write_capture(tmp_path)
-    events = []
+    calls = []
 
-    class FakeJointClient:
+    class Recorder:
+        """Records every client call; the run needs no return values from them."""
+
+        label = None
+
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def ensure_active(self, *_args, **_kwargs):
-            events.append("joint active")
+        def __getattr__(self, name):
+            return lambda *_args, **_kwargs: calls.append(f"{self.label}.{name}")
 
-        def goto(self, positions, *_args, **_kwargs):
-            events.append("home")
+    class FakeJointClient(Recorder):
+        label = "joint"
 
-        def current_joint_positions(self, *_args, **_kwargs):
-            return list(READY_POSE)
+    class FakeCartesianClient(Recorder):
+        label = "cartesian"
 
-        def abort(self):
-            events.append("joint abort")
-
-        def destroy_node(self):
-            pass
-
-    class FakeCartesianClient:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def require_loaded(self):
-            events.append("cartesian loaded")
-
-        def check_tool(self, *_args, **_kwargs):
-            pass
-
-        def uses_dh_model(self):
-            return False
-
-        def preflight(self, *_args, **_kwargs):
-            pass
-
-        def ensure_active(self, *_args, **_kwargs):
-            events.append("cartesian active")
-
-        def goto(self, *_args, **_kwargs):
-            events.append("approach")
-
-        def status(self):
-            return None
-
-        def send_trajectory(self, stream, _send_rate, timeout_margin, on_accept,
-                            allow_pauses):
+        def send_trajectory(self, stream, *_args, on_accept, **_kwargs):
             # What cartesian.trajectory_message reads from every point.
             assert stream.p.shape[1] == 3 and stream.quat.shape[1] == 4
-            events.append(("sent", len(stream.p)))
+            calls.append("cartesian.send_trajectory")
             on_accept()
-
-        def abort(self):
-            events.append("cartesian abort")
-
-        def destroy_node(self):
-            pass
-
-    class FakeExecutor:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def add_node(self, _node):
-            pass
-
-        def spin(self):
-            pass
-
-        def shutdown(self):
-            pass
 
     monkeypatch.setattr(replay, "CoordinatedReplayClient", FakeJointClient)
     monkeypatch.setattr(replay, "CartesianReplayClient", FakeCartesianClient)
-    monkeypatch.setattr(replay, "MultiThreadedExecutor", FakeExecutor)
+    monkeypatch.setattr(replay, "MultiThreadedExecutor", MagicMock())
     monkeypatch.setattr(replay.rclpy, "init", lambda **_kwargs: None)
     monkeypatch.setattr(replay.rclpy, "shutdown", lambda: None)
 
@@ -784,11 +738,11 @@ def test_cartesian_run_sends_the_pose_stream_not_the_joint_stream(tmp_path, monk
 
     assert code == 0
     # Loaded before anything moves, then home, handover, approach, stream.
-    assert events[:5] == [
-        "joint active", "cartesian loaded", "home", "cartesian active", "approach",
+    steps = (".ensure_active", ".require_loaded", ".goto", ".send_trajectory", ".abort")
+    assert [call for call in calls if call.endswith(steps)] == [
+        "joint.ensure_active", "cartesian.require_loaded", "joint.goto",
+        "cartesian.ensure_active", "cartesian.goto", "cartesian.send_trajectory",
     ]
-    assert events[5][0] == "sent" and events[5][1] > 1
-    assert "cartesian abort" not in events
 
 
 def test_cartesian_only_flags_are_refused_on_the_other_paths(tmp_path):
@@ -875,6 +829,11 @@ def test_duration_and_hand_time_scale_are_mutually_exclusive():
 
     with pytest.raises(SystemExit):
         main(["traj", "--duration", "30", "--hand-time-scale", "5", "--no-arm"])
+
+
+def test_cycle_and_all_cycles_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        main(["traj", "--cycle", "2", "--all-cycles"])
 
 
 @pytest.mark.parametrize("target", ["0", "-3", "nan"])

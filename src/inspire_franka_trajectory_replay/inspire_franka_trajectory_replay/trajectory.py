@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
@@ -69,6 +69,9 @@ RESET_VELOCITY = VELOCITY_MAX
 # the 3-sample tails left when a recording stops mid-episode.
 MIN_SEGMENT_SAMPLES = 4
 
+# The ``cycle`` selection that keeps every cycle of a multi-cycle recording.
+ALL_CYCLES = "all"
+
 
 @dataclass(frozen=True)
 class CoordinatedTrajectory:
@@ -76,8 +79,11 @@ class CoordinatedTrajectory:
     arm: np.ndarray
     hand: Optional[np.ndarray]
     source: Path
-    cycle: Optional[int] = None
+    cycle: Optional[Union[int, str]] = None
     segment: Optional[int] = None
+    #: Row indices of the loaded samples in a Forge capture, so per-sample
+    #: capture fields such as ``replay_phase`` can be read for exactly these.
+    source_rows: Optional[np.ndarray] = None
 
     @property
     def duration(self) -> float:
@@ -192,30 +198,31 @@ def _columns(names, expected, label):
     return [names.index(name) for name in expected]
 
 
-def _forge_rows(data, cycle: Optional[int],
-                all_cycles: bool = False) -> tuple[np.ndarray, Optional[int]]:
+def _cycle_flag(cycle) -> str:
+    return "--all-cycles" if cycle == ALL_CYCLES else "--cycle"
+
+
+def _forge_rows(data, cycle) -> tuple[np.ndarray, Optional[Union[int, str]]]:
     """Select one continuous rollout from a multi-cycle Forge recording.
 
-    ``all_cycles`` keeps the whole recording instead. A sequential threading
-    capture already holds its cycles back to back with continuous seams, so
-    the complete file is itself one run the FR3 can follow; the reset check in
-    :func:`_segment_rows` still runs afterwards and refuses it if it is not.
+    ``cycle=ALL_CYCLES`` keeps the whole recording instead. A sequential
+    threading capture already holds its cycles back to back with continuous
+    seams, so the complete file is itself one run the FR3 can follow; the reset
+    check in :func:`_segment_rows` still runs afterwards and refuses it if not.
     """
     count = len(data["joint_pos"])
-    if all_cycles and cycle is not None:
-        raise ValueError("--all-cycles and --cycle are mutually exclusive")
     if "cycle" not in data:
         if cycle is not None:
-            raise ValueError("--cycle was supplied, but this Forge NPZ has no cycle field")
-        if all_cycles:
-            raise ValueError("--all-cycles was supplied, but this Forge NPZ has no cycle field")
+            raise ValueError(
+                f"{_cycle_flag(cycle)} was supplied, but this Forge NPZ has no cycle field"
+            )
         return np.arange(count), None
 
     recorded = np.asarray(data["cycle"])
     if recorded.ndim != 1 or len(recorded) != count:
         raise ValueError("Forge cycle field must have shape (time,)")
-    if all_cycles:
-        return np.arange(count), None
+    if cycle == ALL_CYCLES:
+        return np.arange(count), ALL_CYCLES
     available = [int(value) for value in np.unique(recorded)]
     if cycle is None and len(available) > 1:
         raise ValueError(
@@ -291,8 +298,7 @@ def _segment_rows(arm: np.ndarray, time: np.ndarray, segment: Optional[int]):
     return np.arange(start, stop), segment
 
 
-def _load_forge(data, metadata: dict, environment: int, cycle: Optional[int],
-                segment: Optional[int], all_cycles: bool = False):
+def _load_forge(data, metadata: dict, environment: int, cycle, segment: Optional[int]):
     positions = np.asarray(data["joint_pos"], dtype=float)
     if positions.ndim != 3:
         return None
@@ -303,7 +309,7 @@ def _load_forge(data, metadata: dict, environment: int, cycle: Optional[int],
     names = tuple(str(name) for name in metadata.get("joint_names", ()))
     if len(names) != positions.shape[2]:
         raise ValueError("metadata joint_names does not match joint_pos width")
-    rows, selected_cycle = _forge_rows(data, cycle, all_cycles)
+    rows, selected_cycle = _forge_rows(data, cycle)
     selected = positions[rows, environment, :]
     arm = selected[:, _columns(names, ARM_JOINTS, "arm")]
     hand = selected[:, _columns(names, FORGE_HAND_JOINTS, "Forge hand")]
@@ -313,37 +319,41 @@ def _load_forge(data, metadata: dict, environment: int, cycle: Optional[int],
     # downstream cannot survive, so it is found here rather than discovered as
     # a limit violation two steps later.
     kept, selected_segment = _segment_rows(arm, time, segment)
-    return time[kept], arm[kept], hand[kept], selected_cycle, selected_segment
+    return time[kept], arm[kept], hand[kept], selected_cycle, selected_segment, rows[kept]
 
 
 def load_trajectory(
     path: str,
     rate: Optional[float] = None,
     environment: int = 0,
-    cycle: Optional[int] = None,
+    cycle: Optional[Union[int, str]] = None,
     segment: Optional[int] = None,
-    all_cycles: bool = False,
 ) -> CoordinatedTrajectory:
-    """Load a coordinated NPZ or the raw ``replay_data.npz`` Forge format."""
+    """Load a coordinated NPZ or the raw ``replay_data.npz`` Forge format.
+
+    ``cycle`` selects one cycle of a multi-cycle Forge recording, or every
+    cycle with :data:`ALL_CYCLES`.
+    """
     source = resolve_trajectory(path)
     metadata = _metadata(source)
     with np.load(source, allow_pickle=False) as data:
         forge = (
-            _load_forge(data, metadata, environment, cycle, segment, all_cycles)
+            _load_forge(data, metadata, environment, cycle, segment)
             if "joint_pos" in data
             else None
         )
         if forge is not None:
-            time, arm, hand, selected_cycle, selected_segment = forge
+            time, arm, hand, selected_cycle, selected_segment, source_rows = forge
         else:
             if cycle is not None:
-                raise ValueError("--cycle is only valid for a Forge NPZ with a cycle field")
-            if all_cycles:
-                raise ValueError("--all-cycles is only valid for a Forge NPZ with a cycle field")
+                raise ValueError(
+                    f"{_cycle_flag(cycle)} is only valid for a Forge NPZ with a cycle field"
+                )
             if segment is not None:
                 raise ValueError("--segment is only valid for a Forge NPZ")
             selected_cycle = None
             selected_segment = None
+            source_rows = None
             arm_key = next(
                 (key for key in ("joint_pos_arm", "arm", "q_arm", "q") if key in data),
                 None,
@@ -379,7 +389,9 @@ def load_trajectory(
         raise ValueError("trajectory time must be finite and strictly increasing")
     if not np.all(np.isfinite(arm)) or (hand is not None and not np.all(np.isfinite(hand))):
         raise ValueError("trajectory positions must be finite")
-    return CoordinatedTrajectory(time, arm, hand, source, selected_cycle, selected_segment)
+    return CoordinatedTrajectory(
+        time, arm, hand, source, selected_cycle, selected_segment, source_rows
+    )
 
 
 def resample(source: CoordinatedTrajectory, rate: float = 1000.0) -> CoordinatedTrajectory:

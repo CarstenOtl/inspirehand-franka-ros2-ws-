@@ -41,6 +41,7 @@ from .intervention import (
 )
 from .joint_trajectory_client import JointTrajectoryClient
 from .trajectory import (
+    ALL_CYCLES,
     ARM_JOINTS,
     FINGER_FLEXION_JOINTS,
     HAND_JOINTS,
@@ -902,15 +903,18 @@ def main(argv=None):
     )
     parser.add_argument("--rate", type=float, default=None, help="input rate if absent")
     parser.add_argument("--env", type=int, default=0, help="environment in a batched Forge NPZ")
-    parser.add_argument(
+    cycles = parser.add_mutually_exclusive_group()
+    cycles.add_argument(
         "--cycle",
         type=int,
         default=None,
         help="one rollout cycle from a multi-cycle Forge recording",
     )
-    parser.add_argument(
+    cycles.add_argument(
         "--all-cycles",
-        action="store_true",
+        dest="cycle",
+        action="store_const",
+        const=ALL_CYCLES,
         help="replay a multi-cycle Forge recording complete, every cycle back to back "
              "exactly as recorded (combine with --env for a batched capture)",
     )
@@ -1114,7 +1118,7 @@ def main(argv=None):
                 "--intervene records the hand's measured joints at every waypoint, "
                 "so it needs the hand; drop --no-hand"
             )
-        if args.cycle is not None or args.segment is not None:
+        if args.cycle not in (None, ALL_CYCLES) or args.segment is not None:
             parser.error(
                 "--intervene needs one continuous artifact whose samples are numbered "
                 "as its release flags are; use a derived trajectory such as "
@@ -1175,24 +1179,22 @@ def main(argv=None):
 
     try:
         trajectory = load_trajectory(
-            args.trajectory, args.rate, args.env, args.cycle, args.segment,
-            all_cycles=args.all_cycles,
+            args.trajectory, args.rate, args.env, args.cycle, args.segment
         )
         # The release flags are read from the artifact rather than recovered
         # from the source capture it was cut from: the artifact is what gets
         # replayed, and its sample numbering is the one a pause reports.
         releases = release_phase.load(trajectory.source)
-        if releases is None and args.all_cycles:
-            # A complete source capture is its own artifact: every row is
-            # replayed, so its per-sample phase fields number it directly.
-            releases = release_phase.from_forge_capture(
-                trajectory.source, len(trajectory.time)
-            )
+        if releases is None and args.intervene:
+            # A source capture replayed directly is its own artifact: its
+            # per-sample phase fields, read for the loaded rows, number it.
+            releases = release_phase.from_capture(trajectory)
         if args.intervene and releases is None:
             raise ValueError(
                 f"{trajectory.source.parent} carries no release flags, so an "
-                "intervention has nothing to rejoin at. Regenerate the artifact with "
-                "make_cycle_trajectory, which resolves each cycle's "
+                "intervention has nothing to rejoin at. Replay a Forge capture with "
+                "cycle/replay_phase fields directly (--all-cycles), or regenerate the "
+                "artifact with make_cycle_trajectory, which resolves each cycle's "
                 f"{release_phase.RELEASE_PHASE!r} phase into its metadata as cycle_index"
             )
         if args.intervene and releases.releases[-1].end_sample >= len(trajectory.time):
@@ -1279,11 +1281,10 @@ def main(argv=None):
                 for line, entry in zip(releases.describe().splitlines(), releases.releases)
             )
         )
-    if trajectory.cycle is not None:
+    if trajectory.cycle == ALL_CYCLES:
+        print(f"Forge rollout cycles: all, replayed as recorded (environment {args.env})")
+    elif trajectory.cycle is not None:
         print(f"Forge rollout cycle: {trajectory.cycle}")
-    if args.all_cycles:
-        count = "all" if releases is None else f"all {len(releases)}"
-        print(f"Forge rollout cycles: {count}, replayed as recorded (environment {args.env})")
     if trajectory.segment is not None:
         print(f"Forge episode segment: {trajectory.segment}")
     if args.close_support_fingers:
@@ -1541,28 +1542,20 @@ def main(argv=None):
                 segment_started.set()
                 started.set()
 
+            # The Cartesian client takes poses; the joint client the joint stream.
+            client, stream, send_rate = (
+                (arm, segment.pose_stream, config["cartesian"]["send_rate"])
+                if arm is not None
+                else (node, segment.prepared, config["prepare"]["send_rate"])
+            )
             try:
-                if arm is not None:
-                    if segment.pose_stream is None:
-                        raise Rejected(
-                            f"{segment.description} has no Cartesian pose stream; "
-                            "nothing was sent"
-                        )
-                    arm.send_trajectory(
-                        segment.pose_stream,
-                        config["cartesian"]["send_rate"],
-                        timeout_margin=args.timeout_margin,
-                        on_accept=accepted,
-                        allow_pauses=args.interactive_pause,
-                    )
-                else:
-                    node.send_trajectory(
-                        segment.prepared,
-                        config["prepare"]["send_rate"],
-                        timeout_margin=args.timeout_margin,
-                        on_accept=accepted,
-                        allow_pauses=args.interactive_pause,
-                    )
+                client.send_trajectory(
+                    stream,
+                    send_rate,
+                    timeout_margin=args.timeout_margin,
+                    on_accept=accepted,
+                    allow_pauses=args.interactive_pause,
+                )
             finally:
                 # Cleanup only. Nothing is raised from here: an exception in a
                 # finally would replace whatever the submit itself failed with,

@@ -1,5 +1,6 @@
 """The release-phase flag: finding it, carrying it, and placing it on a clock."""
 
+import dataclasses
 import json
 
 import numpy as np
@@ -150,31 +151,43 @@ def test_load_reads_a_directory_or_its_npz(tmp_path):
     assert len(release_phase.load(tmp_path / "replay_data.npz")) == 1
 
 
-def test_a_complete_forge_capture_numbers_its_own_releases(tmp_path):
-    cycles, phases = _phases()
+def _capture(tmp_path, rows=None, **fields):
+    """A loaded Forge capture: its NPZ fields and the rows that were kept."""
     npz = tmp_path / "replay_data.npz"
-    np.savez(npz, cycle=cycles, replay_phase=phases,
-             sample_time_s=np.arange(len(cycles)) / 15.0)
+    np.savez(npz, **fields)
+    count = len(next(iter(fields.values())))
+    rows = np.arange(count) if rows is None else rows
+    return CoordinatedTrajectory(
+        time=np.arange(len(rows)) / 15.0, arm=np.zeros((len(rows), 7)), hand=None,
+        source=npz, source_rows=rows,
+    )
 
-    index = release_phase.from_forge_capture(npz, len(cycles))
+
+def test_a_loaded_forge_capture_numbers_its_own_releases(tmp_path):
+    cycles, phases = _phases()
+
+    index = release_phase.from_capture(_capture(tmp_path, cycle=cycles, replay_phase=phases))
 
     assert [entry.release_sample for entry in index.releases] == [10, 30, 50]
     assert index.rate_hz == pytest.approx(15.0)
 
 
-def test_a_capture_that_was_not_loaded_whole_is_not_numbered_by_its_fields(tmp_path):
+def test_a_partly_loaded_capture_is_numbered_in_the_loaded_samples(tmp_path):
     cycles, phases = _phases()
-    npz = tmp_path / "replay_data.npz"
-    np.savez(npz, cycle=cycles, replay_phase=phases)
+    trajectory = _capture(tmp_path, rows=np.arange(20, 60), cycle=cycles, replay_phase=phases)
 
-    with pytest.raises(ValueError, match="complete recording"):
-        release_phase.from_forge_capture(npz, len(cycles) - 20)
+    index = release_phase.from_capture(trajectory)
+
+    assert [entry.cycle for entry in index.releases] == [2, 3]
+    assert [entry.release_sample for entry in index.releases] == [10, 30]
 
 
-def test_a_capture_without_phase_fields_has_no_forge_release_index(tmp_path):
-    npz = tmp_path / "replay_data.npz"
-    np.savez(npz, cycle=np.array([1, 1, 2, 2]))
-    assert release_phase.from_forge_capture(npz, 4) is None
+def test_only_a_forge_capture_with_phase_fields_has_a_capture_release_index(tmp_path):
+    assert release_phase.from_capture(_capture(tmp_path, cycle=np.array([1, 1, 2, 2]))) is None
+    coordinated = dataclasses.replace(
+        _capture(tmp_path, cycle=np.array([1, 1])), source_rows=None
+    )
+    assert release_phase.from_capture(coordinated) is None
 
 
 # --- placing a sample on the controller's prepared clock ----------------------------------
