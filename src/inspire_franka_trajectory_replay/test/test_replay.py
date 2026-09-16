@@ -11,7 +11,8 @@ import pytest
 import yaml
 
 from inspire_franka_trajectory_replay.replay import (
-    HAND_UPPER, SUPPORT_FINGER_INDICES, _close_support_fingers,
+    HAND_UPPER, SUPPORT_FINGER_INDICES, SUPPORT_FINGER_JOINTS,
+    _close_support_fingers,
     _hand_stream_native, _prepare_arm, _prepare_cartesian, _stream_hand,
     CoordinatedReplayClient, PositionReplayClient, main,
 )
@@ -48,6 +49,54 @@ def test_support_finger_override_changes_only_requested_hand_channels():
 def test_support_finger_override_requires_recorded_hand_positions():
     with pytest.raises(ValueError, match="requires Inspire hand positions"):
         _close_support_fingers(None, np.zeros(6))
+
+
+def test_support_fingers_close_without_being_asked_to(tmp_path, capsys):
+    npz, home = _write_capture(tmp_path)
+
+    code = main([
+        str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+        "--dry-run",
+    ])
+
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "hand-only override" in out
+    for name in SUPPORT_FINGER_JOINTS:
+        assert f"{name}=" in out
+
+
+def test_recorded_support_fingers_survive_the_opt_out(tmp_path, capsys):
+    npz, home = _write_capture(tmp_path)
+
+    code = main([
+        str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+        "--no-close-support-fingers", "--dry-run",
+    ])
+
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "hand-only override" not in out
+    assert "support fingers replayed as recorded" in out
+
+
+def test_no_hand_drops_the_default_override_but_still_refuses_an_explicit_one(
+    tmp_path, capsys
+):
+    npz, home = _write_capture(tmp_path)
+    common = [
+        str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+        "--no-hand", "--dry-run",
+    ]
+
+    code = main(common)
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "hand-only override" not in out
+    assert "support fingers replayed as recorded" not in out
+
+    with pytest.raises(SystemExit):
+        main(["--close-support-fingers"] + common)
 
 
 def test_explicit_time_scale_stretches_arm_waypoint_timing(monkeypatch):

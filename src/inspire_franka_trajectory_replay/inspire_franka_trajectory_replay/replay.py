@@ -1000,9 +1000,12 @@ def main(argv=None):
     parser.add_argument("--yes", "-y", action="store_true", help="skip motion prompts")
     parser.add_argument(
         "--close-support-fingers",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="hold pinky, ring, and middle at their fully closed limits during "
-             "homing and replay; arm waypoints are unchanged",
+             "homing and replay; arm waypoints are unchanged. On by default "
+             "whenever the hand is commanded; pass --no-close-support-fingers "
+             "to replay the trajectory's recorded support-finger values",
     )
     parser.add_argument(
         "--finger-flexion-scale",
@@ -1095,6 +1098,12 @@ def main(argv=None):
         parser.error("--no-arm and --no-hand together leave nothing to replay")
     if args.close_support_fingers and args.no_hand:
         parser.error("--close-support-fingers cannot be used with --no-hand")
+    if args.close_support_fingers is None:
+        # The threading task wants the support cradle closed, so that is the
+        # default rather than something every command line has to repeat.
+        # --no-hand leaves no hand to override; it resolves to off instead of
+        # tripping the conflict above, which stays reserved for an explicit ask.
+        args.close_support_fingers = not args.no_hand
     if args.finger_flexion_scale != 1.0 and args.no_hand:
         parser.error("--finger-flexion-scale cannot be used with --no-hand")
     if args.interactive_pause and args.no_arm:
@@ -1213,6 +1222,8 @@ def main(argv=None):
                 f"recording: time scale x{requested_time_scale:.3f}"
             )
         home_arm, home_hand = load_home(home_path)
+        if trajectory.hand is None and not args.no_hand:
+            raise ValueError("trajectory has no Inspire hand positions; pass --no-hand for arm-only")
         if args.finger_flexion_scale != 1.0:
             trajectory = dataclasses.replace(
                 trajectory,
@@ -1247,8 +1258,6 @@ def main(argv=None):
                 )
         if not args.no_arm:
             _check_home(home_arm, trajectory.arm[0], home_path, args.max_home_delta)
-        if trajectory.hand is None and not args.no_hand:
-            raise ValueError("trajectory has no Inspire hand positions; pass --no-hand for arm-only")
         if trajectory.hand is not None:
             trajectory = dataclasses.replace(
                 trajectory, hand=_validate_hand(trajectory.hand, "trajectory")
@@ -1293,6 +1302,11 @@ def main(argv=None):
             for name, index in zip(SUPPORT_FINGER_JOINTS, SUPPORT_FINGER_INDICES)
         )
         print(f"hand-only override: {values}; no arm retarget applied")
+    elif not args.no_hand:
+        print(
+            "support fingers replayed as recorded "
+            "(--no-close-support-fingers); no arm retarget applied"
+        )
     if args.allow_unsafe_simulation:
         print(
             "WARNING: FR3 limit violations are being sent to the position-JTC "

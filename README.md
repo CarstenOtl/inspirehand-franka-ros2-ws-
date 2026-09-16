@@ -117,8 +117,7 @@ ros2 launch inspire_franka_trajectory_replay replay.launch.py \
 # physical 180-degree flange mount. Do not substitute raw traj_1 for the arm.
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
     apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
-    --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
-    --close-support-fingers
+    --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml
 
 # Pickup rollout with live scene-adjustment pauses. During replay, SPACE
 # smoothly pauses and holds both devices; SPACE resumes and q aborts.
@@ -132,7 +131,6 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
     apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
     --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
-    --close-support-fingers \
     --time-scale 5
 
 # Hand only. Raw traj_1 remains valid here because --no-arm never commands
@@ -1007,7 +1005,8 @@ no error at all — just a robot that quietly does the wrong thing.
   On 2026-09-09, coordinated threading cycle 1 was confirmed on hardware with
   the correct tool orientation and a good replay using the 180-degree flange
   baseline: a `+90 deg` retarget of `fr3_joint7`, its matching retargeted home,
-  and `--close-support-fingers`. The checked-in
+  and the closed support fingers that are now the runner's default. The
+  checked-in
   `demo_trajs/threading_cycle1_flange180` artifact is the default hardware
   baseline. Raw `traj_1`, raw `homing/threading.yaml`, and the unretargeted
   `threading_5x` artifact are outdated for arm replay with the current mount.

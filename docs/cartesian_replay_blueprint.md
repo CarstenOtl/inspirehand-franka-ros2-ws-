@@ -401,7 +401,7 @@ check and no nullspace path.
 the arm's command type stays as it is: capture loading, `--cycle`/`--segment`,
 `--env`, the homing YAML and `--max-home-delta`, `--time-scale`,
 `--max-prepared-duration`, `--finger-flexion-scale`,
-`--close-support-fingers`, hand validation and the 50 Hz hand thread keyed on
+the support-finger override, hand validation and the 50 Hz hand thread keyed on
 the controller's `elapsed`, `--interactive-pause` (SPACE/q) through the same
 `pause`/`resume`/`abort` topics and status keys, `--dry-run`, the two motion
 prompts and `--yes`, abort on Ctrl-C.

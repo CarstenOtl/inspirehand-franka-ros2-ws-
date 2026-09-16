@@ -87,9 +87,10 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
   --dry-run
 ```
 
-Remove `--dry-run` only after the normal hardware checks and replay launch. Add
-`--close-support-fingers` only when deliberately overriding the recorded pinky,
-ring, and middle positions with their fully closed limits.
+Remove `--dry-run` only after the normal hardware checks and replay launch. The
+runner overrides the recorded pinky, ring, and middle positions with their fully
+closed limits by default; pass `--no-close-support-fingers` to replay the
+recorded ones.
 
 ## Sequential multi-nut threading: `traj_4_m30` and `traj_4_m36`
 
@@ -192,7 +193,7 @@ support-finger override:
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
   apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
   --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
-  --close-support-fingers --dry-run
+  --dry-run
 ```
 
 `threading_5x_flange180` is the validated five-cycle legacy run. Its complete
@@ -202,7 +203,6 @@ replay was confirmed on hardware at 5x slowdown with interactive pause:
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
   apps/traj_replay/demo_trajs/threading_5x_flange180 \
   --home apps/traj_replay/demo_trajs/threading_5x_flange180/homing.yaml \
-  --close-support-fingers \
   --time-scale 5 \
   --interactive-pause \
   --max-prepared-duration 300

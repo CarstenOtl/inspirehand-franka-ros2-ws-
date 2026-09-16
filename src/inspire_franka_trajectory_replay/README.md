@@ -131,7 +131,7 @@ historical offset to `traj_2` or future captures. Do not bypass a mismatch with
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
   apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
   --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
-  --close-support-fingers --dry-run
+  --dry-run
 
 # Terminal 1: launch holds the current pose; it does not begin replay.
 ros2 launch inspire_franka_trajectory_replay replay.launch.py \
@@ -140,8 +140,7 @@ ros2 launch inspire_franka_trajectory_replay replay.launch.py \
 # Terminal 2: prompts before homing and before replay.
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
   apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
-  --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
-  --close-support-fingers
+  --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml
 ```
 
 The current-orientation five-cycle `traj_2` candidate needs no joint-7
@@ -160,9 +159,10 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
 ```
 
 This candidate passes dry-run preparation but is not labelled physically
-validated until a complete hardware run is confirmed. Add
-`--close-support-fingers` only when deliberately replacing its recorded support
-finger values with the fully closed limits.
+validated until a complete hardware run is confirmed. Its support fingers are
+closed by default like every other trajectory's; pass
+`--no-close-support-fingers` to replay its recorded support finger values
+instead.
 
 The default runner refuses a position controller or the Coriolis-enabled IK
 profile.
@@ -176,7 +176,6 @@ ros2 launch inspire_franka_trajectory_replay sim_replay.launch.py
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
   apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
   --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
-  --close-support-fingers \
   --arm-controller position-jtc
 ```
 
@@ -278,7 +277,7 @@ source install/setup.bash
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
   apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
   --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
-  --close-support-fingers --dry-run
+  --dry-run
 ```
 
 Inspect the coordinated recording in MuJoCo with Chi's source-compatible replay
@@ -308,14 +307,16 @@ Then, in a second sourced shell:
 ```bash
 ros2 run inspire_franka_trajectory_replay replay_trajectory \
   apps/traj_replay/demo_trajs/threading_cycle1_flange180 \
-  --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml \
-  --close-support-fingers
+  --home apps/traj_replay/demo_trajs/threading_cycle1_flange180/homing.yaml
 ```
 
-`--close-support-fingers` changes only the hand: pinky, ring, and middle are
-held at their fully closed `1.47 rad` limits in the homing command and at every
-replay waypoint. It never changes or retargets an FR3 joint. Omit the flag when
-the trajectory's recorded support-finger motion should be preserved. Historical
+Closing the support fingers is the default whenever the hand is commanded:
+pinky, ring, and middle are held at their fully closed `1.47 rad` limits in the
+homing command and at every replay waypoint. It changes only the hand -- it
+never changes or retargets an FR3 joint. Pass `--no-close-support-fingers` when
+the trajectory's recorded support-finger motion should be preserved;
+`--close-support-fingers` still names the default explicitly, and is refused
+with `--no-hand`, which has no hand to override. Historical
 `traj_1` derivatives already contain their joint-7 compensation in the artifact;
 `traj_2` and future trajectories contain no such compensation.
 
@@ -660,7 +661,7 @@ simulation controller profiles. Zero all three to control the flange again.
 
 Everything that is not the arm's command type is unchanged: capture loading,
 `--cycle`/`--segment`, homing and `--max-home-delta`, `--time-scale`,
-`--finger-flexion-scale`, `--close-support-fingers`, the 50 Hz hand stream
+`--finger-flexion-scale`, the support-finger override, the 50 Hz hand stream
 keyed on the controller's trajectory clock, `--interactive-pause`, `--dry-run`.
 
 ```bash
