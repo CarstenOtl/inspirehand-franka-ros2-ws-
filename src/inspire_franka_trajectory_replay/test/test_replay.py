@@ -271,6 +271,9 @@ def test_cartesian_client_names_the_launch_argument_without_touching_parameters(
 def test_impedance_client_delegates_gravity_controller_switch(monkeypatch):
     node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
     node.controller = "trajectory_replay_controller"
+    node._lock = threading.Lock()
+    node._status = {"phase_name": "trajectory", "processed_command_id": "3"}
+    node._status_stamp = time.monotonic()
     calls = []
 
     def switch(_self, log=print, controller=None):
@@ -283,6 +286,73 @@ def test_impedance_client_delegates_gravity_controller_switch(monkeypatch):
 
     assert calls == ["gravity_compensation_example_controller"]
     assert stopped == ["trajectory_replay_controller"]
+    # The controller just gave up the interfaces and stopped publishing; what
+    # it said before that is not evidence of anything now.
+    assert node.status() is None
+
+
+def test_impedance_handback_waits_for_the_reactivated_controllers_own_status(monkeypatch):
+    """A handback must not fail on status published before the intervention.
+
+    The controller publishes nothing while it is inactive, so after an
+    intervention of more than a second the newest cached status is always older
+    than the staleness guard allows. Before the cache was cleared at the
+    switch, `wait_for_status` called a `status` that raised on the age of that
+    message instead of returning None, so the wait could never succeed and
+    every handback failed with "feedback stopped".
+    """
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    node.controller = "trajectory_replay_controller"
+    node._lock = threading.Lock()
+    # What a 90 s hand-guided intervention leaves behind.
+    node._status = {"phase_name": "idle", "processed_command_id": "3"}
+    node._status_stamp = time.monotonic() - 90.0
+    node.list_controllers = lambda: {
+        "trajectory_replay_controller": SimpleNamespace(
+            type="franka_trajectory_replay/TrajectoryReplayController"
+        )
+    }
+    node.controller_parameters = lambda: {
+        "command_interface": "effort",
+        "coriolis_compensation": False,
+        "stiffness_scale": 1.0,
+    }
+    subscribed = SimpleNamespace(get_subscription_count=lambda: 1)
+    for name in ("_goto_publisher", "_trajectory_publisher", "_pause_publisher",
+                 "_resume_publisher", "_abort_publisher"):
+        setattr(node, name, subscribed)
+    monkeypatch.setattr(ReplayClient, "ensure_active",
+                        lambda _self, log=print, controller=None: [])
+
+    def first_status_after_reactivation():
+        time.sleep(0.15)
+        with node._lock:
+            node._status = {"phase_name": "idle", "processed_command_id": "0"}
+            node._status_stamp = time.monotonic()
+
+    publisher = threading.Thread(target=first_status_after_reactivation, daemon=True)
+    publisher.start()
+    try:
+        node.ensure_active(log=lambda *_: None)
+    finally:
+        publisher.join(timeout=5.0)
+
+    # It waited for the controller's own message rather than the stale one.
+    assert node.status() == {"phase_name": "idle", "processed_command_id": "0"}
+
+
+def test_impedance_client_still_rejects_a_controller_that_stopped_publishing(monkeypatch):
+    """The guard the clearing must not weaken: a reflex mid-trajectory.
+
+    Nothing was switched here, so silence means the controller stopped on its
+    own and the last 'idle' is not a completion.
+    """
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    node._lock = threading.Lock()
+    node._status = {"phase_name": "idle", "completed_command_id": "1"}
+    node._status_stamp = time.monotonic() - 2.0
+    with pytest.raises(Rejected, match="feedback stopped"):
+        node.status()
 
 
 def test_impedance_client_rejects_stale_completion_feedback():
@@ -1111,3 +1181,147 @@ def test_q_aborts_whether_or_not_interventions_are_enabled():
         node, controls = _drive_keyboard(["q"], allow_intervene=allow, timeout=0.5)
         assert controls.aborted.is_set()
         assert "abort" in node.calls
+
+
+# -- --record-rgbd -----------------------------------------------------------
+
+
+def _rgbd_report(ok=True):
+    from inspire_franka_trajectory_replay.rgbd_recording import StreamReport, StreamSpec
+
+    spec = StreamSpec()
+    report = StreamReport(spec.rgbd_topic, spec.camera_info_topic, spec.width, spec.height,
+                          rgb_width=1920 if ok else 640, rgb_height=1080 if ok else 480,
+                          rgb_encoding="rgb8", rgb_frame_id="camera_color_optical_frame",
+                          measured_rate_hz=30.0, frames_seen=30)
+    if not ok:
+        report.problems.append("colour is 640x480, not the required 1920x1080")
+    return report
+
+
+def _fake_ros(monkeypatch, replay, joint_client):
+    monkeypatch.setattr(replay, "CoordinatedReplayClient", joint_client)
+    monkeypatch.setattr(replay, "MultiThreadedExecutor", MagicMock())
+    monkeypatch.setattr(replay.rclpy, "init", lambda **_kwargs: None)
+    monkeypatch.setattr(replay.rclpy, "shutdown", lambda: None)
+    monkeypatch.setattr(replay.rclpy, "create_node", lambda _name: MagicMock())
+
+
+def test_record_rgbd_is_described_in_a_dry_run(tmp_path, capsys):
+    npz, home = _write_capture(tmp_path)
+    code = main([
+        str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+        "--record-rgbd", "--no-hand", "--dry-run",
+    ])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "RGB-D recording: /camera/camera/rgbd at 1920x1080 (mcap)" in out
+    assert "logs/replay_rollout/<stamp>/rgbd_bag" in out
+
+
+def test_record_rgbd_flags_are_validated(tmp_path):
+    npz, home = _write_capture(tmp_path)
+    base = [str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+            "--no-hand", "--dry-run", "--record-rgbd"]
+    with pytest.raises(SystemExit):
+        main(base + ["--rgbd-resolution", "1080p"])
+    with pytest.raises(SystemExit):
+        main(base + ["--rgbd-rate", "0"])
+    with pytest.raises(SystemExit):
+        main(base + ["--rgbd-storage", "hdf5"])
+    with pytest.raises(SystemExit):
+        main(base + ["--rgbd-preflight-timeout", "-1"])
+
+
+def test_record_rgbd_refuses_the_wrong_stream_before_anything_moves(tmp_path, monkeypatch, capsys):
+    from inspire_franka_trajectory_replay import replay
+
+    npz, home = _write_capture(tmp_path)
+    joint_client = MagicMock()
+    _fake_ros(monkeypatch, replay, joint_client)
+    monkeypatch.setattr(
+        replay.rgbd_recording, "inspect_stream", lambda *_a, **_k: _rgbd_report(ok=False)
+    )
+    started = []
+    monkeypatch.setattr(replay.rgbd_recording.RgbdRecording, "start", lambda self: started.append(self))
+
+    code = main([
+        str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+        "--no-hand", "--yes", "--record-rgbd", "--session-root", str(tmp_path / "runs"),
+    ])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "REFUSED" in out and "Nothing has moved" in out
+    joint_client.assert_not_called()  # no replay client was even constructed
+    assert not started
+    assert not (tmp_path / "runs").exists()
+
+
+def test_record_rgbd_records_across_the_rollout_and_writes_a_manifest(tmp_path, monkeypatch, capsys):
+    from inspire_franka_trajectory_replay import replay
+    from inspire_franka_trajectory_replay.rgbd_recording import BAG_DIRECTORY, MANIFEST_NAME
+
+    npz, home = _write_capture(tmp_path)
+    calls = []
+
+    class FakeJointClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def send_trajectory(self, *_args, on_accept, **_kwargs):
+            calls.append("send_trajectory")
+            on_accept()
+
+        def __getattr__(self, name):
+            return lambda *_args, **_kwargs: calls.append(name)
+
+    class FakeRecorder:
+        def __init__(self, bag_dir, topics, storage_id="sqlite3", logger=None, extra_args=()):
+            self.bag_dir, self.topics, self.storage_id = Path(bag_dir), list(topics), storage_id
+            self.extra_args = list(extra_args)
+            recorders.append(self)
+
+        def start(self, timeout=20.0):
+            self.bag_dir.mkdir(parents=True)
+            calls.append("bag.start")
+
+        def stop(self, timeout=30.0):
+            calls.append("bag.stop")
+
+    recorders = []
+    _fake_ros(monkeypatch, replay, FakeJointClient)
+    monkeypatch.setattr(replay.rgbd_recording, "inspect_stream", lambda *_a, **_k: _rgbd_report())
+    monkeypatch.setattr(replay.rgbd_recording, "BagRecorder", FakeRecorder)
+
+    code = main([
+        str(npz), "--home", str(home), "--config", str(CONFIG_DIR / "replay.yaml"),
+        "--no-hand", "--yes", "--record-rgbd", "--note", "take 1",
+        "--session-root", str(tmp_path / "runs"),
+    ])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "required 1920x1080: OK" in out
+
+    # Homed (and moved onto the first sample) first, then recording, then the
+    # trajectory; stopped on the way out. The recording covers the rollout, not
+    # the homing move.
+    order = [call for call in calls if call in ("goto", "bag.start", "send_trajectory", "bag.stop")]
+    assert order[-3:] == ["bag.start", "send_trajectory", "bag.stop"], order
+    assert set(order[:-3]) == {"goto"}, order
+
+    runs = list((tmp_path / "runs").iterdir())
+    assert len(runs) == 1 and runs[0].name.endswith("_take-1")
+    recorder, = recorders
+    assert recorder.bag_dir == runs[0] / BAG_DIRECTORY
+    assert recorder.storage_id == "mcap"
+    assert recorder.topics[:2] == ["/camera/camera/rgbd", "/camera/camera/color/camera_info"]
+    assert "/joint_states" in recorder.topics
+    assert not any(t.startswith("/inspire_hand") for t in recorder.topics)  # --no-hand
+
+    manifest = json.loads((runs[0] / MANIFEST_NAME).read_text())
+    assert manifest["recorded"] is True
+    assert manifest["exit_code"] == 0
+    assert manifest["trajectory"] == str(npz)
+    assert manifest["note"] == "take 1"
+    assert manifest["stream"]["ok"] is True
+    assert f"extract_rgbd {runs[0]}" in out

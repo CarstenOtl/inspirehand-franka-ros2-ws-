@@ -40,6 +40,7 @@ from .intervention import (
     session_directory,
 )
 from .joint_trajectory_client import JointTrajectoryClient
+from . import rgbd_recording
 from .trajectory import (
     ALL_CYCLES,
     ARM_JOINTS,
@@ -53,6 +54,10 @@ from .trajectory import (
     scale_finger_flexion,
 )
 
+
+#: Where an --intervene run lands; a --record-rgbd run without an intervention
+#: session goes under rgbd_recording.DEFAULT_OUTPUT_ROOT instead.
+INTERVENTION_ROOT = "logs/dagger"
 
 # Where each commanded hand joint sits in the driver's own DOF table. Resolved
 # by name so this cannot silently follow the wrong channel if either ordering
@@ -465,7 +470,12 @@ class CoordinatedReplayClient(HandReplayMixin, ReplayClient):
         # this client's waypoint controller back into charge.
         target = controller or self.controller
         if target != self.controller:
-            return super().ensure_active(log, controller=target)
+            stopped = super().ensure_active(log, controller=target)
+            # Handing the interfaces away deactivates this controller, and a
+            # deactivated one publishes no status. Drop what is cached now
+            # rather than carry a message from before the switch.
+            self.forget_status()
+            return stopped
 
         controllers = self.list_controllers()
         controller = controllers.get(self.controller)
@@ -484,6 +494,14 @@ class CoordinatedReplayClient(HandReplayMixin, ReplayClient):
                 "(command_interface=effort, coriolis_compensation=false)"
             )
         stopped = super().ensure_active(log)
+        # The controller publishes nothing while it is inactive, so the newest
+        # status in hand is from before the switch -- exactly what `status`
+        # refuses to trust. Forgetting it turns that refusal back into a wait:
+        # `wait_for_status` blocks for a message the reactivated controller
+        # actually published, instead of failing on the age of the old one.
+        # Without this a handback after an intervention of more than a second
+        # always failed here, whatever the hardware was doing.
+        self.forget_status()
         self.wait_until(
             lambda: all(publisher.get_subscription_count() > 0 for publisher in (
                 self._goto_publisher, self._trajectory_publisher,
@@ -499,6 +517,19 @@ class CoordinatedReplayClient(HandReplayMixin, ReplayClient):
             f"interfaces (stiffness scale {parameters.get('stiffness_scale', 1.0):g})"
         )
         return stopped
+
+    def forget_status(self):
+        """Discard the cached status, so the next read has to be a fresh one.
+
+        Called either side of a deliberate controller switch. The staleness
+        check below exists to catch a controller that stopped publishing
+        *unexpectedly* -- a hardware reflex mid-trajectory -- and a switch we
+        asked for is not that. Clearing the cache keeps the check pointed at
+        the case it is for.
+        """
+        with self._lock:
+            self._status = None
+            self._status_stamp = 0.0
 
     def status(self):
         # A deactivated controller stops publishing: never treat old 'idle'
@@ -1036,13 +1067,15 @@ def main(argv=None):
     )
     parser.add_argument(
         "--session-root",
-        default="logs/dagger",
-        help="where --intervene writes its session directory (default: logs/dagger)",
+        default=None,
+        help="where --intervene and --record-rgbd write the run directory (default: "
+             f"{INTERVENTION_ROOT} with --intervene, {rgbd_recording.DEFAULT_OUTPUT_ROOT} "
+             "otherwise)",
     )
     parser.add_argument(
         "--note",
         default=None,
-        help="short label for the --intervene session directory and manifest",
+        help="short label for the run directory and manifests (--intervene, --record-rgbd)",
     )
     parser.add_argument(
         "--presets",
@@ -1061,6 +1094,51 @@ def main(argv=None):
         type=float,
         default=0.4,
         help="peak joint speed of the correction replay, rad/s (default: 0.4)",
+    )
+    recording = parser.add_argument_group(
+        "RGB-D recording",
+        "record the D415's RGB-D stream into a rosbag beside the run, at full "
+        "resolution. Launch the camera with rgbd_camera.launch.py first; the run is "
+        "refused before anything moves if the live stream is not at --rgbd-resolution.",
+    )
+    recording.add_argument(
+        "--record-rgbd",
+        action="store_true",
+        help="record the RGBD composite, its intrinsics, the joint states and TF into "
+             f"<run directory>/{rgbd_recording.BAG_DIRECTORY} for the whole rollout",
+    )
+    recording.add_argument(
+        "--rgbd-topic",
+        default=rgbd_recording.DEFAULT_RGBD_TOPIC,
+        help="the realsense2_camera_msgs/RGBD topic; the colour CameraInfo is taken from "
+             f"the same prefix (default: {rgbd_recording.DEFAULT_RGBD_TOPIC})",
+    )
+    recording.add_argument(
+        "--rgbd-resolution",
+        default=f"{rgbd_recording.D415_FULL_COLOR[0]}x{rgbd_recording.D415_FULL_COLOR[1]}",
+        help="colour WxH the live stream must have, with the depth aligned to it "
+             "(default: the D415's full 1920x1080; lower only deliberately, with the "
+             "camera launched to match)",
+    )
+    recording.add_argument(
+        "--rgbd-rate",
+        type=float,
+        default=rgbd_recording.DEFAULT_RATE_HZ,
+        help="frame rate the stream is expected at; a measured rate well under it is "
+             "reported, not refused (default: 30)",
+    )
+    recording.add_argument(
+        "--rgbd-storage",
+        choices=rgbd_recording.STORAGE_IDS,
+        default=rgbd_recording.DEFAULT_STORAGE_ID,
+        help="rosbag2 storage plugin (default: mcap, which appends large messages "
+             "sequentially)",
+    )
+    recording.add_argument(
+        "--rgbd-preflight-timeout",
+        type=float,
+        default=10.0,
+        help="seconds to wait for the first RGBD frame and CameraInfo (default: 10)",
     )
     # `ros2 run` appends "--ros-args ..." for node parameters, and the whole
     # tail belongs to rclpy rather than to argparse. Only the tail is dropped,
@@ -1144,6 +1222,20 @@ def main(argv=None):
         parser.error("--correction-dwell must be finite and positive")
     if not np.isfinite(args.correction_peak_speed) or args.correction_peak_speed <= 0:
         parser.error("--correction-peak-speed must be finite and positive")
+    rgbd_spec = None
+    if args.record_rgbd:
+        try:
+            width, height = rgbd_recording.parse_resolution(args.rgbd_resolution)
+        except ValueError as exc:
+            parser.error(f"--rgbd-resolution: {exc}")
+        if not np.isfinite(args.rgbd_rate) or args.rgbd_rate <= 0:
+            parser.error("--rgbd-rate must be finite and positive")
+        if not np.isfinite(args.rgbd_preflight_timeout) or args.rgbd_preflight_timeout <= 0:
+            parser.error("--rgbd-preflight-timeout must be finite and positive")
+        rgbd_spec = rgbd_recording.StreamSpec(args.rgbd_topic, width, height, args.rgbd_rate)
+    session_root = args.session_root or (
+        INTERVENTION_ROOT if args.intervene else rgbd_recording.DEFAULT_OUTPUT_ROOT
+    )
     cartesian_mode = args.arm_controller == "cartesian-impedance"
     cartesian_margins = {
         "velocity_margin": args.cartesian_velocity_margin,
@@ -1380,11 +1472,55 @@ def main(argv=None):
             "home-to-first-source max hand delta: "
             f"{np.max(np.abs(home_hand - trajectory.hand[0])):.6f} rad"
         )
+    if rgbd_spec is not None:
+        print(
+            f"RGB-D recording: {rgbd_spec.rgbd_topic} at {rgbd_spec.resolution} "
+            f"({args.rgbd_storage}) into {session_root}/<stamp>/{rgbd_recording.BAG_DIRECTORY}; "
+            "refused before anything moves unless the live stream is at that resolution"
+        )
     if args.dry_run:
         print("dry run: validated only; no ROS commands sent")
         return 0
 
     rclpy.init(args=None)
+    run_directory = None
+    if args.intervene or rgbd_spec is not None:
+        run_directory = session_directory(session_root, args.note)
+    rgbd = None
+    rgbd_report = None
+    if rgbd_spec is not None:
+        # Before any node that can move something exists. A camera at the wrong
+        # resolution is the policy rollout's 640x480 node still owning the device,
+        # and finding that out must cost nothing: no homing move, no controller
+        # switch, and no quarter-resolution take that looks like a full one.
+        probe = rclpy.create_node("replay_rgbd_preflight")
+        try:
+            rgbd_report = rgbd_recording.inspect_stream(
+                probe, rgbd_spec, args.rgbd_preflight_timeout
+            )
+        finally:
+            probe.destroy_node()
+        print(rgbd_recording.format_stream_report(rgbd_report))
+        if not rgbd_report.ok:
+            print(
+                "refusing to start: the RGB-D stream is not the one --record-rgbd requires "
+                "(see above). Nothing has moved. Launch the camera with "
+                "rgbd_camera.launch.py, or pass --rgbd-resolution deliberately."
+            )
+            rclpy.shutdown()
+            return 1
+        rgbd = rgbd_recording.RgbdRecording(
+            run_directory,
+            rgbd_spec,
+            rgbd_recording.recorded_topics(
+                rgbd_spec,
+                arm=not args.no_arm,
+                hand=not args.no_hand,
+                hand_topic=hand_topic,
+                hand_state_topic=hand_state_topic,
+            ),
+            args.rgbd_storage,
+        )
     client_type = (PositionReplayClient if args.arm_controller == "position-jtc"
                    else CoordinatedReplayClient)
     node = client_type(
@@ -1464,6 +1600,12 @@ def main(argv=None):
         label = "coordinated" if not (args.no_arm or args.no_hand) else (
             "hand-only" if args.no_arm else "arm-only"
         )
+        if rgbd is not None:
+            # Started before the prompt so that with --yes the first frames are
+            # already on disk when the trajectory is accepted; stopped in the
+            # finally below on every way out.
+            rgbd.start()
+            print(f"RGB-D recording into {rgbd.bag_dir}")
         _gate(not args.yes, f"Replay the {label} {replay_duration:.1f} s trajectory?")
         started = threading.Event()
 
@@ -1630,7 +1772,7 @@ def main(argv=None):
             capture_node = CaptureNode(hand_topic, hand_namespace)
             executor.add_node(capture_node)
             session = InterventionSession(
-                session_directory(args.session_root, args.note),
+                run_directory,
                 node,
                 capture_node,
                 presets,
@@ -1648,6 +1790,14 @@ def main(argv=None):
                 cycle_index=releases.as_metadata(),
                 note=args.note,
             )
+            if rgbd is not None:
+                session.write_event(
+                    "rgbd_recording",
+                    bag_dir=rgbd_recording.BAG_DIRECTORY,
+                    topic=rgbd_spec.rgbd_topic,
+                    resolution=rgbd_spec.resolution,
+                    manifest=rgbd_recording.MANIFEST_NAME,
+                )
 
         keyboard = (
             _InteractivePause(
@@ -1743,6 +1893,30 @@ def main(argv=None):
         hand_stop.set()
         if hand_thread is not None:
             hand_thread.join(timeout=5.0)
+        if rgbd is not None:
+            # Closed on every path out, and described even when it never
+            # started: a manifest that says "recorded: false" beside an exit
+            # code is worth more than a directory with nothing in it.
+            rgbd.stop()
+            manifest = rgbd.write_manifest(
+                rgbd_report,
+                {
+                    "exit_code": int(exit_code),
+                    "trajectory": str(trajectory.source),
+                    "home": str(home_path),
+                    "arm_controller": args.arm_controller,
+                    "prepared_duration_s": None if prepared is None else float(prepared.duration),
+                    "note": args.note,
+                    "intervention_session": bool(args.intervene),
+                },
+            )
+            print(f"RGB-D recording written: {rgbd.bag_dir} ({manifest.name})")
+            if rgbd.started_at is not None:
+                print(f"  {rgbd.describe()}")
+            print(
+                "  extract frames with:\n"
+                f"    ros2 run inspire_franka_trajectory_replay extract_rgbd {run_directory}"
+            )
         if session is not None:
             # Written whatever happened, including after an abort or a
             # Ctrl-C: the event log is the only record of what the operator
