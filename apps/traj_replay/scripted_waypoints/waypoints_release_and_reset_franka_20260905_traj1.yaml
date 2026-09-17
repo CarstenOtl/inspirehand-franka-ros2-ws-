@@ -1,0 +1,366 @@
+schema_version: 1
+task: Isaac-Forge-Franka-Threading-M24-v0
+asset_variant: m24
+release_start_pose: threading_release_start_pose_franka.yaml
+state_machine: threading_release_and_reset
+trajectory_space: hand_grasp_frame_osc
+return_policy_initial_pose: threading_m24
+settings:
+  release_min_turn_deg: 55.0
+  waypoint_duration_s: 0.7
+  return_duration_s: 1.0
+  position_tolerance_m: 0.005
+  orientation_tolerance_deg: 5.0
+  hand_tolerance_rad: 0.15
+  waypoint_timeout_s: 16.0
+recipe:
+  waypoint1: hold the live post-turn grasp center while opening thumb and index
+  waypoint2: keep the release orientation and retreat 0.060 m along world +Y
+  waypoint3: lift vertically to 0.301 m after clearing the M24 nut
+  waypoint4: traverse above the policy reset pose and adopt its orientation
+  return: descend vertically from waypoint4 to the captured policy reset pose
+units:
+  position: m
+  orientation: wxyz quaternion
+  joint_position: rad
+waypoints:
+  waypoint1:
+    robot_dofs:
+      names:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+      - index_joint_0
+      - little_joint_0
+      - middle_joint_0
+      - ring_joint_0
+      - thumb_joint_0
+      - index_joint_1
+      - little_joint_1
+      - middle_joint_1
+      - ring_joint_1
+      - thumb_joint_1
+      - thumb_joint_2
+      - thumb_joint_3
+      position:
+      - -0.268968076
+      - -0.287765384
+      - -0.035494339
+      - -2.445024967
+      - 2.128752232
+      - 2.360059261
+      - -2.540777683
+      - 0.099999994
+      - 1.094592214
+      - 1.094416142
+      - 1.093948603
+      - 1.172891736
+      - 0.154544994
+      - 1.691637516
+      - 1.691365361
+      - 1.690642834
+      - 0.039999999
+      - 0.039999999
+      - 0.032000002
+    editable_dofs:
+      names:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+      - thumb_joint_0
+      - thumb_joint_1
+      - index_joint_0
+      position:
+      - -0.268968076
+      - -0.287765384
+      - -0.035494339
+      - -2.445024967
+      - 2.128752232
+      - 2.360059261
+      - -2.540777683
+      - 1.172891736
+      - 0.039999999
+      - 0.099999994
+    hand_grasp_frame:
+      position:
+      - 0.611243963
+      - 0.006023571
+      - 0.115118369
+      orientation_wxyz:
+      - -0.068255596
+      - 0.251176
+      - 0.963877082
+      - -0.056504082
+    nut:
+      position:
+      - 0.610000014
+      - 0.0
+      - 0.109613761
+      orientation_wxyz:
+      - 0.602186799
+      - 2.6e-08
+      - -4.8e-08
+      - 0.798355281
+  waypoint2:
+    robot_dofs:
+      names:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+      - index_joint_0
+      - little_joint_0
+      - middle_joint_0
+      - ring_joint_0
+      - thumb_joint_0
+      - index_joint_1
+      - little_joint_1
+      - middle_joint_1
+      - ring_joint_1
+      - thumb_joint_1
+      - thumb_joint_2
+      - thumb_joint_3
+      position:
+      - -0.324971825
+      - -0.224087179
+      - -0.119481467
+      - -2.390041828
+      - 1.998103499
+      - 2.263293743
+      - -2.481993198
+      - 0.099999994
+      - 1.094592214
+      - 1.094416142
+      - 1.093948603
+      - 1.172891736
+      - 0.154544994
+      - 1.691637516
+      - 1.691365361
+      - 1.690642834
+      - 0.039999999
+      - 0.039999999
+      - 0.032000002
+    editable_dofs:
+      names:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+      - thumb_joint_0
+      - thumb_joint_1
+      - index_joint_0
+      position:
+      - -0.324971825
+      - -0.224087179
+      - -0.119481467
+      - -2.390041828
+      - 1.998103499
+      - 2.263293743
+      - -2.481993198
+      - 1.172891736
+      - 0.039999999
+      - 0.099999994
+    hand_grasp_frame:
+      position:
+      - 0.611243904
+      - 0.066023849
+      - 0.115118295
+      orientation_wxyz:
+      - -0.068255551
+      - 0.251176298
+      - 0.963877022
+      - -0.056504391
+    nut:
+      position:
+      - 0.610000014
+      - 0.0
+      - 0.109612867
+      orientation_wxyz:
+      - 0.602186799
+      - 2.6e-08
+      - -4.8e-08
+      - 0.798355281
+  waypoint3:
+    robot_dofs:
+      names:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+      - index_joint_0
+      - little_joint_0
+      - middle_joint_0
+      - ring_joint_0
+      - thumb_joint_0
+      - index_joint_1
+      - little_joint_1
+      - middle_joint_1
+      - ring_joint_1
+      - thumb_joint_1
+      - thumb_joint_2
+      - thumb_joint_3
+      position:
+      - -0.31066218
+      - -0.362492949
+      - -0.087276556
+      - -2.140491724
+      - 1.658694029
+      - 2.41144824
+      - -1.977336049
+      - 0.099999994
+      - 1.094592214
+      - 1.094416142
+      - 1.093948603
+      - 1.172891736
+      - 0.154544994
+      - 1.691637516
+      - 1.691365361
+      - 1.690642834
+      - 0.039999999
+      - 0.039999999
+      - 0.032000002
+    editable_dofs:
+      names:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+      - thumb_joint_0
+      - thumb_joint_1
+      - index_joint_0
+      position:
+      - -0.31066218
+      - -0.362492949
+      - -0.087276556
+      - -2.140491724
+      - 1.658694029
+      - 2.41144824
+      - -1.977336049
+      - 1.172891736
+      - 0.039999999
+      - 0.099999994
+    hand_grasp_frame:
+      position:
+      - 0.611243427
+      - 0.066023707
+      - 0.301013172
+      orientation_wxyz:
+      - -0.06825497
+      - 0.251176447
+      - 0.963876963
+      - -0.056505311
+    nut:
+      position:
+      - 0.610000014
+      - 0.0
+      - 0.109612867
+      orientation_wxyz:
+      - 0.602186799
+      - 2.6e-08
+      - -4.8e-08
+      - 0.798355281
+  waypoint4:
+    robot_dofs:
+      names:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+      - index_joint_0
+      - little_joint_0
+      - middle_joint_0
+      - ring_joint_0
+      - thumb_joint_0
+      - index_joint_1
+      - little_joint_1
+      - middle_joint_1
+      - ring_joint_1
+      - thumb_joint_1
+      - thumb_joint_2
+      - thumb_joint_3
+      position:
+      - -0.270394832
+      - -0.018850878
+      - -0.127468899
+      - -1.694180965
+      - 1.318571687
+      - 1.943594456
+      - -1.754984617
+      - 0.099999994
+      - 1.094592214
+      - 1.094416142
+      - 1.093948603
+      - 1.172891736
+      - 0.154544994
+      - 1.691637516
+      - 1.691365361
+      - 1.690642834
+      - 0.039999999
+      - 0.039999999
+      - 0.032000002
+    editable_dofs:
+      names:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+      - thumb_joint_0
+      - thumb_joint_1
+      - index_joint_0
+      position:
+      - -0.270394832
+      - -0.018850878
+      - -0.127468899
+      - -1.694180965
+      - 1.318571687
+      - 1.943594456
+      - -1.754984617
+      - 1.172891736
+      - 0.039999999
+      - 0.099999994
+    hand_grasp_frame:
+      position:
+      - 0.57519722
+      - -0.004010594
+      - 0.301013321
+      orientation_wxyz:
+      - 0.013105115
+      - 0.019093348
+      - 0.999731779
+      - -0.000250239
+    nut:
+      position:
+      - 0.610000014
+      - 0.0
+      - 0.109612867
+      orientation_wxyz:
+      - 0.602186799
+      - 2.6e-08
+      - -4.8e-08
+      - 0.798355281

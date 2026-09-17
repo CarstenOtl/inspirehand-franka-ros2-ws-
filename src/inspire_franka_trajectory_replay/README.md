@@ -874,6 +874,53 @@ numbering as `cycle_index`. That is what `--intervene` rejoins at; see
 A source with no `replay_phase` field produces no flags, and the generator says
 so rather than guessing at one.
 
+## Repeating the V2 single-cycle policy with scripted reset
+
+`repeat_policy_trajectory` composes a new multi-cycle artifact from the safe
+joint-5-capped `traj_3` policy segment and the vendored September 10 joint-PD
+release, retreat, and reset recipe. It does not command hardware. Each cycle
+runs the policy only to a selected inclusive release sample, follows the four
+scripted waypoints, returns exactly to the matching policy home, and starts the
+policy again.
+
+The recommended cutoff is inferred from the first hybrid-teacher cycle in
+`traj_3_multi_joint5_cap_2p8`:
+
+```bash
+ros2 run inspire_franka_trajectory_replay repeat_policy_trajectory \
+  apps/traj_replay/demo_trajs/traj_3_joint5_cap_2p8 \
+  --release-reference apps/traj_replay/demo_trajs/traj_3_multi_joint5_cap_2p8 \
+  --reference-cycle 1 --cycles 5 \
+  --output /tmp/traj_3_single_scripted_5x
+```
+
+That reference leaves its policy phase after raw sample 55. Nearest-pose
+alignment selects `traj_3` sample 56 (inclusive), at 50.50 degrees recorded
+turn progress. The maximum pose differences from the hybrid handoff are 0.1018
+rad on the arm and 0.0113 rad on the hand. The selection, reference, deltas,
+waypoint hash, and every cycle/phase boundary are written to the output
+metadata. Automatic matching refuses references whose closest pose is more
+than 0.15 rad away. After reviewing another cutoff, replace the two reference
+options with an explicit `--release-sample N`.
+
+Run the complete generated artifact in the corrected policy-rollout MuJoCo
+scene before moving hardware:
+
+```bash
+MUJOCO_GL=glfw python3 \
+  apps/traj_replay/tests/test_mujoco_repeated_policy.py \
+  /tmp/traj_3_single_scripted_5x --loop
+```
+
+This is not the legacy kinematic source viewer. It uses the same corrected
+`ThreadingScene` as `apps/policy_rollout`: training-height FR3 base, official
+Inspire fingertip frames, dynamic self-locking M24 thread pair, policy-rollout
+joint-PD gains, and `policy_replay_front` camera. It holds the thread during
+every metadata-marked release/retreat and resumes it at the next policy cycle.
+Then dry-run the generated artifact with `replay_trajectory`, its copied
+`homing.yaml`, `--time-scale 5`, and `--max-prepared-duration 300`; physical
+validation is still pending, so the normal limit checks must not be bypassed.
+
 That output is ready for preparation without another orientation step. New
 captures use the hardware joint convention and must not be passed through
 `retarget_flange_mount.py`. The retargeting tool remains only for intentional
