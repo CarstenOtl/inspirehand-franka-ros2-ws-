@@ -36,6 +36,13 @@ from typing import List, NamedTuple, Optional, Sequence
 REG_HAND_ID = 1000
 REG_CLEAR_ERROR = 1004
 REG_SAVE_FLASH = 1005
+#: Force-sensor calibration trigger (manual 2.4.6). Writing 1 starts a routine
+#: the *hand* runs: it drives its own fingers through a fixed sequence for
+#: about six seconds and re-establishes the fingertip sensors' references from
+#: it. 1009 is the high byte of the word at 1008, whose low byte the manual
+#: lists only as "reserve" -- the same byte-pairing trap as CLEAR_ERROR/SAVE,
+#: so see :meth:`HandTransport.calibrate_force_sensors` before writing it.
+REG_FORCE_CLB = 1009
 REG_CURRENT_LIMIT = 1020
 REG_POS_SET = 1474
 REG_ANGLE_SET = 1486
@@ -59,6 +66,10 @@ CHANNEL_IDS = ("1", "2", "3", "4", "5", "6")
 
 ANGLE_MIN = 0
 ANGLE_MAX = 1000
+
+#: How long the hand's own force-sensor calibration takes, from the manual.
+#: It is not interruptible and the hand is moving for all of it.
+FORCE_CALIBRATION_SECONDS = 6.0
 
 # Sentinel the hand reports for a DOF whose value is not currently available.
 ANGLE_INVALID = 0xFFFF
@@ -119,6 +130,20 @@ def describe_error(bits: int) -> str:
 
 def describe_status(code: int) -> str:
     return STATUS_NAMES.get(code, f"unknown({code})")
+
+
+def to_signed16(value: int) -> int:
+    """Reinterpret one raw register word as a signed 16-bit value.
+
+    FORCE_ACT is signed, which is not obvious from a register map that spends
+    most of its range on 0..1000 quantities. An unloaded fingertip sits a
+    little below its own zero -- on this rig the six read -2, -12, -26, -11,
+    +1 and -90 g with nothing touching them -- and read unsigned those become
+    65534, 65524, 65510, 65525, 1 and 65446. Anything comparing force against
+    a threshold then sees an enormous load on a hand that is holding nothing.
+    """
+    value = int(value) & 0xFFFF
+    return value - 0x10000 if value > 0x7FFF else value
 
 
 def unpack_bytes(words: Sequence[int]) -> List[int]:
@@ -320,7 +345,13 @@ class HandTransport:
         return self.read_registers(REG_ANGLE_ACT, 6)
 
     def read_forces(self) -> List[int]:
-        return self.read_registers(REG_FORCE_ACT, 6)
+        """Return the six measured fingertip forces in grams, signed.
+
+        Signed because the sensor is: see :func:`to_signed16`. FORCE_SET, read
+        back by :meth:`read_force_thresholds`, is a commanded 0..1000 threshold
+        and stays unsigned.
+        """
+        return [to_signed16(v) for v in self.read_registers(REG_FORCE_ACT, 6)]
 
     def read_errors(self) -> List[int]:
         """Return the six ERROR bytes in DOF_ORDER."""
@@ -347,6 +378,78 @@ class HandTransport:
     def read_force_thresholds(self) -> List[int]:
         """Read back FORCE_SET, the per-DOF force threshold currently in effect."""
         return self.read_registers(REG_FORCE_SET, 6)
+
+    def calibrate_force_sensors(self) -> None:
+        """Start the hand's own force-sensor calibration and return immediately.
+
+        This is the button the Inspire desktop app has, and it is a different
+        animal from the driver's ``~/tare_force``: that one subtracts a
+        baseline in software and changes nothing in the hand, while this
+        rewrites what ``FORCE_ACT`` reports at the source. Writing 1 to
+        GESTURE_FORCE_CLB starts a routine the *hand* runs -- about six
+        seconds during which it drives its own fingers open, bends the four
+        fingers, bends and extends the thumb -- and the manual is emphatic
+        that nothing may be touching the fingers for any of it.
+
+        Nothing here waits for it to finish or can tell whether it did: the
+        register is a trigger, and the hand goes on answering reads normally
+        throughout. The caller owns the six seconds, which for the driver node
+        means suspending every write for the duration -- targets written while
+        the routine is driving the same actuators are two controllers fighting
+        over one hand.
+
+        The write itself is the awkward part. 1009 is a single byte sharing a
+        Modbus register with the reserved byte at 1008, so the word is read
+        first and the low byte put back untouched. Under the legacy framing,
+        which addresses bytes directly, a one-byte payload says it exactly.
+        """
+        if self.protocol == "modbus":
+            word = self.read_registers(REG_FORCE_CLB - 1, 1)[0]
+            self.write_registers(REG_FORCE_CLB - 1, [(word & 0x00FF) | 0x0100])
+            return
+        self._write_legacy_bytes(REG_FORCE_CLB, [1])
+
+    def stop_force_calibration(self) -> None:
+        """Write GESTURE_FORCE_CLB back to 0, asking the routine to stop.
+
+        Undocumented. The manual gives 1 as "start" and never says what 0
+        does mid-routine, and the one comparable register it does describe --
+        ``ACTION_SEQ_RUN`` -- resets itself to zero on completion, which at
+        least means the firmware treats 0 as the not-running state. Whether
+        writing it *during* the sequence stops the sequence is a question only
+        the hand can answer, so the driver writes it and then watches whether
+        the thumb moves anyway.
+
+        Same byte-pairing care as :meth:`calibrate_force_sensors`: the
+        reserved byte at 1008 is read and put back untouched.
+        """
+        if self.protocol == "modbus":
+            word = self.read_registers(REG_FORCE_CLB - 1, 1)[0]
+            self.write_registers(REG_FORCE_CLB - 1, [word & 0x00FF])
+            return
+        self._write_legacy_bytes(REG_FORCE_CLB, [0])
+
+    def _write_legacy_bytes(self, addr: int, values: Sequence[int]) -> None:
+        """Write raw bytes at a byte address, for the single-byte registers.
+
+        :meth:`write_registers` deals in 16-bit words, so writing one byte
+        through it also writes its neighbour. Legacy framing carries a byte
+        count, so it can say "one byte here" and mean it.
+        """
+        with self._lock:
+            payload = [int(v) & 0xFF for v in values]
+            body = [
+                self.hand_id,
+                len(payload) + 3,
+                0x12,
+                addr & 0xFF,
+                (addr >> 8) & 0xFF,
+            ] + payload
+            req = bytes([0xEB, 0x90] + body + [sum(body) & 0xFF])
+            try:
+                self._txn(req, 9)
+            except HandCommunicationError:
+                pass
 
     def clear_errors(self) -> None:
         """Clear latched actuator errors (locked-rotor, over-current, ...).
@@ -412,6 +515,12 @@ class MockTransport(HandTransport):
         self.stall_after_sec = stall_after_sec
         #: Per DOF: an angle the finger cannot close past, or None for free travel.
         self.obstacles: List[Optional[int]] = [None] * 6
+        #: Per DOF: grams of fingertip force added to what the model reports,
+        #: standing in for a finger being pushed on. The model itself only ever
+        #: produces force from its own obstacles, so there is otherwise no way
+        #: to exercise anything that reacts to being pushed -- which is what
+        #: the compliance spring is.
+        self.external_force: List[int] = [0] * 6
         self.force_thresholds = [0] * 6
         self.speeds = [0] * 6
         self.temperatures = [35] * 6
@@ -420,10 +529,23 @@ class MockTransport(HandTransport):
         self._force_act = [0] * 6
         self._current = [0] * 6
         self._pushing_since: List[Optional[float]] = [None] * 6
+        #: The reserved byte sharing a word with GESTURE_FORCE_CLB, seeded with
+        #: a value nothing would write by accident, so a test can prove the
+        #: calibration write puts it back rather than zeroing it.
+        self.reserved_1008 = 0x5A
         #: Counts of the two writes to the 1004/1005 register pair, so a test
         #: can assert the driver clears errors and never commits to flash.
         self.clear_error_writes = 0
         self.flash_saves = 0
+        #: Times GESTURE_FORCE_CLB has been triggered. The mock does not model
+        #: the six-second routine -- it has no sensor drift to correct -- so
+        #: this is only here for tests that the driver reaches the register,
+        #: writes it without disturbing the reserved byte beside it, and holds
+        #: its writes off for the duration.
+        self.force_calibrations = 0
+        #: Times the routine has been asked to stop early, so a test can show
+        #: the driver does ask rather than merely waiting the thumb out.
+        self.force_calibration_stops = 0
 
     def connect(self) -> None:
         self._open = True
@@ -492,9 +614,14 @@ class MockTransport(HandTransport):
             if addr == REG_HAND_ID:
                 return [self.hand_id]
             if addr == REG_FORCE_ACT:
-                return list(self._force_act[:count])
+                return [
+                    min(1000, f + e)
+                    for f, e in zip(self._force_act[:count], self.external_force[:count])
+                ]
             if addr == REG_CURRENT:
                 return list(self._current[:count])
+            if addr == REG_FORCE_CLB - 1:
+                return [self.reserved_1008] * count
             if addr == REG_FORCE_SET:
                 return list(self.force_thresholds[:count])
             if addr == REG_SPEED_SET:
@@ -528,6 +655,15 @@ class MockTransport(HandTransport):
                     self.flash_saves += 1
             elif addr == REG_SAVE_FLASH:
                 self.flash_saves += 1
+            elif addr == REG_FORCE_CLB - 1:
+                # High byte is GESTURE_FORCE_CLB, low byte the reserved
+                # register it shares a word with.
+                word = int(values[0])
+                self.reserved_1008 = word & 0xFF
+                if word >> 8:
+                    self.force_calibrations += 1
+                else:
+                    self.force_calibration_stops += 1
 
     # -- test hooks ------------------------------------------------------
     def latched_errors(self) -> List[int]:

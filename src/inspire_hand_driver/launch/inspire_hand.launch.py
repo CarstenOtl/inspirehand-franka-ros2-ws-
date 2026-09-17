@@ -49,6 +49,31 @@ NODE_ARGS = (
      "open before clearing its error."),
     ("stall_holdoff_sec", "1.0", float, "How long after a stall commands for that DOF are "
      "clamped to the backed-off angle."),
+    ("calibration_clearance", "true", bool, "Before ~/calibrate_force runs the hand's own "
+     "force-sensor routine, open every DOF - which swings thumb rotation clear of the "
+     "fingers, an axis the routine itself never commands. Off if you would rather pose "
+     "the hand yourself."),
+    ("calibration_clearance_sec", "3.0", float, "How long to wait for the hand to reach that "
+     "pose before abandoning the calibration."),
+    ("calibration_mode", "none", str, "What ~/calibrate_force may do. 'none' refuses it, "
+     "which is the default because the hand's routine jammed the fingers on the rig this was "
+     "written against. 'fingers' stops the routine before its thumb steps - the only shape a "
+     "finger-only calibration could take, and the one that jammed. 'full' runs all four steps, "
+     "thumb included, which is what the Inspire desktop app does."),
+    ("calibration_finger_sec", "3.0", float, "In 'fingers' mode, how far into the 6 s routine "
+     "to let it run before stopping it. The four fingers come first."),
+    ("compliance", "false", bool, "Start in compliant mode: pushing a fingertip opens that "
+     "finger, so a grasp can be adjusted by hand. Toggle it at runtime with ~/set_compliance."),
+    ("compliance_channels", "['1', '2', '3', '4', '5']", None, "Which DOF give to fingertip "
+     "force. Channel 6 (thumb rotation) is out by default: it carries no fingertip pad."),
+    ("compliance_deadband", "80.0", float, "Grams of fingertip force ignored before a finger "
+     "gives, so a grip does not open itself."),
+    ("compliance_counts_per_gram", "0.6", float, "How far a finger gives, in angle counts "
+     "(0..1000) per gram above the deadband."),
+    ("compliance_max_yield", "300.0", float, "The most a finger will ever give, in counts."),
+    ("compliance_yield_rate", "400.0", float, "Counts per second while giving."),
+    ("compliance_return_rate", "200.0", float, "Counts per second while closing back once the "
+     "push stops. 0 holds where it was pushed to until commanded again."),
 )
 
 
@@ -65,7 +90,12 @@ def launch_setup(context, *args, **kwargs):
             output="screen",
             parameters=[
                 {
+                    # A None type means "pass the substitution through": launch
+                    # parses a list-shaped string into a string array on its
+                    # own, and naming a scalar type here would refuse it.
                     n: ParameterValue(LaunchConfiguration(n), value_type=t)
+                    if t is not None
+                    else ParameterValue(LaunchConfiguration(n))
                     for n, _, t, _ in NODE_ARGS
                 }
             ],

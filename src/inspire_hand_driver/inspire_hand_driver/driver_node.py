@@ -41,6 +41,16 @@ Services
         Write CLEAR_ERROR by hand. The stall guard below does this on its
         own; the service is for when it is off, or for a look at whether a
         finger that stopped can be talked to without a power cycle.
+    ``~/set_compliance`` ``std_srvs/srv/SetBool``
+        Enter or leave compliant mode -- see below.
+    ``~/tare_force``     ``std_srvs/srv/Trigger``
+        Take the current fingertip readings as "nothing is touching me".
+        Entering compliant mode does this on its own; this is for when the
+        zero has moved since, which it does after a heavy push.
+    ``~/calibrate_force`` ``std_srvs/srv/Trigger``
+        Run the hand's *own* force-sensor calibration -- see below. The node
+        opens the hand clear first, then the hand moves by itself for six
+        seconds; nothing may be touching it.
 
 Force threshold and stall guard
 -------------------------------
@@ -78,6 +88,105 @@ Neither mechanism commands anything on its own beyond that backoff, and
 neither ever writes SAVE: the register that clears errors shares a word with
 the one that commits to flash, and :meth:`HandTransport.clear_errors` is the
 only writer.
+
+Compliant mode
+--------------
+``~/set_compliance`` (or ``compliance:=true`` at launch) puts the hand into a
+mode where pushing on a fingertip opens that finger, so a grasp can be adjusted
+by hand without fighting it. It is the nearest thing this hand has to the arm's
+gravity-compensation controller and it is not very near: the FR3 floats because
+it is backdrivable and commands zero torque, while the RH56 takes positions and
+nothing else. The give is therefore manufactured -- fingertip force is read
+every cycle and the finger's target is retreated towards open in proportion to
+it. :mod:`inspire_hand_driver.compliance` carries the law, the tuning, and what
+the fingertip sensor can and cannot feel; this node carries the plumbing.
+
+Force is measured against a captured zero, not against nought, because the
+fingertip sensors do not return to the same reading after a heavy load: on this
+rig a pad that rested at -11 g sat at +219 g after being pushed to 2511 g, and
+stayed there. Engaging compliant mode takes a tare, so the hand must not be
+touched at that moment; ``~/tare_force`` takes another whenever the zero has
+moved since. Without it a finger holds a permanent partial yield and never
+comes home, which is what the bench check reports as "gave, did not come back".
+
+The yield is an *offset*, never a command. ``~/command`` and ``~/set_angles``
+still set the rest position, the offset is added on the way to the registers,
+and ``~/state`` still reports where the fingers physically are. A partial
+command merges onto the commanded pose rather than onto wherever a finger has
+been pushed to, so a grasp held through a compliant episode returns to exactly
+the grasp that was commanded.
+
+Force-sensor calibration
+------------------------
+``~/calibrate_force`` triggers GESTURE_FORCE_CLB, the routine the Inspire
+desktop app calls calibration, and it is worth being clear about how little it
+has in common with ``~/tare_force``. The tare is arithmetic in this node: a
+baseline is captured and subtracted, only the compliance law sees it, and it is
+undone by taking another. The calibration is the hand rewriting what
+``FORCE_ACT`` reports at the source, for every reader, permanently.
+
+**It jammed the hand this was written against**, which is why
+``calibration_mode`` defaults to ``none`` and the service refuses. A hand that
+drives itself for six seconds with the stall guard stood down is not something
+to leave an open service to on the strength of a manual paragraph.
+
+The routine is one register write and a fixed sequence, so it cannot be asked
+to calibrate the fingers and leave the thumb alone. The only lever this node
+has is *when to stop it*. The sequence runs fingers first -- open all five,
+bend the four -- and reaches the thumb last, so ``calibration_mode="fingers"``
+stops it at ``calibration_finger_sec`` by writing GESTURE_FORCE_CLB back to 0
+before the thumb steps. That is the mode that jammed, and two undocumented
+things are the likely reason. Whether the firmware honours a 0 written
+mid-sequence is unknown, so after the stop the thumb is watched for
+``THUMB_SETTLE_SEC``: if it has not settled onto this node's own target by
+then it is still being driven by the routine, and the log says so in as many
+words -- two writers on one set of actuators is exactly what a jam looks like.
+And whether a routine cut short commits the finger calibration at all is
+equally unknown, so the mode may buy nothing even when it behaves. Compare
+resting ``~/grip_force`` before and after to find out.
+
+The hand is also posed before the register is written, waited for rather than
+assumed, so the sequence starts from the pose its first step asks for. Which
+DOF get posed follows ``calibration_mode``: with the thumb taking part, all
+six open, which swings thumb rotation clear of the fingers' sweep; with it out,
+only the four fingers, because otherwise this node would be the only reason the
+thumb moves at all. A DOF that will not reach the pose within
+``calibration_clearance_sec`` abandons the calibration rather than starting it
+anyway; ``calibration_clearance:=false`` skips the staging for anyone who
+wants to pose the hand themselves.
+
+None of which makes the thumb perfectly still. The routine's own first step is
+"hold five fingers fully open", and five includes the thumb, so the thumb
+*extends* whatever this node does. What ``"fingers"`` keeps it out of
+is the bending, three steps later, which is where it meets the fingers.
+
+For those seconds the *hand* is the one commanding: it opens all five fingers,
+bends the four, bends the thumb, extends it again. So this node stops writing
+for the duration -- every command path returns "force calibration in progress"
+rather than queueing, and the stall guard and the limits readback both stand
+down, because a routine that drives fingers into their own limits is exactly
+what the stall guard exists to interrupt. State keeps being published
+throughout, so the motion is visible in ``~/joint_states`` as it happens rather
+than as a six-second freeze followed by a jump.
+
+When the routine ends -- or is stopped -- the node takes a fresh tare (the zero it was
+holding describes sensors that no longer exist) and re-sends the pose that was
+commanded before staging opened the hand, since the routine leaves the fingers
+wherever its last step put them. Compliant mode is refused while a calibration runs and a calibration
+is refused while compliance is doing anything, in either case because a yield
+derived from readings taken mid-calibration is a number about nothing.
+
+It costs a register read. Force normally rides ``state_extras_divisor``, which
+under the replay launch's divisor of 5 would sample it at 10 Hz; compliant mode
+reads it every cycle regardless, so a cycle becomes angles + force + a write
+rather than angles alone. That is roughly 7-21 ms of a 20 ms slot at 50 Hz (see
+:mod:`inspire_hand_driver.benchmark`), so a hand being streamed targets at the
+same time wants a lower ``publish_rate_hz`` while it is compliant.
+
+Every gain is a dynamic parameter, so ``ros2 param set`` retunes the spring
+between one cycle and the next -- which is the only workable way to find
+numbers for something whose test is pushing on it with a finger. Values the law
+rejects are refused by the parameter callback instead of being applied.
 
 Thumb-abduction calibration
 ----------------------------
@@ -148,19 +257,22 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 
 from inspire_hand_msgs.srv import SetAngles, SetForce, SetSpeed
 
 from . import command_overlays
+from . import compliance
 from . import kinematics as kin
 from .protocol import (
     ANGLE_INVALID,
     ANGLE_MAX,
     CHANNEL_IDS,
     DOF_ORDER,
+    FORCE_CALIBRATION_SECONDS,
     REG_CURRENT,
     STATUS_AT_FORCE,
     HandCommunicationError,
@@ -180,6 +292,28 @@ from .protocol import (
 # clamping turned a typo into a full-travel move with no warning anywhere.
 RATIO_OPEN = 1.0
 RATIO_CLOSED = 0.0
+
+#: The two DOF the firmware's calibration routine moves last, and the ones
+#: ``calibration_mode="fingers"`` exists to keep still.
+THUMB_DOF = (DOF_ORDER.index("thumb_bend"), DOF_ORDER.index("thumb_rotation"))
+FINGER_DOF = tuple(i for i in range(6) if i not in THUMB_DOF)
+
+#: What ``~/calibrate_force`` is allowed to do.
+#:
+#: ``none``    Refuse. The default, because on the hand this was developed
+#:             against the routine jams the fingers, and a self-driving hand
+#:             that jams is not something to leave a service open for.
+#: ``fingers`` Start the routine and write GESTURE_FORCE_CLB back to 0 before
+#:             the thumb steps. **Known to jam this hand**: a routine cut
+#:             short does not obviously stop, and the fingers were left
+#:             driving closed. Kept because it is the only shape a
+#:             finger-only calibration could take, and because a different
+#:             firmware may honour the write.
+#: ``full``    Let the routine run all four of its steps, thumb included.
+#:             What the Inspire desktop app does.
+#: Not "off": YAML reads that as the boolean False, so `calibration_mode:=off`
+#: on a command line never reaches this node as a string at all.
+CALIBRATION_MODES = ("none", "fingers", "full")
 
 
 def out_of_range(names: Sequence[str], values: Sequence[float]) -> List[str]:
@@ -257,6 +391,26 @@ class InspireHandNode(Node):
         # targets at 50 Hz wants 5 or more. See inspire_hand_driver.benchmark
         # for what the bus actually costs.
         self.declare_parameter("state_extras_divisor", 1)
+        # Compliant mode: pushing a fingertip opens that finger. Off unless
+        # asked for. See "Compliant mode" above, and
+        # inspire_hand_driver.compliance for the law and what limits it.
+        # Clearance staging for ~/calibrate_force -- see "Force-sensor
+        # calibration" above for why the hand has to be posed before the
+        # firmware's routine can be allowed to run.
+        self.declare_parameter("calibration_clearance", True)
+        self.declare_parameter("calibration_clearance_sec", 3.0)
+        self.declare_parameter("calibration_mode", "none")
+        self.declare_parameter("calibration_finger_sec", 3.0)
+        self.declare_parameter("compliance", False)
+        # Which DOF give. Thumb rotation (channel 6) is left out because it
+        # carries no fingertip pad, so its force reading has nothing to say
+        # about anyone pushing on it.
+        self.declare_parameter("compliance_channels", ["1", "2", "3", "4", "5"])
+        self.declare_parameter("compliance_deadband", compliance.DEFAULT_DEADBAND)
+        self.declare_parameter("compliance_counts_per_gram", compliance.DEFAULT_COUNTS_PER_GRAM)
+        self.declare_parameter("compliance_max_yield", compliance.DEFAULT_MAX_YIELD)
+        self.declare_parameter("compliance_yield_rate", compliance.DEFAULT_YIELD_RATE)
+        self.declare_parameter("compliance_return_rate", compliance.DEFAULT_RETURN_RATE)
 
         self._mock = bool(self.get_parameter("mock").value)
         self._prefix = str(self.get_parameter("joint_prefix").value)
@@ -269,6 +423,9 @@ class InspireHandNode(Node):
         # first tick before either has been read once.
         self._currents: List[int] = [0] * 6
         self._forces: List[int] = [0] * 6
+        # _forces starts as zeros that were never measured; a tare against
+        # those would be a fiction, so it waits for the first real read.
+        self._had_force_read = False
         self._health: Optional[HandHealth] = None
 
         # The speed and force limits this node believes the hand is holding.
@@ -298,6 +455,53 @@ class InspireHandNode(Node):
         self._stalls = 0
         self._last_clamp_log = -math.inf
 
+        # The compliance spring, and the opening offset it currently applies.
+        # The offset is added to targets on the way out in _send; nothing else
+        # in the node knows about it, so every command path carries it without
+        # having to opt in.
+        self._spring = compliance.FingerSpring(
+            self._gains_from_parameters(), self._compliance_mask()
+        )
+        self._yield: List[int] = [0] * 6
+        self._last_spring_tick: Optional[float] = None
+        # Set when compliance is engaged before any force has been read -- at
+        # launch, say. The tare then happens on the first cycle that has a
+        # reading to take, because taring against the initial zeros would make
+        # every real resting offset look like a push.
+        self._tare_pending = False
+        self._last_yield_log = -math.inf
+        # Monotonic deadline while the hand is running its own force-sensor
+        # calibration, else None. Every write in this node is suspended until
+        # it passes -- see "Force-sensor calibration" above.
+        self._calibrating_until: Optional[float] = None
+        # While the hand is being opened into the clearance pose, before the
+        # routine is triggered. Separate from _calibrating_until because this
+        # node is still the one commanding during it.
+        self._staging_until: Optional[float] = None
+        # The pose to put back afterwards. Not _last_command, which by then is
+        # the clearance pose this node commanded on the caller's behalf.
+        self._pose_before_calibration: Optional[List[int]] = None
+        self._calibrations = 0
+        self._clearance = bool(self.get_parameter("calibration_clearance").value)
+        self._clearance_sec = max(0.0, float(self.get_parameter("calibration_clearance_sec").value))
+        self._calibration_mode = str(self.get_parameter("calibration_mode").value).lower()
+        if self._calibration_mode not in CALIBRATION_MODES:
+            self.get_logger().error(
+                f"calibration_mode={self._calibration_mode!r} is not one of "
+                f"{', '.join(CALIBRATION_MODES)}; refusing calibrations"
+            )
+            self._calibration_mode = "none"
+        self._calibrate_thumb = self._calibration_mode == "full"
+        self._finger_sec = max(0.5, float(self.get_parameter("calibration_finger_sec").value))
+        # Monotonic deadline after an early stop, by which the thumb should
+        # have settled onto whatever this node last commanded. The firmware is
+        # not documented to honour a stop request, so the node checks rather
+        # than assuming, and says which way it went.
+        self._thumb_watch: Optional[float] = None
+        #: DOF indices the pending calibration posed, and so the only ones its
+        #: clearance check may wait on.
+        self._staged: List[int] = []
+
         self._joint_names = [self._prefix + j for j in kin.ALL_JOINTS]
         self._driven_names = [self._prefix + j for j in kin.DRIVEN_JOINTS]
 
@@ -317,9 +521,20 @@ class InspireHandNode(Node):
         self._speed_srv = self.create_service(SetSpeed, "~/set_speed", self._on_set_speed)
         self._force_srv = self.create_service(SetForce, "~/set_force", self._on_set_force)
         self._clear_srv = self.create_service(Trigger, "~/clear_errors", self._on_clear_errors)
+        self._compliance_srv = self.create_service(
+            SetBool, "~/set_compliance", self._on_set_compliance
+        )
+        self._tare_srv = self.create_service(Trigger, "~/tare_force", self._on_tare_force)
+        self._calibrate_srv = self.create_service(
+            Trigger, "~/calibrate_force", self._on_calibrate_force
+        )
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
         rate = max(1.0, float(self.get_parameter("publish_rate_hz").value))
-        self._timer = self.create_timer(1.0 / rate, self._on_timer)
+        self._period = 1.0 / rate
+        self._timer = self.create_timer(self._period, self._on_timer)
+        if bool(self.get_parameter("compliance").value):
+            self._set_compliance(True, "launch parameter")
 
         self.get_logger().info(
             f"inspire_hand_driver up: "
@@ -327,7 +542,8 @@ class InspireHandNode(Node):
             f"protocol={self._transport.protocol} id={self._transport.hand_id} "
             f"rate={rate:.0f}Hz extras=1/{self._extras_divisor} prefix={self._prefix!r} "
             f"force_threshold={force if force > 0 else 'hand default'} "
-            f"stall_guard={'on' if self._stall_guard else 'off'}"
+            f"stall_guard={'on' if self._stall_guard else 'off'} "
+            f"compliance={'on' if self._spring.engaged else 'off'}"
         )
 
     # -- setup -------------------------------------------------------------
@@ -410,14 +626,20 @@ class InspireHandNode(Node):
     # -- state publishing --------------------------------------------------
     def _on_timer(self) -> None:
         # The angles are read every cycle because they are what joint_states
-        # is; current and force ride the divisor.
+        # is; current and force ride the divisor. Force is the exception while
+        # the spring is working: it is that loop's only input, and sampling it
+        # at a fifth of the rate the loop runs at would hand the spring a
+        # staircase to differentiate.
         extras = self._ticks % self._extras_divisor == 0
         self._ticks += 1
+        compliant = self._spring.active
         try:
             angles = self._transport.read_angles()
+            if extras or compliant:
+                self._forces = self._transport.read_forces()
+                self._had_force_read = True
             if extras:
                 self._currents = self._transport.read_registers(REG_CURRENT, 6)
-                self._forces = self._transport.read_forces()
                 self._health = self._transport.read_health()
             currents, forces = self._currents, self._forces
         except HandCommunicationError as exc:
@@ -431,14 +653,40 @@ class InspireHandNode(Node):
         if self._failures >= self._max_failures:
             self.get_logger().info("hand responsive again")
             # Silence long enough to count as lost is, in practice, a power
-            # cycle, which wipes the volatile limits.
+            # cycle, which wipes the volatile limits. It also makes the yield
+            # meaningless -- it was derived from a force reading against a
+            # pose this hand no longer holds -- so it goes, while the mode
+            # stays and re-derives itself from the next reading.
             self._apply_limits("hand back after being unresponsive")
+            self._spring.reset()
+            self._yield = [0] * 6
+            self._last_spring_tick = None
         self._failures = 0
 
-        if extras:
+        if self._staging_until is not None:
+            self._advance_staging(angles)
+        if self._thumb_watch is not None:
+            self._check_thumb_released(angles)
+
+        calibrating = self._calibrating_until is not None
+        if calibrating and time.monotonic() >= self._calibrating_until:
+            self._finish_calibration(angles)
+            calibrating = False
+
+        # Both of these write, and the stall guard would read a hand driving
+        # its own fingers into their limits as six faults to intervene in.
+        if extras and not calibrating:
             if self._health is not None:
                 self._supervise(angles, self._health)
             self._check_limits()
+
+        if self._tare_pending and self._had_force_read:
+            self._tare("deferred from when compliance was enabled")
+
+        # After the stall guard, so that a DOF backed off this cycle is what
+        # the yield is added to rather than the target it stalled on.
+        if compliant:
+            self._update_compliance(angles)
 
         stamp = self.get_clock().now().to_msg()
 
@@ -582,6 +830,403 @@ class InspireHandNode(Node):
         )
         return response
 
+    # -- compliant mode ----------------------------------------------------
+    #: Spring gain -> the parameter that carries it. One table so that the
+    #: startup build and the live retune cannot come to disagree about which
+    #: parameter means what.
+    GAIN_PARAMETERS = {
+        "deadband": "compliance_deadband",
+        "counts_per_gram": "compliance_counts_per_gram",
+        "max_yield": "compliance_max_yield",
+        "yield_rate": "compliance_yield_rate",
+        "return_rate": "compliance_return_rate",
+    }
+
+    def _gains_from_parameters(
+        self, overrides: Optional[Dict[str, object]] = None
+    ) -> compliance.SpringGains:
+        """Build the gains from the parameters, with pending values applied.
+
+        ``overrides`` exists for the parameter callback: it runs *before* the
+        new values are stored, so reading them back would validate the ones
+        being replaced.
+        """
+        overrides = overrides or {}
+        return compliance.SpringGains(
+            **{
+                field: float(
+                    overrides[param] if param in overrides else self.get_parameter(param).value
+                )
+                for field, param in self.GAIN_PARAMETERS.items()
+            }
+        )
+
+    def _compliance_mask(self, names: Optional[Sequence[str]] = None) -> List[bool]:
+        """Resolve ``compliance_channels`` to the six flags the spring takes."""
+        if names is None:
+            names = list(self.get_parameter("compliance_channels").value or [])
+        indices, unknown = [], []
+        for name in names:
+            try:
+                indices.append(self._resolve(name))
+            except KeyError:
+                unknown.append(str(name))
+        if unknown:
+            self.get_logger().warn(
+                f"ignoring unknown compliance channels: {', '.join(unknown)}"
+            )
+        return compliance.channel_mask(indices)
+
+    def _set_compliance(self, enable: bool, reason: str) -> str:
+        if enable and (self._calibrating_until is not None or self._staging_until is not None):
+            self.get_logger().warn(f"compliant mode refused ({reason}): {self.CALIBRATING_MESSAGE}")
+            return self.CALIBRATING_MESSAGE
+        if enable == self._spring.engaged:
+            return f"compliance was already {'on' if enable else 'off'}"
+        if enable:
+            self._spring.engage()
+            # The first cycle of a new episode has no previous tick to measure
+            # against, and must not integrate however long the mode was off.
+            self._last_spring_tick = None
+            # Whatever the fingertips read now is what "untouched" means for
+            # this episode. The sensors' zero moves after a heavy push, so a
+            # fixed nought would hold every pushed finger permanently open.
+            self._tare("entering compliant mode")
+            giving = [
+                DOF_ORDER[i] for i, on in enumerate(self._spring.channels) if on
+            ] or ["(none)"]
+            message = (
+                f"compliant mode on ({reason}): {', '.join(giving)} give to fingertip "
+                f"force; {compliance.describe(self._spring.gains)}"
+            )
+        else:
+            self._spring.release()
+            message = f"compliant mode off ({reason}): ramping the yield back out"
+        self.get_logger().info(message)
+        return message
+
+    def _tare(self, reason: str) -> str:
+        """Zero the fingertip readings, once there is a reading to zero against."""
+        if not self._had_force_read:
+            self._tare_pending = True
+            return f"tare deferred until the first force read ({reason})"
+        zeros = self._spring.tare(self._forces)
+        self._tare_pending = False
+        message = (
+            f"fingertip zero set ({reason}): "
+            + ", ".join(f"{DOF_ORDER[i]} {zeros[i]:.0f}g" for i in range(6))
+        )
+        self.get_logger().info(message)
+        return message
+
+    def _on_tare_force(self, request, response):
+        response.message = self._tare("service call")
+        response.success = True
+        return response
+
+    def _on_set_compliance(self, request, response):
+        response.message = self._set_compliance(bool(request.data), "service call")
+        # Read the answer off the spring rather than assuming it: the request
+        # can be refused, and a refusal reported as success is how a caller
+        # ends up believing a hand is compliant when it is not.
+        response.success = self._spring.engaged == bool(request.data)
+        return response
+
+    def _on_set_parameters(self, params) -> SetParametersResult:
+        """Retune the spring live; refuse values the law will not take.
+
+        Tuning a spring you test by pushing on it means changing a gain and
+        pushing again, so this has to work on a running hand. Rejecting rather
+        than clamping matters more here than elsewhere: a silently clamped gain
+        is indistinguishable, by feel, from one that did nothing.
+        """
+        pending = {p.name: p.value for p in params if p.name.startswith("compliance")}
+        if not pending:
+            return SetParametersResult(successful=True)
+        try:
+            gains = self._gains_from_parameters(pending)
+        except (TypeError, ValueError) as exc:
+            return SetParametersResult(successful=False, reason=str(exc))
+        if "compliance_channels" in pending:
+            try:
+                self._spring.set_channels(self._compliance_mask(pending["compliance_channels"]))
+            except (TypeError, ValueError) as exc:
+                return SetParametersResult(successful=False, reason=str(exc))
+        if gains != self._spring.gains:
+            self._spring.retune(gains)
+            self.get_logger().info(f"compliance retuned: {compliance.describe(gains)}")
+        if "compliance" in pending:
+            self._set_compliance(bool(pending["compliance"]), "parameter set")
+        return SetParametersResult(successful=True)
+
+    def _update_compliance(self, angles: Sequence[int]) -> None:
+        """Advance the yield against the latest force, and rewrite if it moved."""
+        now = time.monotonic()
+        # A first cycle, or one after a run of dropped reads, must not
+        # integrate the whole gap: the rate limits are there to bound how far
+        # a finger moves per cycle, and a long dt would step straight past them.
+        if self._last_spring_tick is None:
+            dt = self._period
+        else:
+            dt = min(4.0 * self._period, now - self._last_spring_tick)
+        self._last_spring_tick = now
+
+        previous = self._yield
+        self._yield = self._spring.update(self._forces, dt)
+        if self._yield == previous:
+            return
+        anchor = self._last_command
+        if anchor is None:
+            # Nothing has commanded the hand this session, so its own pose is
+            # the rest position -- the same choice _merge makes.
+            anchor = [a if a != ANGLE_INVALID else ANGLE_MAX for a in angles]
+        self._send(list(anchor))
+        self._log_yield(now)
+
+    def _log_yield(self, now: float) -> None:
+        """Say what is giving, at most once a second. This is a tuning aid."""
+        giving = [i for i, counts in enumerate(self._yield) if counts]
+        if not giving or now - self._last_yield_log < 1.0:
+            return
+        self._last_yield_log = now
+        saturated = (
+            " -- at max_yield"
+            if any(self._yield[i] >= self._spring.gains.max_yield for i in giving)
+            else ""
+        )
+        self.get_logger().info(
+            "giving to fingertip force: "
+            + ", ".join(
+                f"{DOF_ORDER[i]} {self._yield[i]} counts @ {self._forces[i]}g" for i in giving
+            )
+            + saturated
+        )
+
+    # -- force-sensor calibration -----------------------------------------
+    #: How close a DOF has to be to the clearance pose, in counts, before the
+    #: routine may start. 3 % of travel: tight enough that a thumb still lying
+    #: across the palm fails it, loose enough that a healthy hand always
+    #: passes without waiting on the last few counts of a slew.
+    CLEARANCE_TOLERANCE = 30
+
+    def _on_calibrate_force(self, request, response):
+        response.success, response.message = self._start_calibration("service call")
+        return response
+
+    def _start_calibration(self, reason: str) -> Tuple[bool, str]:
+        """Open the hand clear, then hand the next six seconds to the firmware."""
+        if self._calibrating_until is not None:
+            remaining = self._calibrating_until - time.monotonic()
+            return False, f"a force calibration is already running ({remaining:.1f}s left)"
+        if self._staging_until is not None:
+            return False, "a force calibration is already being staged"
+        if self._calibration_mode == "none":
+            return False, (
+                "calibration_mode is 'none'. The hand's own routine drives its fingers "
+                "for six seconds and cannot be told to skip the thumb; stopping it "
+                "early (calibration_mode:='fingers') jammed the fingers on this hand, "
+                "and running it whole (calibration_mode:='full') moves the thumb. "
+                "~/tare_force does the zeroing compliant mode actually needs, without "
+                "moving anything."
+            )
+        if self._spring.active:
+            # Not merely tidiness. The routine drives the fingers, the spring
+            # would read the resulting fingertip loads as someone pushing, and
+            # the two would write opposing targets to the same registers.
+            return False, (
+                "compliant mode is still working: turn it off with ~/set_compliance "
+                "and let the yield ramp out before calibrating"
+            )
+
+        # Captured before staging moves it, because staging is a command like
+        # any other and overwrites _last_command on its way out.
+        self._pose_before_calibration = (
+            list(self._last_command) if self._last_command is not None else None
+        )
+        if not self._clearance:
+            return self._trigger_calibration(reason)
+
+        # Staging must not move what the calibration is being kept away from.
+        # Opening all six is right when the thumb is taking part -- it swings
+        # thumb rotation clear of the fingers' sweep -- and is exactly the
+        # wrong thing when it is not, because then this node is the only
+        # reason the thumb moves at all.
+        self._staged = list(range(6)) if self._calibrate_thumb else list(FINGER_DOF)
+        accepted, error = self._apply(
+            [CHANNEL_IDS[i] for i in self._staged], [RATIO_OPEN] * len(self._staged)
+        )
+        if not accepted:
+            self._pose_before_calibration = None
+            return False, f"could not pose the hand for calibration: {error}"
+        self._staging_until = time.monotonic() + self._clearance_sec
+        posed = (
+            "the whole hand"
+            if self._calibrate_thumb
+            else "the four fingers, leaving the thumb where it is"
+        )
+        self.get_logger().info(
+            f"force-sensor calibration requested ({reason}): first opening {posed}"
+        )
+        seconds = FORCE_CALIBRATION_SECONDS if self._calibrate_thumb else self._finger_sec
+        return True, (
+            f"opening {posed}, then calibrating for about {seconds:.1f}s. Nothing may "
+            "touch the hand. This service returns before any of it happens -- watch the "
+            "log for 'force-sensor calibration finished'."
+        )
+
+    def _advance_staging(self, angles: Sequence[int]) -> None:
+        """Wait for the clearance pose, then trigger -- or give up and say why.
+
+        The firmware's routine never commands thumb rotation, so whatever a
+        previous grasp left there is where the thumb bends *from*. That is the
+        one axis that can put the thumb in the fingers' way, and this is the
+        only chance to move it.
+        """
+        off = [
+            i
+            for i in self._staged
+            if angles[i] == ANGLE_INVALID
+            or abs(int(angles[i]) - ANGLE_MAX) > self.CLEARANCE_TOLERANCE
+        ]
+        if not off:
+            self._staging_until = None
+            ok, message = self._trigger_calibration("staged")
+            if not ok:
+                self.get_logger().warn(f"force calibration could not be started: {message}")
+                self._pose_before_calibration = None
+            return
+        if time.monotonic() < self._staging_until:
+            return
+        # Refusing here rather than calibrating anyway: a DOF that will not
+        # open is either jammed or stalled, and running the routine with one
+        # finger out of place is the collision this staging exists to prevent.
+        self._staging_until = None
+        self._pose_before_calibration = None
+        self.get_logger().error(
+            "force calibration abandoned: "
+            + ", ".join(
+                f"{self._dof_label(i)} is at "
+                + (
+                    "an invalid reading"
+                    if angles[i] == ANGLE_INVALID
+                    else f"{angle_to_open_ratio(angles[i]):.3f}"
+                )
+                for i in off
+            )
+            + f" after {self._clearance_sec:.1f}s and will not open. The hand is left "
+            "open; clear whatever is holding those DOF and try again."
+        )
+
+    #: How long the thumb is given to settle onto this node's own target after
+    #: an early stop, and how far off it may be and still count as settled.
+    THUMB_SETTLE_SEC = 1.5
+    THUMB_SETTLE_TOLERANCE = 60
+
+    def _check_thumb_released(self, angles: Sequence[int]) -> None:
+        """Say whether the firmware actually let go when asked to stop.
+
+        The question this answers is not "did the thumb move" -- this node
+        moves it itself, restoring the pose -- but "is the thumb following
+        this node or still following the routine". A thumb sitting far from
+        the target a second and a half after the stop is being driven by
+        something else.
+        """
+        if time.monotonic() < self._thumb_watch:
+            return
+        self._thumb_watch = None
+        if self._last_command is None:
+            return
+        adrift = [
+            i
+            for i in THUMB_DOF
+            if angles[i] == ANGLE_INVALID
+            or abs(int(angles[i]) - self._last_command[i]) > self.THUMB_SETTLE_TOLERANCE
+        ]
+        if not adrift:
+            self.get_logger().info(
+                "the routine released the thumb when asked: it is following commands again"
+            )
+            return
+        self.get_logger().error(
+            "the hand did NOT stop its calibration routine when asked: "
+            + ", ".join(
+                f"{self._dof_label(i)} is at "
+                + (
+                    "an invalid reading"
+                    if angles[i] == ANGLE_INVALID
+                    else f"{angle_to_open_ratio(angles[i]):.3f}"
+                )
+                + f" against a commanded {angle_to_open_ratio(self._last_command[i]):.3f}"
+                for i in adrift
+            )
+            + ". Writing 0 to GESTURE_FORCE_CLB does not abort it on this firmware, so the "
+            "thumb cannot be kept out of a calibration -- either accept it with "
+            "calibration_mode:=full, or do not use ~/calibrate_force on this hand."
+        )
+
+    def _trigger_calibration(self, reason: str) -> Tuple[bool, str]:
+        """Write GESTURE_FORCE_CLB. The hand is the one commanding from here."""
+        try:
+            self._transport.calibrate_force_sensors()
+        except HandCommunicationError as exc:
+            self.get_logger().warn(f"force calibration could not be started: {exc}")
+            return False, str(exc)
+
+        seconds = FORCE_CALIBRATION_SECONDS if self._calibrate_thumb else self._finger_sec
+        self._calibrating_until = time.monotonic() + seconds
+        self._calibrations += 1
+        thumb = (
+            "all six DOF"
+            if self._calibrate_thumb
+            else f"the four fingers, then stopping at {seconds:.1f}s before the thumb steps"
+        )
+        self.get_logger().warn(
+            f"force-sensor calibration started ({reason}): the hand will move its own "
+            f"fingers for {seconds:.1f}s and must not be touched -- {thumb}. "
+            f"Commands are refused until it finishes."
+        )
+        return True, (
+            f"calibration started; the hand moves on its own for about {seconds:.1f}s "
+            f"({thumb}) and nothing may touch it. This service returns before the "
+            f"routine does -- watch for 'force-sensor calibration finished' in the log."
+        )
+
+    def _finish_calibration(self, angles: Sequence[int]) -> None:
+        """Resume writing, re-zero against the new sensors, restore the pose."""
+        self._calibrating_until = None
+        if self._calibrate_thumb:
+            self.get_logger().info("force-sensor calibration finished")
+        else:
+            # The routine is not over; we are cutting it short before its
+            # thumb steps. Whether the firmware lets go when asked is not
+            # documented, so ask, then watch the thumb and say what happened.
+            try:
+                self._transport.stop_force_calibration()
+            except HandCommunicationError as exc:
+                self.get_logger().warn(f"could not ask the routine to stop: {exc}")
+            self._thumb_watch = time.monotonic() + self.THUMB_SETTLE_SEC
+            self.get_logger().info(
+                f"force-sensor calibration stopped at {self._finger_sec:.1f}s, before the "
+                f"thumb steps (calibration_mode is 'fingers')"
+            )
+        # The old zero described sensors that no longer exist. Taking a new one
+        # is only valid because the calibration required an untouched hand in
+        # the first place, so the precondition is already met.
+        if self._had_force_read:
+            self.get_logger().info(self._tare("after force calibration"))
+        else:
+            self._tare_pending = True
+        # The routine leaves the fingers wherever its last step put them, which
+        # is not what anyone commanded. Put them back -- to the pose from
+        # before staging opened the hand, not to the clearance pose.
+        restore, self._pose_before_calibration = self._pose_before_calibration, None
+        if restore is not None:
+            ok, error = self._send(list(restore))
+            if ok:
+                self.get_logger().info("restored the commanded pose after calibration")
+            else:
+                self.get_logger().warn(f"could not restore the commanded pose: {error}")
+
     def _diagnostics(
         self,
         stamp,
@@ -613,6 +1258,8 @@ class InspireHandNode(Node):
                 status.message += f"; error {describe_error(health.errors[index])}"
             if index in stalled and self._stall_floor[index] is not None:
                 status.message += "; backed off, held"
+            if self._yield[index]:
+                status.message += f"; giving {self._yield[index]} counts to fingertip force"
             status.values = [
                 KeyValue(key="status", value=str(health.status[index])),
                 KeyValue(key="error", value=str(health.errors[index])),
@@ -633,6 +1280,12 @@ class InspireHandNode(Node):
                     value=f"{angle_to_open_ratio(targets[index]):.3f}"
                     if targets is not None else "none",
                 ),
+                # Counts of opening added to that target by compliant mode, so
+                # a target and a pose that disagree have somewhere to say why.
+                KeyValue(key="compliance_yield", value=str(self._yield[index])),
+                # What this channel currently calls "nothing touching me". It
+                # is not 0, and it moves: see "Compliant mode" above.
+                KeyValue(key="force_zero", value=f"{self._spring.zeros[index]:.0f}"),
             ]
             array.status.append(status)
 
@@ -646,6 +1299,16 @@ class InspireHandNode(Node):
         )
         summary.values = [
             KeyValue(key="stall_guard", value="on" if self._stall_guard else "off"),
+            KeyValue(key="compliance", value="on" if self._spring.engaged else "off"),
+            KeyValue(
+                key="force_calibration",
+                value=(
+                    "running"
+                    if self._calibrating_until is not None
+                    else "staging" if self._staging_until is not None else "idle"
+                ),
+            ),
+            KeyValue(key="force_calibrations", value=str(self._calibrations)),
             KeyValue(key="stalls_seen", value=str(self._stalls)),
             KeyValue(key="errors_cleared", value=str(self._clears)),
             KeyValue(key="read_failures", value=str(self._failures)),
@@ -702,14 +1365,42 @@ class InspireHandNode(Node):
         self._clamp_to_stall_floors(angles)
         return angles, ""
 
+    #: What every write path says while the hand is calibrating its own force
+    #: sensors. Refused rather than queued: six seconds later the command is
+    #: stale, and a caller told "no" can decide that for itself.
+    CALIBRATING_MESSAGE = (
+        "force calibration in progress: the hand is running its own motion and "
+        "this node is not writing until it finishes"
+    )
+    #: And while the hand is being posed for one. Short-lived, but a command
+    #: landing here would undo the clearance a moment before the firmware
+    #: starts swinging the thumb through it.
+    STAGING_MESSAGE = "the hand is being posed for a force calibration"
+
     def _send(self, angles: List[int]) -> Tuple[bool, str]:
+        if self._calibrating_until is not None:
+            return False, self.CALIBRATING_MESSAGE
         try:
-            self._transport.write_angles(angles)
+            self._transport.write_angles(self._with_yield(angles))
         except HandCommunicationError as exc:
             self.get_logger().warn(f"failed to write angles: {exc}")
             return False, str(exc)
         self._last_command = angles
         return True, ""
+
+    def _with_yield(self, angles: Sequence[int]) -> List[int]:
+        """Add the compliance yield to a set of targets, towards open.
+
+        ``_last_command`` deliberately keeps the *unyielded* targets. The
+        commanded pose is the spring's rest position, so a partial command
+        merges onto where the caller asked a finger to be and not onto
+        wherever someone has pushed it; and leaving compliant mode returns the
+        hand to the grasp that was commanded, with no bookkeeping anywhere
+        else in the node.
+        """
+        if not any(self._yield):
+            return list(angles)
+        return [min(ANGLE_MAX, a + y) for a, y in zip(angles, self._yield)]
 
     def _apply(
         self, names: Sequence[str], values: Sequence[float]
@@ -722,6 +1413,8 @@ class InspireHandNode(Node):
         be inferred from the naming, so the same number meant opposite ends of
         travel depending on how the DOF was addressed.
         """
+        if self._staging_until is not None:
+            return False, self.STAGING_MESSAGE
         if not names:
             return False, "no channels named"
         if len(names) != len(values):
@@ -769,6 +1462,10 @@ class InspireHandNode(Node):
         return response
 
     def _write_limits(self, names, values, writer, what: str) -> Tuple[bool, str]:
+        if self._calibrating_until is not None:
+            return False, self.CALIBRATING_MESSAGE
+        if self._staging_until is not None:
+            return False, self.STAGING_MESSAGE
         if len(names) != len(values):
             return False, f"name has {len(names)} entries but {what} has {len(values)}"
         if not names:

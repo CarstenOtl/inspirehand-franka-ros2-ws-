@@ -158,6 +158,9 @@ coexist as two nodes with different names and different ports.
 | `~/set_speed` | `inspire_hand_msgs/srv/SetSpeed` |
 | `~/set_force` | `inspire_hand_msgs/srv/SetForce` |
 | `~/clear_errors` | `std_srvs/srv/Trigger` |
+| `~/set_compliance` | `std_srvs/srv/SetBool` | enter/leave [compliant mode](#compliant-mode) |
+| `~/tare_force` | `std_srvs/srv/Trigger` | take the current fingertip readings as "nothing is touching me" |
+| `~/calibrate_force` | `std_srvs/srv/Trigger` | run the hand's own force-sensor calibration; **the hand moves by itself for six seconds, and jammed doing it** — refused unless `calibration_mode` says otherwise |
 
 `~/command` and `set_angles` both take **open ratios: `1.0` fully open, `0.0`
 fully closed.** Names say only *which* DOF to address — channel ids
@@ -312,6 +315,234 @@ falls back to three reads if it refuses), and whether the byte order of those
 byte-per-DOF blocks matches the vendor example the driver follows (lower
 address in the low byte). `ros2 run inspire_hand_driver inspire_hand_probe`
 prints the raw words.
+
+## Compliant mode
+
+The nearest thing this hand has to the arm's gravity-compensation controller,
+and it is worth being clear about how far that is. The FR3 floats because its
+joints are backdrivable and the controller commands zero torque: the compliance
+is physical and the controller merely stops fighting it. The RH56 takes a
+position setpoint and nothing else, so the give has to be manufactured — the
+driver reads fingertip force every cycle and retreats that finger's target
+towards open in proportion to it. Push a fingertip and the finger opens; let go
+and it closes back onto the commanded grasp.
+
+```bash
+ros2 service call /inspire_hand/set_compliance std_srvs/srv/SetBool "{data: true}"
+# ... adjust the grip by hand ...
+ros2 service call /inspire_hand/set_compliance std_srvs/srv/SetBool "{data: false}"
+```
+
+or `compliance:=true` at launch. Per DOF, in register counts:
+
+```
+yield = clamp((force - compliance_deadband) * compliance_counts_per_gram, 0, compliance_max_yield)
+```
+
+slew-limited to `compliance_yield_rate` opening and `compliance_return_rate`
+closing back. Every one of those is a dynamic parameter, so `ros2 param set`
+retunes the spring between one cycle and the next — which is the only workable
+way to tune something whose test is pushing on it with a finger. Values the law
+cannot use are refused rather than clamped.
+
+```bash
+ros2 param set /inspire_hand compliance_counts_per_gram 0.8
+```
+
+The shipped gain is **0.6 counts/g**. With the 80 g default deadband that puts
+a 400 g fingertip load at 192 counts — 19 % of travel — and reaches
+`compliance_max_yield` (300) at 580 g. Past that the finger has given all it
+is going to: raise `compliance_max_yield` if you want a hard shove to keep
+opening, and remember that the earlier bench pushes measured **1400–2500 g**,
+so saturation is the normal case for a deliberate push rather than an edge
+one. It is the light bump this gain is tuned for.
+
+**The yield is an offset, never a command.** `~/command` and `~/set_angles`
+still set the rest position; the offset is added on the way to the registers. A
+partial command sent while someone is holding a fingertip merges onto the
+commanded pose, not onto the pushed-open one, so a grasp held through a
+compliant episode returns to exactly the grasp that was asked for. `~/state`
+still reports where the fingers physically are, and `~/diagnostics` carries the
+applied yield per DOF.
+
+### The force reading is signed
+
+`FORCE_ACT` is a signed 16-bit value, which a register map otherwise full of
+0..1000 quantities does not advertise. On this rig the six fingertips read
+**−2, −12, −26, −11, +1 and −90 g with nothing touching them** — the sensors'
+own zero offset. Read unsigned those are 65534, 65524, 65510, 65525, 1 and
+65446, and any threshold comparison then sees a hand under enormous load while
+it holds nothing; compliant mode would drive every finger to `max_yield` the
+moment it was switched on. `HandTransport.read_forces` signs them
+(`to_signed16`); `FORCE_SET` is a commanded threshold and stays unsigned.
+
+The practical consequence for tuning: a deadband only has to clear zero to
+cover the resting offset, but it also has to cover the preload of whatever the
+hand is already gripping, which is the larger number.
+
+### What it cannot feel
+
+One direction only. `FORCE_ACT` measures compression of the fingertip **pad**,
+so pushing into the pad is the only input the law has: a finger gives and never
+closes on its own. Push a finger anywhere else — the middle phalanx, the side
+of the tip — and this reads nothing at all; that contact ends at the stall
+guard instead, which is the right place for it. Thumb rotation (channel 6) has
+no pad and is left out of `compliance_channels` by default.
+
+`FORCE_SET` is **not** a ceiling on what can be sensed, though this page said it
+was. The threshold governs the closing motion — a finger driving shut gives up
+when it reaches the threshold — and has no bearing on what the sensor reports
+when you load a finger that is already holding station. Measured with
+`FORCE_SET` at its 500 g default, a firm push on a held fingertip reads
+**1400–1900 g**. The full range is available to compliant mode, and a gentle
+pinch preset does not starve it.
+
+### Zeroing the fingertips: two different things
+
+The fingertip sensors do not sit at zero, and they do not stay where they sit.
+Measured on this rig: the index pad rested at −11 g, was pushed to 2511 g, and
+then sat at **+219 g — fully open, motor off, touching nothing** — and stayed
+there, with no decay over a minute, while its four neighbours held −6 to −11 g.
+Against a fixed deadband that is a standing 183 g of phantom push, so the
+finger holds a permanent partial yield and never comes home. That is what the
+bench check reports as "gave, but did not come back".
+
+There are two answers, and they are not alternatives to each other.
+
+| | `~/tare_force` | `~/calibrate_force` |
+|---|---|---|
+| where | in the driver: a baseline is captured and subtracted | in the hand: `GESTURE_FORCE_CLB`, register 1009 |
+| what changes | what compliant mode compares against | what `FORCE_ACT` reports, to every reader |
+| motion | none | the hand drives its own DOF, by itself |
+| duration | one cycle | 3 s for the fingers, 6 s including the thumb |
+| undo | take another | none; it replaces the previous calibration |
+
+**The tare** is what compliant mode uses. Entering the mode takes one
+automatically — so keep your hands off the fingertips at that moment — and
+`~/tare_force` takes another whenever the zero has walked since. The per-channel
+zero currently in force is published as `force_zero` in `~/diagnostics`.
+
+**The calibration** is the button the Inspire desktop app has, and it fixes the
+reference at the source rather than downstream of it:
+
+```bash
+# refused unless a mode was chosen -- see below, and read it before you do
+ros2 param set /inspire_hand calibration_mode full
+ros2 service call /inspire_hand/set_compliance std_srvs/srv/SetBool "{data: false}"
+ros2 service call /inspire_hand/calibrate_force std_srvs/srv/Trigger
+```
+
+The manual (§2.4.6) describes the routine: hold five fingers fully open; bend
+the four fingers; hold the four open and bend the thumb; extend the thumb. It
+is emphatic that the hand must be in a no-load state throughout — nothing
+touching any finger, which includes anything it is holding.
+
+#### It jammed this hand, so it is off by default
+
+`calibration_mode` defaults to **`none`**, and `~/calibrate_force` refuses. On
+the rig this was written against, the routine closed the whole hand and jammed
+it. That is not a service to leave open on a hand that drives itself for six
+seconds with the stall guard stood down.
+
+The three modes:
+
+| `calibration_mode` | what happens |
+|---|---|
+| `none` (default) | the service refuses and says why |
+| `fingers` | start the routine, write `GESTURE_FORCE_CLB` back to `0` at `calibration_finger_sec` (3 s of the 6), before the thumb steps — **this is the one that jammed** |
+| `full` | all four steps, thumb included; what the Inspire desktop app does |
+
+(`none`, not `off`: YAML reads `off` as the boolean `false`, so
+`calibration_mode:=off` would never arrive as a string at all.)
+
+Why there is no fourth, better option: `GESTURE_FORCE_CLB` is **one register
+write and one fixed sequence**, with no per-DOF variant and no way to say which
+channels to touch. It cannot be asked to calibrate the fingers and leave the
+thumb alone. The only lever a driver has is *when to stop it*, and the sequence
+does run in a useful order — open all five, bend the four fingers, **then**
+bend the thumb, then extend it — so `fingers` mode cuts it off after the finger
+half. Two things about that were never documented, and the hardware has now
+answered one of them badly:
+
+**Does writing 0 stop it?** The manual gives `1` as start and says nothing
+about `0` mid-sequence. The driver writes it and then watches for 1.5 s whether
+the thumb settles onto the pose *it* commanded; if not, something else is still
+driving, and the log says so:
+
+```
+the hand did NOT stop its calibration routine when asked: thumb_bend is at 0.412
+against a commanded 1.000. ...
+```
+
+On this rig the observed outcome was a jammed hand, which is consistent with
+the firmware not letting go and the two writers fighting over the same
+actuators. Treat `fingers` as unproven and be ready to power-cycle.
+
+**Does a routine cut short commit anything?** Also undocumented — the firmware
+may only write its new references at the end of the full sequence, in which
+case `fingers` mode buys nothing even when it does not jam. Compare resting
+`~/grip_force` before and after to find out.
+
+**The thumb extends either way.** The routine's own first step is *hold five
+fingers fully open*, and five includes the thumb. Nothing can prevent that
+while the routine runs at all. What `fingers` mode keeps the thumb out of is
+the **bending**, three steps later, which is where it meets the fingers.
+
+Before writing the register the driver opens the hand into a known pose and
+waits for it to arrive rather than assuming. Which DOF get posed follows the
+mode: `full` opens all six, which swings thumb rotation clear of the fingers'
+sweep; `fingers` opens only the four, because otherwise the driver would be the
+only reason the thumb moves at all. A DOF that has not arrived within
+`calibration_clearance_sec` (3 s) **abandons the calibration** rather than
+starting it anyway, and the log says which DOF and where it got to. Set
+`calibration_clearance:=false` to skip the staging entirely.
+
+**If it jams:**
+
+```bash
+ros2 service call /inspire_hand/clear_errors std_srvs/srv/Trigger
+ros2 service call /inspire_hand/set_angles inspire_hand_msgs/srv/SetAngles \
+    "{name: ['1','2','3','4','5','6'], open_ratio: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]}"
+```
+
+and power-cycle the hand if that does not shift it.
+
+Whether the result survives a power cycle is not documented: the manual lists
+`SAVE` (register 1005) as the way to commit parameters to flash but does not
+say whether calibration data goes through it, and the driver does not write
+`SAVE` — it shares a register with `CLEAR_ERROR`, and committing to flash is
+not something to do as a side effect. If the zero is wrong again after a power
+cycle, run the calibration again.
+
+Calibrating is not a cure for the walk, either. It re-establishes the reference
+at that moment; it does not stop the pad from stepping again the next time you
+lean on it. Expect to calibrate occasionally and tare often.
+
+### Cost and honest expectations
+
+Force normally rides `state_extras_divisor`, which under the replay launch's
+divisor of 5 samples it at 10 Hz. Compliant mode reads it every cycle
+regardless, so a cycle becomes angles + force + a write rather than angles
+alone — roughly 7–21 ms of a 20 ms slot at 50 Hz (see [Rates](#rates)). A hand
+being streamed targets at the same time wants a lower `publish_rate_hz` while
+it is compliant.
+
+And the loop is slow. The actuator's own lag is about 0.17 s against the arm's
+~1 ms, so this is two orders of magnitude off the FR3 and a stiff gain on top
+of that lag gives a finger that buzzes against your hand rather than yielding
+to it. The slew limits are what keep the loop's dynamics slower than the
+plant's; expect something that gives over a few tenths of a second, not
+something that floats. Raise `compliance_counts_per_gram` until it feels
+responsive and stop well before it feels alive.
+
+**None of this has been on hardware.** The law is tested against exact time
+steps and the driver's half against the mock's new `external_force` hook, which
+is a number standing in for a thumb. The defaults were picked to be too soft
+rather than too stiff, and what they are worth depends on numbers only a real
+fingertip can give: what `FORCE_ACT` reads at rest, its noise floor, its counts
+per newton, and how much of it survives to the driver at 50 Hz. Watch
+`ros2 topic echo /inspire_hand/grip_force` while pushing each finger before
+trusting any of the gains here.
 
 ## Rates
 

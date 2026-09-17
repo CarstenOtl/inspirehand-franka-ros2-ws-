@@ -25,6 +25,7 @@ setup(
             "inspire_hand_node = inspire_hand_driver.driver_node:main",
             "inspire_hand_probe = inspire_hand_driver.probe:main",
             "inspire_hand_benchmark = inspire_hand_driver.benchmark:main",
+            "inspire_hand_compliance_check = inspire_hand_driver.compliance_check:main",
         ],
     },
 )

@@ -22,11 +22,12 @@ ros2 launch inspire_hand_driver inspire_hand.launch.py mock:=true \
 | `protocol.py` | the serial transport and the register map. Speaks both wire formats the RH56 family ships with (Modbus RTU, and Inspire's legacy `EB 90` framing), plus a mock that slews to its targets so the whole pipeline runs with no hardware. |
 | `kinematics.py` | the six register channels ↔ the URDF's twelve joints, including the four-bar coupling that makes six of them followers. |
 | `command_overlays.py` | final per-DOF command calibration; universally rescales thumb abduction commands from `[0, 1]` onto open ratio `[0.25, 1.0]`. |
-| `driver_node.py` | the ROS node: polls state, publishes it in both radians and open ratios, and accepts commands in either. Also keeps a grip-force threshold applied and un-sticks fingers the firmware has stopped on a fault -- see "Force threshold and stall guard" in `docs/hand.md`. |
+| `compliance.py` | the fingertip spring: turns measured force into an opening offset, so a pushed finger gives instead of holding. The law, its tuning, and what the fingertip sensor cannot feel. |
+| `driver_node.py` | the ROS node: polls state, publishes it in both radians and open ratios, and accepts commands in either. Also keeps a grip-force threshold applied, un-sticks fingers the firmware has stopped on a fault, applies the compliance offset, and hands the hand six seconds of silence to calibrate its own force sensors -- see "Force threshold and stall guard", "Compliant mode" and "Zeroing the fingertips" in `docs/hand.md`. |
 | `probe.py` | scans protocols, baud rates and hand IDs, and prints the launch line for whatever answers. |
 
-`protocol.py` and `kinematics.py` are deliberately free of `rclpy`, which is why
-the tests need neither a built workspace nor hardware:
+`protocol.py`, `kinematics.py` and `compliance.py` are deliberately free of
+`rclpy`, which is why the tests need neither a built workspace nor hardware:
 
 ```bash
 python3 -m pytest test -q

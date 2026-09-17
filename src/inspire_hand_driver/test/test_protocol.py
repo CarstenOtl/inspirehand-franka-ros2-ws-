@@ -353,3 +353,89 @@ def test_mock_finger_without_a_threshold_latches_until_cleared():
     assert m.read_angles()[3] == 1000
     assert m.status_codes()[3] == STATUS_AT_TARGET
     assert m.clear_error_writes == 1 and m.flash_saves == 0
+
+
+def test_force_calibration_sets_1009_and_puts_the_reserved_byte_back():
+    """1008 is reserved, 1009 is GESTURE_FORCE_CLB, and they share one register.
+
+    Same trap as CLEAR_ERROR/SAVE, one register along. Writing the word
+    outright would zero a byte the manual declines to explain, so the word is
+    read first and only the high byte changed.
+    """
+    from inspire_hand_driver.protocol import REG_FORCE_CLB
+
+    t = HandTransport(hand_id=1, protocol="modbus")
+    sent = []
+
+    class FakeSerial:
+        is_open = True
+
+        def reset_input_buffer(self):
+            pass
+
+        def write(self, data):
+            sent.append(data)
+
+        def flush(self):
+            pass
+
+        def read(self, n):
+            if sent[-1][1] == 0x03:
+                # The hand holds 0x5A in the reserved byte, 0 in CLB.
+                body = bytes([1, 0x03, 2]) + (0x005A).to_bytes(2, "big")
+                return body + crc16_modbus(body)
+            body = bytes([1, 0x10]) + (1008).to_bytes(2, "big") + (1).to_bytes(2, "big")
+            return body + crc16_modbus(body)
+
+    t._serial = FakeSerial()
+    t.calibrate_force_sensors()
+
+    read, write = sent
+    assert read[1] == 0x03 and int.from_bytes(read[2:4], "big") == REG_FORCE_CLB - 1
+    assert write[1] == 0x10 and int.from_bytes(write[2:4], "big") == REG_FORCE_CLB - 1
+    assert write[7:9] == b"\x01\x5a", "CLB set in the high byte, reserved byte unchanged"
+
+
+def test_legacy_force_calibration_writes_a_single_byte():
+    """Legacy framing carries a byte count, so it can address 1009 on its own.
+
+    write_registers deals in 16-bit words; through it, setting 1009 would also
+    write 1010, which the manual does not describe at all.
+    """
+    from inspire_hand_driver.protocol import REG_FORCE_CLB
+
+    t = HandTransport(hand_id=1, protocol="legacy")
+    sent = {}
+
+    class FakeSerial:
+        is_open = True
+
+        def reset_input_buffer(self):
+            pass
+
+        def write(self, data):
+            sent["req"] = data
+
+        def flush(self):
+            pass
+
+        def read(self, n):
+            return b""
+
+    t._serial = FakeSerial()
+    t.calibrate_force_sensors()
+    req = sent["req"]
+    assert req[:2] == b"\xeb\x90"
+    assert req[4] == 0x12, "write command"
+    assert int.from_bytes(req[5:7], "little") == REG_FORCE_CLB
+    assert req[7] == 1
+    assert len(req) == 9, "one payload byte and nothing after it but the checksum"
+
+
+def test_mock_counts_calibrations_and_keeps_the_reserved_byte():
+    m = MockTransport()
+    m.connect()
+    assert m.force_calibrations == 0
+    m.calibrate_force_sensors()
+    assert m.force_calibrations == 1
+    assert m.reserved_1008 == 0x5A
