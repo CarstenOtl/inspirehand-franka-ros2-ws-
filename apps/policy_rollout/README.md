@@ -84,6 +84,13 @@ arm state, hand state, and controller state are checked for availability and
 freshness before and during motion. A recording is always
 written under `logs/policy_rollout` (override with `--recording-root`).
 
+Homing uses `config/policy_home.yaml`, which holds the M24 reset joints and the
+training grasp posture. The grasp frame's approach axis is captured once after
+homing, as a vector in the flange frame, and then rotates with the flange,
+exactly as in training. Before 2026-09-14 the runner used the flange's -Z axis
+instead. That axis is about 107 degrees from the training axis on this hand
+mount, so every orientation target was decoded in the wrong frame.
+
 The controller still computes impedance and its watchdog at 1 kHz. Its ROS
 state snapshots are published at 50 Hz, more than three times the 15 Hz policy
 rate, to avoid spending policy CPU time serializing an unnecessary 1 kHz state

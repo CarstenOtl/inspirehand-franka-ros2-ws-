@@ -93,6 +93,8 @@ def main(argv=None) -> int:
     spin_thread.start()
     try:
         node.wait_ready(args.timeout)
+        # Profiles from the current pose, which stands in for the reset pose.
+        node.wait_for_grasp_z_transport(args.timeout)
         session.reset(previous_filtered_native_action=np.zeros(9), seed=args.seed)
 
         timings = {name: [] for name in ("sample", "tf", "policy", "decode", "total")}

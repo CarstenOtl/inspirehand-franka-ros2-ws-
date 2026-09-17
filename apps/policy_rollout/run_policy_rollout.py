@@ -42,10 +42,10 @@ def _hardware_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--home",
-        default=str(
-            WORKSPACE_ROOT / "apps/traj_replay/demo_trajs/traj_2/homing.yaml"
-        ),
+        default=str(APP_ROOT / "config/policy_home.yaml"),
     )
+    # ros-sim paces this rate on the simulator's /clock, so a slowed simulator
+    # (sim_policy.launch.py sim_speed) keeps it exact on a shared CPU.
     parser.add_argument("--rate", type=float, default=15.0)
     parser.add_argument(
         "--integration-steps",

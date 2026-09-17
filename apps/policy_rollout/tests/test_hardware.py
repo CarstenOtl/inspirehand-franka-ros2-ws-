@@ -9,6 +9,8 @@ from policy_rollout.hardware import (
     RgbdFrameSynchronizer,
     TrainingFrameAdapter,
     assert_policy_camera_frames,
+    grasp_frame_from_tips,
+    grasp_z_transport_at_reset,
     image_message_to_numpy,
     limit_cartesian_step,
     physical_hand_state_to_policy,
@@ -286,3 +288,52 @@ def test_cycle_completion_rebases_without_retriggering_release():
     assert event == "cycle_completed"
     assert coordinator.completed_cycles == 1
     assert not coordinator.active
+
+
+# fr3_link0 poses from inspire_franka.urdf.xacro (hand_mount:=flange) at the
+# M24 reset joints and the training grasp posture.
+URDF_RESET_THUMB = np.array([0.55681, 0.00573, 0.26632])
+URDF_RESET_INDEX = np.array([0.67136, 0.00731, 0.25793])
+URDF_RESET_FLANGE_POSITION = np.array([0.53776, -0.16679, 0.29261])
+URDF_RESET_FLANGE_QUATERNION = np.array([0.535314, -0.756752, 0.240942, -0.287599])
+
+
+def test_reset_grasp_frame_approaches_downward_like_training():
+    z_transport = grasp_z_transport_at_reset(
+        URDF_RESET_THUMB, URDF_RESET_INDEX, URDF_RESET_FLANGE_POSITION, URDF_RESET_FLANGE_QUATERNION
+    )
+    position, quaternion = grasp_frame_from_tips(
+        URDF_RESET_THUMB, URDF_RESET_INDEX, URDF_RESET_FLANGE_QUATERNION, z_transport
+    )
+    z_axis = fo.matrix_from_quat(quaternion)[:, 2]
+    np.testing.assert_allclose(position, 0.5 * (URDF_RESET_THUMB + URDF_RESET_INDEX))
+    # Training's reset grasp Z is world-down, orthogonalised against thumb->index.
+    assert np.degrees(np.arccos(-z_axis[2])) < 10.0
+    # The flange's own -Z is not that axis on this hand mount; using it put the
+    # 2026-09-12 hardware grasp frame ~107 degrees off the training frame.
+    flange_minus_z = fo.quat_rotate(URDF_RESET_FLANGE_QUATERNION, np.array([0.0, 0.0, -1.0]))
+    _, wrong = fo.hand_grasp_frame(URDF_RESET_THUMB, URDF_RESET_INDEX, flange_minus_z)
+    angle = 2.0 * np.degrees(np.arccos(min(1.0, abs(np.dot(fo.quat_from_matrix(wrong), quaternion)))))
+    assert angle > 90.0
+
+
+def test_grasp_frame_transport_follows_flange_rotation():
+    z_transport = grasp_z_transport_at_reset(
+        URDF_RESET_THUMB, URDF_RESET_INDEX, URDF_RESET_FLANGE_POSITION, URDF_RESET_FLANGE_QUATERNION
+    )
+    _, reset_quaternion = grasp_frame_from_tips(
+        URDF_RESET_THUMB, URDF_RESET_INDEX, URDF_RESET_FLANGE_QUATERNION, z_transport
+    )
+    turn = fo.quat_from_euler_xyz(0.0, 0.0, np.deg2rad(30.0))
+    rotate = lambda p: fo.quat_rotate(turn, p)  # noqa: E731
+    _, turned_quaternion = grasp_frame_from_tips(
+        rotate(URDF_RESET_THUMB),
+        rotate(URDF_RESET_INDEX),
+        fo.quat_mul(turn, URDF_RESET_FLANGE_QUATERNION),
+        z_transport,
+    )
+    np.testing.assert_allclose(
+        fo.matrix_from_quat(turned_quaternion),
+        fo.matrix_from_quat(turn) @ fo.matrix_from_quat(reset_quaternion),
+        atol=1e-6,
+    )

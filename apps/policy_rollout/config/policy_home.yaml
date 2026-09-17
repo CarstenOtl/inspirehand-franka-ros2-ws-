@@ -1,0 +1,41 @@
+schema_version: 1
+name: fr3_dp3_policy_reset
+description: >
+  The distilled threading student's reset: FR3 M24 reset joints and the
+  training grasp posture (forge_osc.THREADING_GRASP_POSTURE with the support
+  fingers closed, utils/mujoco_student_rollout.RESET_HAND_POSTURE). The hand
+  values are the policy's logical radians; the driver applies the thumb-yaw
+  overlay to commands and the rollout inverts it on feedback.
+  apps/traj_replay/demo_trajs/traj_2/homing.yaml has the same arm but a
+  different hand (thumb yaw 1.086, thumb pitch 0.0002), which starts the policy
+  about 0.1 rad away from its training reset.
+units: radians
+
+joint_names:
+  - fr3_joint1
+  - fr3_joint2
+  - fr3_joint3
+  - fr3_joint4
+  - fr3_joint5
+  - fr3_joint6
+  - fr3_joint7
+  - pinky_proximal_joint
+  - ring_proximal_joint
+  - middle_proximal_joint
+  - index_proximal_joint
+  - thumb_proximal_pitch_joint
+  - thumb_proximal_yaw_joint
+positions:
+  - -0.524466740
+  - 0.250818023
+  - 0.130924487
+  - -2.176566846
+  - 1.679049697
+  - 2.057495751
+  - -1.018287386
+  - 1.333
+  - 1.333
+  - 1.333
+  - 0.214675498
+  - 0.050614548
+  - 1.185078562

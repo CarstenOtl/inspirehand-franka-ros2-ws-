@@ -82,6 +82,44 @@ def physical_hand_state_to_policy(
     return q_policy, dq_policy
 
 
+def grasp_z_transport_at_reset(
+    thumb_position, index_position, flange_position, flange_quaternion
+) -> np.ndarray:
+    """ForgeUltra's reset grasp approach axis, expressed in the flange frame.
+
+    Training stores the untilted reset grasp Z (world down, orthogonalised
+    against thumb->index) as a flange-frame vector once at reset and rotates it
+    with the flange afterwards. On this hand that vector is mostly flange +Y;
+    the flange's own -Z axis is about 107 degrees away from it at the M24 reset
+    pose. fr3_link0 shares the training world's vertical, so base-frame inputs
+    give the same flange-frame vector.
+    """
+
+    return fo.reset_z_transport(
+        np.asarray(thumb_position, dtype=float),
+        np.asarray(index_position, dtype=float),
+        np.asarray(flange_position, dtype=float),
+        np.asarray(flange_quaternion, dtype=float),
+        tilt_deg=0.0,
+    )
+
+
+def grasp_frame_from_tips(
+    thumb_position, index_position, flange_quaternion, z_transport
+) -> tuple[np.ndarray, np.ndarray]:
+    """``grasp_frame_state``'s pose: fingertip midpoint, approach from the reset transport."""
+
+    approach = fo.quat_rotate(
+        np.asarray(flange_quaternion, dtype=float), np.asarray(z_transport, dtype=float)
+    )
+    position, rotation = fo.hand_grasp_frame(
+        np.asarray(thumb_position, dtype=float),
+        np.asarray(index_position, dtype=float),
+        approach,
+    )
+    return position, fo.quat_from_matrix(rotation)
+
+
 @dataclass(frozen=True)
 class HardwareReadiness:
     ready: bool
@@ -779,21 +817,33 @@ def _hardware_node_class():
 
             thumb, _ = lookup("thumb_tip")
             index, _ = lookup("index_tip")
-            _flange_position, flange_quaternion = lookup("fr3_link8")
-            direction = fo.quat_rotate(
-                flange_quaternion, np.array([0.0, 0.0, -1.0])
-            )
-            grasp_position, grasp_rotation = fo.hand_grasp_frame(
-                thumb, index, direction
-            )
-            return grasp_position, fo.quat_from_matrix(grasp_rotation), flange_quaternion
+            flange_position, flange_quaternion = lookup("fr3_link8")
+            return thumb, index, flange_position, flange_quaternion
 
-        def wait_for_grasp_pose(self, timeout_s: float):
+        def capture_grasp_z_transport(self) -> np.ndarray:
+            """Fix the grasp approach axis in the flange frame at the reset pose."""
+
+            thumb, index, flange_position, flange_quaternion = self._hand_frames()
+            self.grasp_z_transport = grasp_z_transport_at_reset(
+                thumb, index, flange_position, flange_quaternion
+            )
+            return self.grasp_z_transport
+
+        def grasp_pose(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            if self.grasp_z_transport is None:
+                raise RuntimeError("grasp frame used before its reset z transport was captured")
+            thumb, index, _flange_position, flange_quaternion = self._hand_frames()
+            grasp_position, grasp_quaternion = grasp_frame_from_tips(
+                thumb, index, flange_quaternion, self.grasp_z_transport
+            )
+            return grasp_position, grasp_quaternion, flange_quaternion
+
+        def _wait_for_tf(self, function, timeout_s: float):
             deadline = time.monotonic() + timeout_s
             last_error = None
             while time.monotonic() < deadline:
                 try:
-                    return self.grasp_pose()
+                    return function()
                 except Exception as exc:  # tf2 raises several lookup exception types
                     last_error = exc
                     time.sleep(0.02)
@@ -801,6 +851,12 @@ def _hardware_node_class():
                 "arm-to-hand TF did not become ready"
                 + ("" if last_error is None else f": {last_error}")
             )
+
+        def wait_for_grasp_z_transport(self, timeout_s: float) -> np.ndarray:
+            return self._wait_for_tf(self.capture_grasp_z_transport, timeout_s)
+
+        def wait_for_grasp_pose(self, timeout_s: float):
+            return self._wait_for_tf(self.grasp_pose, timeout_s)
 
         def publish_policy_target(self, position, quaternion_wxyz, nullspace):
             from franka_trajectory_replay_msgs.msg import CartesianGoto
@@ -925,6 +981,12 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             home_hand, args.hand_timeout, args.hand_tolerance
         )
         print("policy homing complete")
+        z_transport = node.wait_for_grasp_z_transport(args.input_timeout)
+        print(
+            "grasp approach axis in the flange frame: "
+            + np.array2string(z_transport, precision=4),
+            flush=True,
+        )
 
         tool = policy_tool_transform(config)
         arm_client.check_tool(tool, print)
@@ -1190,6 +1252,8 @@ __all__ = [
     "RgbdFrameSynchronizer",
     "TrainingFrameAdapter",
     "assess_hardware_readiness",
+    "grasp_frame_from_tips",
+    "grasp_z_transport_at_reset",
     "assert_policy_camera_frames",
     "image_message_to_numpy",
     "limit_cartesian_step",
