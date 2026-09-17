@@ -80,6 +80,12 @@ ros2 launch inspire_franka_bringup arm.launch.py \
     gravity_compensation:=true                                    # arm, hand-guiding/float mode
 ros2 launch inspire_franka_bringup hand.launch.py                 # hand alone
 
+# Hand alone with compliant fingertips: a finger that is pushed on the pad gives
+# way and returns to the pose it was commanded to. The commanded pose is still
+# what set_angles below sets. See the "Compliant fingers" section.
+ros2 launch inspire_hand_driver inspire_hand.launch.py \
+    port:=/dev/ttyUSB0 compliance:=true
+
 # In another sourced shell, zero/open the hand or home the arm. The arm command
 # asks for confirmation and uses the valid Franka ready pose (not seven zeros).
 ./apps/operations/zero_hand.py
@@ -869,6 +875,115 @@ ros2 service call /inspire_hand/clear_errors std_srvs/srv/Trigger
 Both mechanisms were written against the driver's mock and have not yet been
 exercised on the real hand; `docs/hand.md` lists what to watch for on first
 contact.
+
+### Compliant fingers: the fingertip admittance controller
+
+Off by default. Turned on, a finger pushed on its **fingertip pad** gives way —
+it opens in proportion to the force it feels, and closes back to the pose it was
+commanded to when you let go. A grasp becomes adjustable by hand instead of
+something to fight, and a finger stops driving into whatever will not move.
+
+The arm's gravity compensation is *passive*: it commands zero torque and the
+joints backdrive. Nothing here can work that way. The hand takes a position
+setpoint and nothing else, so compliance is **synthesized** — measure fingertip
+force, retreat the setpoint towards open. Two consequences to know before using
+it:
+
+- **It is one-directional.** `FORCE_ACT` reads compression of the fingertip pad,
+  so pushing *into* the pad is the only input the law has. A finger gives open
+  and never closes on its own.
+- **The yield is an offset, never a command.** It is added to whatever pose was
+  last commanded, at the moment of writing. So `set_angles` means exactly what
+  it meant before: it sets the finger's rest position, a push displaces it from
+  there, and letting go returns it there.
+
+```bash
+# Launch the hand with compliance already on.
+ros2 launch inspire_hand_driver inspire_hand.launch.py \
+    port:=/dev/ttyUSB0 compliance:=true
+
+# Then command poses exactly as usual. The commanded pose is the rest pose.
+ros2 service call /inspire_hand/set_angles inspire_hand_msgs/srv/SetAngles \
+  "{name: ['1','2','3','4'], open_ratio: [0.2, 0.2, 0.2, 0.2]}"
+# ... now push a fingertip: that finger opens. Let go: it closes back to 0.2.
+
+# Toggle it on a hand that is already up, without relaunching.
+ros2 service call /inspire_hand/set_compliance std_srvs/srv/SetBool "{data: true}"
+ros2 service call /inspire_hand/set_compliance std_srvs/srv/SetBool "{data: false}"
+
+# Re-zero the fingertip sensors. Nothing touching the hand when you call it.
+ros2 service call /inspire_hand/tare_force std_srvs/srv/Trigger
+
+# What each finger is giving, in counts, and the zero it measures against:
+# compliance_yield and force_zero, per channel.
+ros2 topic echo /inspire_hand/diagnostics --once
+```
+
+`compliance:=true` is an argument of the driver's own launch. The
+`inspire_franka_bringup` wrappers do not forward it yet, so use the line above,
+or `~/set_compliance` on a hand that is already running.
+
+**The gains.** All six are launch arguments and all six retune live with
+`ros2 param set /inspire_hand <name> <value>`, which is how they are meant to be
+found — by feel, against a real fingertip.
+
+| parameter | default | what it does |
+|---|---|---|
+| `compliance_channels` | `['1','2','3','4','5']` | Which DOF give. Thumb rotation (`6`) is left out: it carries no fingertip pad, so force on that channel means something else. |
+| `compliance_deadband` | `80.0` | Grams ignored before a finger gives at all. Covers the sensor's noise floor and the preload of whatever is already being held, so a grip does not slowly open itself. |
+| `compliance_counts_per_gram` | `0.6` | How far it gives, per gram above the deadband. This is the synthesized spring's stiffness *and* the loop gain: raise it for a softer finger, and expect chatter against a stiff contact if you overdo it. |
+| `compliance_max_yield` | `300.0` | The most a finger will ever give, in counts — 30 % of travel. Bounds what a stuck-high force reading can do. |
+| `compliance_yield_rate` | `400.0` | Counts per second while giving. **This is the one that governs how responsive it feels**: at 400, a firm 400 g push takes 0.48 s to reach its full give, of which the 50 Hz loop is 0.02 s. |
+| `compliance_return_rate` | `200.0` | Counts per second closing back. Deliberately slower than giving: giving way fast is helpful, re-gripping fast is not. `0` makes it a clutch — what a push opened stays open until something commands it. |
+
+For a quicker finger raise the *rate*, not the gain. They are separate knobs and
+only the first one is responsiveness:
+
+```bash
+ros2 param set /inspire_hand compliance_yield_rate 1200.0
+ros2 param set /inspire_hand compliance_return_rate 500.0
+```
+
+1200 counts/s puts that same push at 0.16 s, where the hand's own 0.17 s
+actuator lag takes over and raising it further stops buying anything. The loop
+itself is already at the full rate — measured at 49.2 Hz on hardware with
+`publish_rate_hz:=50` — so `publish_rate_hz` is not the lever it looks like.
+`state_extras_divisor:=5` is worth setting alongside compliance, though: it
+frees the RS485 bandwidth the extra write needs, and force is exempt from the
+divisor while the spring is active, so the law keeps its full-rate input.
+
+**The fingertip zero moves, and it matters.** A pad that has been pushed hard
+does not return to the zero it had before. Measured on this rig: the index pad
+rested at −11 g, was pushed to 2511 g, then sat at +219 g untouched — and was
+still at 282 g after a power cycle. Against a fixed deadband that is a standing
+phantom push, so the finger holds a permanent partial yield and never comes
+home. Every reading is therefore taken against a zero captured with nothing
+touching the hand: the driver tares when compliant mode is engaged, and
+`~/tare_force` takes a fresh one whenever a channel has drifted.
+`/inspire_hand/grip_force` publishes the **raw** register value by design — the
+tare is a subtraction held in the driver, and `force_zero` in the diagnostics is
+where you see what each channel is using.
+
+`~/calibrate_force` triggers the hand's own firmware routine, which re-establishes
+the sensor references at source rather than subtracting them in software. It
+**refuses unless a mode is chosen**: the routine drives the hand through its own
+fixed sequence and jammed this hand the first time it ran. The three modes, the
+un-jam commands and what is still unknown about it are in
+[`docs/hand.md`](docs/hand.md).
+
+**Not verified on hardware yet:** the bench check has never recorded a pass, and
+compliance while actually holding an object is untested — the interaction
+between a grip's own preload and the deadband is the part most likely to want a
+different number.
+
+```bash
+# Measure what your fingertips really read, then turn that into gains to try.
+ros2 run inspire_hand_driver inspire_hand_compliance_check --characterize
+
+# Push one finger, let go, see whether it came back. Prints a pass or a fail.
+ros2 run inspire_hand_driver inspire_hand_compliance_check \
+    --channel 4 --rest 0.30 --deadband 40 --gain 0.6
+```
 
 Under `sim.launch.py` there is no driver, so there is no `/inspire_hand/command`
 — the simulated hand is driven through its trajectory controller instead, in
