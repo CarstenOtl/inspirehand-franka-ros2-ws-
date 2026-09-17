@@ -120,6 +120,25 @@ the checkpoint intrinsics. Depth may be `16UC1`
 millimetres or `32FC1` metres. Non-positive and invalid values are excluded by
 the DP3 valid mask.
 
+No depth post-processing is enabled: the driver's spatial, temporal,
+hole-filling and decimation filters are all off by default and none of the
+launch commands turn them on. To see what they would change, attach a live
+comparison to the running camera (it never opens the device):
+
+```bash
+python3 apps/policy_rollout/utils/compare_depth_filters.py
+```
+
+It shows the raw sensor depth, the current policy input, and both again after
+librealsense's own filters, which it runs on the driver's raw frames in the
+driver's order. Each panel shows fill rate, temporal noise, plane-fit RMS in
+a dragged rectangle and the DP3 in-box pixel count; the status bar shows the
+per-frame filter cost and the driver launch arguments for the current toggles.
+Keys: `s`/`t`/`h`/`d` toggle spatial,
+temporal, hole filling and disparity domain; `x` shows filtered minus current;
+`p` saves arrays and a screenshot under `artifacts/depth_filter_comparison/`.
+The policy panels are exact only with the camera in the 640x480 mode above.
+
 The policy's three hand coordinates map to the physical hand as follows:
 
 | Policy coordinate | RH56 joint |

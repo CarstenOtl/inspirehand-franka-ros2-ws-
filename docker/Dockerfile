@@ -191,6 +191,15 @@ RUN pip3 install --no-cache-dir --break-system-packages \
         torchdiffeq==${TORCHDIFFEQ_VERSION} \
     && python3 -c "import torch, torchdiffeq"
 
+# librealsense's Python bindings, for apps/policy_rollout/utils/
+# compare_depth_filters.py, which runs the SDK's depth filters on the ROS
+# driver's raw frames through a software device. The wheel bundles its own
+# librealsense and does not touch the one realsense2_camera links against.
+ARG PYREALSENSE2_VERSION=2.58.4.10922
+RUN pip3 install --no-cache-dir --break-system-packages \
+        pyrealsense2==${PYREALSENSE2_VERSION} \
+    && python3 -c "import pyrealsense2"
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
