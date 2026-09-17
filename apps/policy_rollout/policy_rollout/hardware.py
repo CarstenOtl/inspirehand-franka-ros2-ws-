@@ -12,6 +12,7 @@ without a ROS installation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import threading
 import time
@@ -541,6 +542,7 @@ def _hardware_node_class():
             hand_state_topic,
             max_state_age_s,
             max_frame_skew_s,
+            use_sim_time=False,
         ):
             from control_msgs.msg import JointTrajectoryControllerState
             from diagnostic_msgs.msg import DiagnosticArray
@@ -551,7 +553,13 @@ def _hardware_node_class():
             from std_msgs.msg import Empty
             import tf2_ros
 
-            super().__init__("fr3_policy_rollout")
+            from rclpy.parameter import Parameter
+
+            super().__init__(
+                "fr3_policy_rollout",
+                parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, use_sim_time)],
+            )
+            self.use_sim_time = bool(use_sim_time)
             self.calibration = calibration
             self.config = config
             self.max_state_age_s = float(max_state_age_s)
@@ -604,14 +612,15 @@ def _hardware_node_class():
             self.tf_buffer = tf2_ros.Buffer()
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
             self._camera_checked = False
+            self.grasp_z_transport = None
 
         def _put(self, name, message):
             with self._lock:
                 setattr(self, "_" + name, message)
-                self._receive_time[name] = time.monotonic()
+                self._receive_time[name] = self.now_s()
 
         def _put_rgbd(self, message):
-            received = time.monotonic()
+            received = self.now_s()
             with self._lock:
                 self._rgbd.add("rgb", message.rgb, received)
                 self._rgbd.add("depth", message.depth, received)
@@ -624,7 +633,35 @@ def _hardware_node_class():
             values = {item.key: item.value for item in message.status[0].values}
             with self._lock:
                 self._controller_status = values
-                self._receive_time["status"] = time.monotonic()
+                self._receive_time["status"] = self.now_s()
+
+        def now_s(self) -> float:
+            """Freshness and pacing clock: wall time on hardware, /clock in ros-sim.
+
+            A slowed simulator (sim_speed_factor < 1) then gives the policy its
+            trained period and input ages in simulated time, however long
+            inference takes on the shared CPU.
+            """
+
+            if self.use_sim_time:
+                return self.get_clock().now().nanoseconds * 1.0e-9
+            return time.monotonic()
+
+        def sleep_until(self, deadline_s: float) -> None:
+            if not self.use_sim_time:
+                remaining = deadline_s - time.monotonic()
+                if remaining > 0.0:
+                    time.sleep(remaining)
+                return
+            while self.now_s() < deadline_s:
+                time.sleep(0.002)
+
+        def wait_for_clock(self, timeout_s: float) -> None:
+            deadline = time.monotonic() + timeout_s
+            while self.use_sim_time and self.now_s() <= 0.0:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("no /clock from the simulator")
+                time.sleep(0.02)
 
         def ready(self) -> bool:
             with self._lock:
@@ -674,7 +711,7 @@ def _hardware_node_class():
                     receive["rgb"], receive["depth"] = pair[2:]
                 else:
                     messages["rgb"] = messages["depth"] = None
-            now = time.monotonic()
+            now = self.now_s()
             missing = [name for name, value in messages.items() if value is None]
             if missing:
                 raise RuntimeError("missing live inputs: " + ", ".join(missing))
@@ -794,7 +831,7 @@ def _hardware_node_class():
                     else dict(self._controller_status)
                 )
                 received = self._receive_time.get("status", 0.0)
-            if status is None or time.monotonic() - received > 1.0:
+            if status is None or self.now_s() - received > 1.0:
                 raise RuntimeError(
                     "Cartesian replay controller feedback stopped; check the hardware log"
                 )
@@ -806,7 +843,7 @@ def _hardware_node_class():
                 sample.hand_position, sample.hand_velocity
             )
 
-        def grasp_pose(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        def _hand_frames(self):
             from rclpy.time import Time
 
             def lookup(child):
@@ -909,7 +946,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         )
 
     import rclpy
-    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
     from franka_trajectory_replay.cartesian_replay_client import CartesianReplayClient
     from franka_trajectory_replay.replay_client import Rejected
     from franka_trajectory_replay.runconfig import load_config
@@ -921,13 +958,14 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
     from .session import PolicyRolloutSession
     from utils.data_collection import RolloutDataCollector, create_rollout_dir
 
+    sim = bool(getattr(args, "sim", False))
     config = load_config(args.config)
     home_arm, home_hand = load_home(args.home)
     if np.max(np.abs(home_arm - fo.FRANKA_ARM_RESET_JOINTS_M24)) > args.max_home_delta:
         raise ValueError("home arm pose does not match the policy's M24 reset pose")
 
     metadata = runner.metadata()
-    run_dir = create_rollout_dir(args.recording_root, "hardware")
+    run_dir = create_rollout_dir(args.recording_root, "ros_sim" if sim else "hardware")
     collector = RolloutDataCollector(
         run_dir,
         metadata={
@@ -936,7 +974,9 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "checkpoint_weight_source": metadata["weight_source"],
             "flow_integration_steps": metadata["integration_steps"],
             "camera_profile": str(calibration.source_path),
-            "collection_mode": "physical_closed_loop_student",
+            "collection_mode": (
+                "ros_sim_closed_loop_student" if sim else "physical_closed_loop_student"
+            ),
             "controller": config["cartesian"]["controller_name"],
         },
         record_rgbd=args.record_rgbd,
@@ -956,11 +996,21 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         hand_state_topic=args.hand_state_topic,
         max_state_age_s=args.max_state_age,
         max_frame_skew_s=args.max_frame_skew,
+        use_sim_time=sim,
     )
-    executor = MultiThreadedExecutor(num_threads=5)
-    for item in (home_client, arm_client, node):
-        executor.add_node(item)
+    # The setup clients get their own executor, retired after homing. Every
+    # policy-node callback only stores a message, and one spin thread for it
+    # measured ~25 % faster and far less jittery than a shared five-thread
+    # executor (loop p95 95 ms vs 176 ms against sim_policy.launch.py): the
+    # extra threads mostly contend with inference for the GIL.
+    setup_executor = MultiThreadedExecutor(num_threads=4)
+    setup_executor.add_node(home_client)
+    setup_executor.add_node(arm_client)
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    setup_thread = threading.Thread(target=setup_executor.spin, daemon=True)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    setup_thread.start()
     spin_thread.start()
     status = "error"
     steps = 0
@@ -970,6 +1020,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
     live_preflight_s = []
     grasp_controlled_offset_m = None
     artifact = None
+    error = None
     try:
         home_client.ensure_active(print)
         if not args.yes:
@@ -990,9 +1041,15 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
 
         tool = policy_tool_transform(config)
         arm_client.check_tool(tool, print)
-        if arm_client.uses_dh_model():
-            raise Rejected("physical rollout requires model_source=franka, not dh")
-        arm_client.preflight(home_client.current_joint_positions(), print)
+        if sim:
+            # MuJoCo has no franka_hardware robot model or FrankaRobotState: the
+            # controller runs on its DH model and there is no F_T_EE to check.
+            if not arm_client.uses_dh_model():
+                raise Rejected("ros-sim expects the simulator profile (model_source=dh)")
+        else:
+            if arm_client.uses_dh_model():
+                raise Rejected("physical rollout requires model_source=franka, not dh")
+            arm_client.preflight(home_client.current_joint_positions(), print)
         arm_client.ensure_active(print)
         parameters = arm_client.controller_parameters()
         expected = {
@@ -1021,12 +1078,13 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         if parameters.get("coriolis_compensation") is not True:
             raise Rejected("policy controller must enable coriolis_compensation")
 
-        # Homing and setup are complete. Keeping these helper nodes in the
-        # Python executor would continue deserializing joint/robot state that
+        # Homing and setup are complete. Keeping these helper nodes spinning
+        # would continue deserializing joint/robot state that
         # the policy loop never reads. The main node owns the live state and
         # controller-status subscriptions from this point onward.
-        executor.remove_node(home_client)
-        executor.remove_node(arm_client)
+        setup_executor.shutdown()
+        setup_thread.join(timeout=5.0)
+        node.wait_for_clock(args.input_timeout)
         node.wait_ready(args.input_timeout)
 
         # Synthetic tensors do not exercise every content-dependent point-cloud
@@ -1044,7 +1102,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             preflight_session.reset(
                 previous_filtered_native_action=np.zeros(9), seed=args.seed
             )
-            preflight_started = time.perf_counter()
+            preflight_started = node.now_s() if sim else time.perf_counter()
             preflight_session.step(
                 joint_position=np.concatenate((sample.arm_position, q_policy_hand)),
                 joint_velocity=np.concatenate((sample.arm_velocity, dq_policy_hand)),
@@ -1058,7 +1116,9 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                     "policy" if runner.config.cyclic_process_phase_conditioning else None
                 ),
             )
-            live_preflight_s.append(time.perf_counter() - preflight_started)
+            live_preflight_s.append(
+                (node.now_s() if sim else time.perf_counter()) - preflight_started
+            )
 
         command_period = 1.0 / args.rate
         steady_budget = 0.9 * command_period
@@ -1070,11 +1130,17 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             flush=True,
         )
         if steady_preflight_max >= steady_budget:
-            raise Rejected(
+            message = (
                 f"steady live policy pass took up to {steady_preflight_max:.3f} s; "
                 f"must be below {steady_budget:.3f} s for {args.rate:g} Hz physical "
                 "execution; reduce --integration-steps or --rate"
             )
+            if not sim:
+                raise Rejected(message)
+            # The simulator shares this CPU (physics, camera rendering, viewer),
+            # which the workcell does not. Overruns only stretch the policy
+            # period; they are counted as missed deadlines in the report.
+            print(f"WARNING (ros-sim): {message}", flush=True)
 
         # Re-seed from a fresh measured state so dry preflight cannot affect the
         # first commanded action or the temporal action ensemble.
@@ -1104,12 +1170,16 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             input("Start closed-loop physical policy execution? [Enter/Ctrl-C] ")
 
         period = 1.0 / args.rate
-        start = time.monotonic()
+        start = node.now_s()
         next_tick = start
         status = "step_budget"
         for steps in range(1, args.max_steps + 1):
-            tick_started = time.monotonic()
-            sample = node.sample()
+            tick_started = node.now_s()
+            # A starved simulator can render late; there that only stretches the
+            # period, while hardware must stop on stale inputs.
+            sample = (
+                node.wait_for_fresh_sample(args.input_timeout) if sim else node.sample()
+            )
             grasp_position, grasp_quaternion, _flange_quaternion = node.grasp_pose()
             q_hand, dq_hand = node.policy_hand_state(sample)
             q10 = np.concatenate((sample.arm_position, q_hand))
@@ -1209,16 +1279,16 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 status = "controller_watchdog"
                 raise RuntimeError("Cartesian controller policy-command watchdog stopped")
             next_tick += period
-            remaining = next_tick - time.monotonic()
-            if remaining > 0.0:
-                time.sleep(remaining)
+            if next_tick > node.now_s():
+                node.sleep_until(next_tick)
             else:
                 missed_deadlines += 1
-                next_tick = time.monotonic()
+                next_tick = node.now_s()
     except KeyboardInterrupt:
         status = "interrupted"
         node.abort()
-    except Exception:
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
         node.abort()
         raise
     finally:
@@ -1227,17 +1297,50 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         node.abort()
         time.sleep(0.6)
         artifact = collector.close() if collector.sample_count else None
+        setup_executor.shutdown()
         executor.shutdown()
+        setup_thread.join(timeout=5.0)
         spin_thread.join(timeout=5.0)
         for item in (node, arm_client, home_client):
             item.destroy_node()
         rclpy.shutdown()
+        report = _rollout_report(
+            status=status,
+            error=error,
+            steps=steps,
+            coordinator=locals().get("coordinator"),
+            missed_deadlines=missed_deadlines,
+            limited_policy_targets=limited_policy_targets,
+            watchdog_stop=watchdog_stop,
+            live_preflight_s=live_preflight_s,
+            grasp_controlled_offset_m=grasp_controlled_offset_m,
+            artifact=artifact,
+            loop_period_s=1.0 / args.rate,
+        )
+        (run_dir / "report.json").write_text(json.dumps(report, indent=2))
+    return report
+
+
+def _rollout_report(
+    *,
+    status,
+    error,
+    steps,
+    coordinator,
+    missed_deadlines,
+    limited_policy_targets,
+    watchdog_stop,
+    live_preflight_s,
+    grasp_controlled_offset_m,
+    artifact,
+    loop_period_s,
+) -> dict:
     return {
         "status": status,
+        "error": error,
         "steps": steps,
-        "completed_cycles": (
-            coordinator.completed_cycles if "coordinator" in locals() else 0
-        ),
+        "requested_period_s": loop_period_s,
+        "completed_cycles": 0 if coordinator is None else coordinator.completed_cycles,
         "missed_policy_deadlines": missed_deadlines,
         "limited_policy_targets": limited_policy_targets,
         "watchdog_stop": watchdog_stop,

@@ -9,6 +9,16 @@ def test_hardware_defaults_fit_the_cpu_policy_rate():
     assert args.integration_steps == 2
 
 
+def test_ros_sim_backend_shares_the_hardware_options():
+    hardware = cli._hardware_parser().parse_args([])
+    sim = cli._hardware_parser(sim=True).parse_args([])
+    assert not hardware.sim and sim.sim
+    assert {k: v for k, v in vars(sim).items() if k != "sim"} == {
+        k: v for k, v in vars(hardware).items() if k != "sim"
+    }
+    assert hardware.home.endswith("apps/policy_rollout/config/policy_home.yaml")
+
+
 def test_hardware_parser_enables_matplotlib_viewer():
     args = cli._hardware_parser().parse_args(
         [

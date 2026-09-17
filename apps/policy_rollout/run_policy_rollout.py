@@ -25,10 +25,15 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 
-def _hardware_parser() -> argparse.ArgumentParser:
+def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="run_policy_rollout.py hardware",
-        description="Run the distilled policy on the physical FR3 and Inspire RH56.",
+        prog="run_policy_rollout.py " + ("ros-sim" if sim else "hardware"),
+        description=(
+            "Run the hardware rollout path against sim_policy.launch.py (MuJoCo "
+            "behind the same ROS interfaces)."
+            if sim
+            else "Run the distilled policy on the physical FR3 and Inspire RH56."
+        ),
     )
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
     parser.add_argument("--device", default="cpu")
@@ -58,6 +63,7 @@ def _hardware_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--yes", "-y", action="store_true")
     parser.add_argument("--recording-root", default="logs/policy_rollout")
+    parser.set_defaults(sim=sim)
     parser.add_argument("--record-rgbd", action="store_true")
     parser.add_argument(
         "--viewer",
@@ -165,13 +171,18 @@ def _top_help() -> argparse.ArgumentParser:
         "hardware", add_help=False, help="physical FR3 + RH56 + RealSense"
     )
     commands.add_parser(
+        "ros-sim",
+        add_help=False,
+        help="the hardware path against sim_policy.launch.py (MuJoCo behind ROS)",
+    )
+    commands.add_parser(
         "mujoco", add_help=False, help="closed-loop MuJoCo simulation"
     )
     return parser
 
 
-def _run_hardware(argv) -> int:
-    args = _hardware_parser().parse_args(argv)
+def _run_hardware(argv, sim: bool = False) -> int:
+    args = _hardware_parser(sim).parse_args(argv)
     for name in (
         "rate",
         "hand_timeout",
@@ -234,11 +245,15 @@ def main(argv=None) -> int:
     try:
         if backend == "hardware":
             return _run_hardware(backend_argv)
+        if backend == "ros-sim":
+            return _run_hardware(backend_argv, sim=True)
         if backend == "mujoco":
             from utils.mujoco_student_rollout import main as run_mujoco
 
             return run_mujoco(backend_argv)
-        _top_help().error(f"unknown backend {backend!r}; choose hardware or mujoco")
+        _top_help().error(
+            f"unknown backend {backend!r}; choose hardware, ros-sim or mujoco"
+        )
     except (ImportError, OSError, RuntimeError, ValueError, KeyError) as exc:
         print(f"policy rollout error: {exc}", file=sys.stderr)
         return 2

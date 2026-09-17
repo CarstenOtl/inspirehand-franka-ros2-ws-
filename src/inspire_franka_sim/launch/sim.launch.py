@@ -71,6 +71,7 @@ SCENES = {
 KEYFRAMES = {
     "inspire_franka_flange_scene.xml": "start",
     "inspire_franka_flange_torque_scene.xml": "start",
+    "inspire_franka_policy_scene.xml": "policy_home",
     "fr3_scene.xml": "home",
     "inspire_hand_scene.xml": "open",
 }
@@ -126,11 +127,17 @@ def launch_setup(context, *args, **kwargs):
             "arm": "true" if with_arm else "false",
             "hand": "true" if with_hand else "false",
             "hand_side": arg("hand_side"),
+            # Every arm+hand scene bolts the hand to the flange; the xacro
+            # default is the bench, which put the hand's TF 0.57 m from where
+            # MuJoCo simulates it.
+            "hand_mount": "flange" if (with_arm and with_hand) else "bench",
             "ros2_control": "true",
             "hardware_type": hardware_type,
             "mujoco_model": mjcf_path,
             "pids_config_file": pids_yaml,
             "headless": arg("headless").lower(),
+            "camera_publish_rate": arg("camera_publish_rate"),
+            "sim_speed_factor": arg("sim_speed_factor"),
             "initial_keyframe": KEYFRAMES.get(os.path.basename(mjcf_path), "home"),
         },
     ).toxml()
@@ -287,6 +294,19 @@ def generate_launch_description():
                 default_value=os.path.join(sim_share, "config", "pids.yaml"),
                 description="PID gains mujoco_ros2_control closes position and velocity "
                 "loops with, on top of the MJCF's torque actuators.",
+            ),
+            DeclareLaunchArgument(
+                "sim_speed_factor",
+                default_value="",
+                description="Simulated time per wall-clock time for mujoco_ros2_control. "
+                "Empty keeps the plugin default (the Simulate UI speed).",
+            ),
+            DeclareLaunchArgument(
+                "camera_publish_rate",
+                default_value="",
+                description="Rate (Hz) at which mujoco_ros2_control renders and publishes "
+                "every MJCF camera as <name>/color, <name>/depth and <name>/camera_info. "
+                "Empty keeps the plugin default (5 Hz).",
             ),
             DeclareLaunchArgument(
                 "rviz_config_path",

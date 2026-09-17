@@ -51,6 +51,11 @@
   <xacro:arg name="mujoco_model" default=""/>
   <xacro:arg name="pids_config_file" default=""/>
   <xacro:arg name="headless" default="true"/>
+  <!-- Hz for mujoco_ros2_control's camera rendering; empty keeps its default. -->
+  <xacro:arg name="camera_publish_rate" default=""/>
+  <!-- Simulation speed relative to wall time for mujoco_ros2_control; empty
+       keeps the plugin/UI setting. -->
+  <xacro:arg name="sim_speed_factor" default=""/>
   <!-- Which MJCF keyframe the simulation starts from. Not a fixed "home": the
        combined scenes have to define their own key (fr3.xml's "home" covers
        only the arm, the hand asset's "open" only the hand, and MuJoCo zero-pads
@@ -203,6 +208,12 @@
                does not begin fully extended and fall under gravity. -->
           <param name="initial_keyframe">$(arg initial_keyframe)</param>
           <param name="headless">$(arg headless)</param>
+          <xacro:unless value="${'$(arg sim_speed_factor)' == ''}">
+            <param name="sim_speed_factor">$(arg sim_speed_factor)</param>
+          </xacro:unless>
+          <xacro:unless value="${'$(arg camera_publish_rate)' == ''}">
+            <param name="camera_publish_rate">$(arg camera_publish_rate)</param>
+          </xacro:unless>
         </xacro:if>
         <xacro:if value="${'$(arg hardware_type)' == 'mock'}">
           <plugin>mock_components/GenericSystem</plugin>
