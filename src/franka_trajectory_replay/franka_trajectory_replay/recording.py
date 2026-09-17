@@ -31,11 +31,17 @@ def stamp_to_ns(stamp):
 
 
 class BagRecorder:
-    def __init__(self, bag_dir, topics, storage_id='sqlite3', logger=None):
+    def __init__(self, bag_dir, topics, storage_id='sqlite3', logger=None, extra_args=()):
+        """``extra_args`` are passed to ``ros2 bag record`` verbatim, before the topics.
+
+        A caller recording large messages (full-resolution images) uses them to raise the
+        writer cache; the defaults are right for the joint-state bags this was written for.
+        """
         self.bag_dir = str(bag_dir)
         self.topics = list(topics)
         self.storage_id = storage_id
         self.logger = logger
+        self.extra_args = [str(argument) for argument in extra_args]
         self.process = None
 
     def _log(self, level, text):
@@ -46,6 +52,7 @@ class BagRecorder:
 
     def start(self, timeout=20.0):
         command = ['ros2', 'bag', 'record', '-o', self.bag_dir, '-s', self.storage_id]
+        command += self.extra_args
         command += self.topics
         self._log('info', 'recording: %s' % ' '.join(command))
         # No stdin: the recorder otherwise installs its own keyboard handler (space to pause)

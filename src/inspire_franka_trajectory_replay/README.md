@@ -929,6 +929,122 @@ The hand mapping from the Forge model is:
 | `thumb_joint_1` | `thumb_proximal_pitch_joint` |
 | `thumb_joint_0` | `thumb_proximal_yaw_joint` |
 
+## Recording the D415 at full resolution during a rollout
+
+`replay_trajectory --record-rgbd` records the RealSense's colour and
+colour-aligned depth for the whole rollout, into a rosbag beside the run. The
+take is at the D415's full colour resolution, **1920x1080**, and the run refuses
+to start — before homing, before any controller switch — if the camera on the
+graph is publishing anything else. Only one `realsense2_camera` node can own
+the device, and the policy rollout's runs at 640x480, so a recorder that took
+whatever was there would quietly produce a quarter-resolution take that looks
+complete.
+
+Start the camera first, in its own sourced shell (stop the policy rollout's
+camera if it is up):
+
+```bash
+ros2 launch inspire_franka_trajectory_replay rgbd_camera.launch.py
+```
+
+That is `rs_launch.py` with colour at `1920x1080x30`, depth at `1280x720x30`,
+`align_depth.enable`, `enable_sync` and `enable_rgbd`, so `/camera/camera/rgbd`
+carries colour and colour-aligned depth from one frameset, both 1920x1080 in
+`camera_color_optical_frame`. `color_profile:=` and `depth_profile:=` are
+launch arguments for a deliberately lower mode; pass the matching
+`--rgbd-resolution` to the runner then. Then the replay exactly as before,
+plus the flag:
+
+```bash
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+  apps/traj_replay/demo_trajs/traj_2 --cycle 1 \
+  --home apps/traj_replay/demo_trajs/traj_2/homing.yaml \
+  --record-rgbd --note "threading take 3"
+```
+
+It combines with everything else: `--interactive-pause`, `--intervene`,
+`--arm-controller cartesian-impedance`, `--no-hand`, `--no-arm`. A
+`--dry-run` prints what would be recorded and where.
+
+#### What the preflight proves, before anything moves
+
+One RGBD message and one `CameraInfo` are taken from the live stream and
+checked: the colour image is exactly `--rgbd-resolution` (default 1920x1080);
+the depth has the same size and the same `frame_id` as the colour, i.e. it is
+aligned; the `CameraInfo` describes that image; both encodings are ones the
+extractor decodes. Every problem is listed, not just the first, and any of
+them is a refusal with `Nothing has moved`. The delivered frame rate is then
+measured over a second and printed; a rate well under `--rgbd-rate` (default
+30) is a warning, because a USB 2 link or a CPU-bound aligner shows up there
+first, and it goes into the manifest.
+
+```text
+RGB-D stream preflight on /camera/camera/rgbd:
+  colour  1920x1080 rgb8 in camera_color_optical_frame
+  depth   1920x1080 16UC1 in camera_color_optical_frame
+  intrinsics 1920x1080 in camera_color_optical_frame (/camera/camera/color/camera_info)
+  rate    29.8 Hz measured over 30 frames (expected 30 Hz)
+  required 1920x1080: OK
+```
+
+#### What a run writes
+
+`logs/replay_rollout/<UTC stamp>[_<note>]/`, or with `--intervene` the
+intervention session's own `logs/dagger/<stamp>` directory, so one run has one
+directory; `--session-root` puts either elsewhere.
+
+- `rgbd_bag/` — one MCAP bag (`--rgbd-storage sqlite3` to change) holding
+  `/camera/camera/rgbd` (`realsense2_camera_msgs/RGBD`: colour, aligned depth
+  and both `CameraInfo`s, recorded as the composite so a pair can never be
+  mismatched), `/camera/camera/color/camera_info`, `/joint_states`, the hand's
+  measured joints and command channel, `/tf` and `/tf_static`. Hand-only and
+  arm-only runs drop the channels the other device would have carried.
+- `rgbd_manifest.json` — the stream as the preflight found it, the required
+  resolution, the topic list and why each is there, the recording's start and
+  stop, the exit code, and `rgbd_frames`: the number of RGBD messages the bag's
+  own metadata counts, which is what says whether the take is complete.
+
+Recording starts after homing, just before the replay prompt, and stops on
+every way out, Ctrl-C and aborts included; the manifest is written either way
+and says `"recorded": false` when the bag never opened. With `--intervene` the
+session's `events.jsonl` also carries an `rgbd_recording` event naming the bag.
+
+Recording goes through `ros2 bag record`, the same `BagRecorder` `capture_demo`
+uses, not a Python subscriber: one 1920x1080 RGBD message is about 10 MB, and a
+callback writing PNGs at 30 Hz would fall behind and drop frames without
+saying so. The rosbag cache is raised to 1 GB so a slow flush costs seconds of
+slack rather than a third of a second.
+
+#### Getting frames out
+
+```bash
+ros2 run inspire_franka_trajectory_replay extract_rgbd logs/replay_rollout/<stamp> --every 3
+```
+
+writes `rgbd_frames/color/NNNNNN.png` (RGB, lossless; `--color-format jpg`
+for a tenth the size), `rgbd_frames/depth/NNNNNN.png` (16-bit millimetres,
+the RealSense's native unit, holes as 0), `frames.csv` with each frame's
+header, colour and depth stamps and the bag's receive time, and
+`camera_info.json`. `--limit N` stops early; a bare bag directory works too.
+
+#### Size
+
+About 10 MB per frame: 310 MB/s at 30 Hz, 19 GB a minute. The runner prints
+the frame count against the run's length when it finishes (`87 RGB-D frames
+over 3.0 s (29.0 Hz; 97% of 30 Hz)`), and `ros2 bag info` on the bag says the
+same. Delete takes that were not kept.
+
+**Status: built, unit-tested, and run end to end in the container against a
+synthetic 1920x1080 publisher** — refusal at the wrong resolution, a real MCAP
+bag through `ros2 bag record`, and extraction back to pixel-exact frames.
+**Not yet run with the physical D415.** Three things are bench measurements:
+whether librealsense's CPU aligner sustains 30 Hz at 1080p on this workcell,
+whether the DDS transport delivers 10 MB messages without loss (the container
+self-test lost one message in sixty at 15 Hz from a Python publisher; rosbag
+prints `messages lost on the transport layer` when it happens), and whether
+the disk keeps up. The preflight's rate line and the manifest's `rgbd_frames`
+against the run's duration answer all three.
+
 ## Hand-guided demonstration capture
 
 `capture_demo` records a kinesthetic teaching session beside a
@@ -955,6 +1071,8 @@ the same two dependencies and a second opinion about that schema.
 | `extract.py` | bag to artifact: resampling, the zero-phase low-pass, the 19-joint layout, the TCP conversion, and the artifact writer |
 | `waypoints.py` | marks to artifact: the operator's `c` presses as a point-to-point trajectory, without reading the bag |
 | `launch_files/sim_capture.py` | the MuJoCo rehearsal stack, as an importable module so its four load-bearing choices are testable; `launch/sim_capture.launch.py` is a shim over it |
+| `rgbd_recording.py` | the full-resolution RGB-D take for `replay_trajectory --record-rgbd`: the stream spec and its fail-closed preflight, the bag through the same `BagRecorder`, the manifest with the bag's own frame count, and `extract_rgbd` |
+| `launch_files/rgbd_camera.py` | the D415 at 1920x1080 with depth aligned to colour and the RGBD composite on, importable so its profiles and fixed arguments are testable; `launch/rgbd_camera.launch.py` is a shim over it |
 
 **What the artifact says about itself.** `metadata.json` carries
 `"replay": "hand_guided"`, the session directory it came from, the filter's

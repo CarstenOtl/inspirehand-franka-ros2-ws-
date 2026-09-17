@@ -30,6 +30,7 @@ setup(
             "extract_demo = inspire_franka_trajectory_replay.extract:main",
             "extract_waypoints = inspire_franka_trajectory_replay.waypoints:main",
             "splice_intervention = inspire_franka_trajectory_replay.splice_intervention:main",
+            "extract_rgbd = inspire_franka_trajectory_replay.rgbd_recording:extract_main",
         ],
     },
 )

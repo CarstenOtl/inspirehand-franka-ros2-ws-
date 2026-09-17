@@ -153,6 +153,11 @@ python3 apps/traj_replay/tests/test_mujoco_traj_replay.py \
 
 # RealSense D415 (publishes under /camera/camera by default):
 ros2 launch realsense2_camera rs_launch.py device_type:=d415
+# ... or at full 1920x1080 with aligned depth, for a recorded replay:
+ros2 launch inspire_franka_trajectory_replay rgbd_camera.launch.py
+ros2 run inspire_franka_trajectory_replay replay_trajectory \
+    apps/traj_replay/demo_trajs/traj_2 --cycle 1 \
+    --home apps/traj_replay/demo_trajs/traj_2/homing.yaml --record-rgbd
 
 # Calibrate the fixed D415 against the Franka base frame with a hand-mounted
 # AprilTag. The arm drives itself through generated poses and stops at each one;
@@ -303,6 +308,18 @@ ros2 bag record -o d415_check \
   /camera/camera/color/image_raw \
   /camera/camera/color/camera_info \
   /camera/camera/depth/image_rect_raw
+```
+
+To record the camera at its full 1920x1080 resolution across a trajectory
+replay, start it with the replay package's launch instead of the command above
+and pass `--record-rgbd` to the runner. The run refuses to start if the live
+stream is not 1920x1080 with depth aligned to colour, writes an MCAP bag and a
+manifest beside the run, and `extract_rgbd` turns the bag into PNG frames. See
+[the replay package README](src/inspire_franka_trajectory_replay/README.md#recording-the-d415-at-full-resolution-during-a-rollout).
+
+```bash
+ros2 launch inspire_franka_trajectory_replay rgbd_camera.launch.py
+ros2 run inspire_franka_trajectory_replay replay_trajectory <trajectory> --record-rgbd
 ```
 
 If a D415 falls back to USB 2, use a USB 3 cable/port rather than expecting

@@ -24,6 +24,15 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <!-- replay_trajectory's RGB-D recording: the D415 launch, its RGBD composite
+       message, the MCAP storage the bag is written in, and OpenCV for
+       extract_rgbd. (No double hyphen in here: it is illegal inside an XML
+       comment and makes colcon treat the package as plain python.) -->
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>realsense2_camera_msgs</exec_depend>
+  <exec_depend>rosbag2_storage_mcap</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>rosbag2_py</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
