@@ -337,3 +337,156 @@ def test_grasp_frame_transport_follows_flange_rotation():
         fo.matrix_from_quat(turn) @ fo.matrix_from_quat(reset_quaternion),
         atol=1e-6,
     )
+
+
+# The student was distilled on ForgeUltra's hand geometry, not the workspace
+# URDF's. These pin the frame the rollout now commands in.
+TRAINING_GRASP_MIDPOINT_IN_FLANGE = np.array([-0.059067, -0.028773, 0.173311])
+TRAINING_TIP_SEPARATION_M = 0.0578
+
+
+def _training_hand():
+    mujoco = pytest.importorskip("mujoco")
+    del mujoco
+    from policy_rollout.hardware import TrainingHandKinematics
+
+    return TrainingHandKinematics()
+
+
+def test_training_hand_reproduces_the_distilled_grasp_midpoint():
+    hand = _training_hand()
+    posture = [fo.THREADING_GRASP_POSTURE[name] for name in fo.PINCH_JOINTS]
+    thumb, index = hand.tips_in_flange(posture)
+    np.testing.assert_allclose(
+        0.5 * (thumb + index), TRAINING_GRASP_MIDPOINT_IN_FLANGE, atol=1e-5
+    )
+    assert np.linalg.norm(index - thumb) == pytest.approx(
+        TRAINING_TIP_SEPARATION_M, abs=1e-4
+    )
+
+
+def test_training_hand_tips_do_not_depend_on_the_arm():
+    """The hand is rigid on the flange, so the rollout may ignore arm joints."""
+
+    mujoco = pytest.importorskip("mujoco")
+    from policy_rollout.mujoco_scene import load_training_scene
+
+    hand = _training_hand()
+    model, data = load_training_scene(urdf_tip_frames=True)
+    address = {model.joint(i).name: model.jnt_qposadr[i] for i in range(model.njnt)}
+    inactive = {"middle_joint_0": 1.333, "ring_joint_0": 1.333, "little_joint_0": 1.333}
+    generator = np.random.default_rng(3)
+    for _ in range(4):
+        arm = fo.FRANKA_ARM_RESET_JOINTS_M24 + generator.normal(0.0, 0.3, 7)
+        posture = [generator.uniform(low, high) for low, high in fo.PINCH_RANGES]
+        data.qpos[:] = 0.0
+        for name, value in zip(
+            (f"fr3_joint{i}" for i in range(1, 8)), arm, strict=True
+        ):
+            data.qpos[address[name]] = float(value)
+        targets = dict(zip(fo.PINCH_JOINTS, posture, strict=True))
+        targets.update(inactive)
+        for name, value in fo.expand_hand_mimic(targets).items():
+            if name in address:
+                data.qpos[address[name]] = float(value)
+        mujoco.mj_forward(model, data)
+        flange = model.body("fr3_link8").id
+        rotation = data.xmat[flange].reshape(3, 3)
+        origin = data.xpos[flange]
+        expected_thumb = rotation.T @ (data.xpos[model.body("thumb_tip").id] - origin)
+        expected_index = rotation.T @ (data.xpos[model.body("index_tip").id] - origin)
+        thumb, index = hand.tips_in_flange(posture)
+        np.testing.assert_allclose(thumb, expected_thumb, atol=1e-9)
+        np.testing.assert_allclose(index, expected_index, atol=1e-9)
+
+
+def test_training_hand_differs_from_the_workspace_urdf():
+    """Guard the reason this class exists: the two descriptions disagree."""
+
+    hand = _training_hand()
+    posture = [fo.THREADING_GRASP_POSTURE[name] for name in fo.PINCH_JOINTS]
+    thumb, index = hand.tips_in_flange(posture)
+    # Measured from inspire_franka.urdf.xacro with the thumb-yaw overlay.
+    urdf_midpoint = np.array([-0.0638, -0.0422, 0.1773])
+    offset = np.linalg.norm(0.5 * (thumb + index) - urdf_midpoint)
+    assert 0.010 < offset < 0.020, f"unexpected URDF-to-training offset {offset:.4f} m"
+
+
+def test_policy_tool_offset_is_the_training_grasp_midpoint():
+    """The controller's compliance centre must be where training applied its wrench."""
+
+    from policy_rollout.hardware import POLICY_TOOL_OFFSET_XYZ
+
+    hand = _training_hand()
+    posture = [fo.THREADING_GRASP_POSTURE[name] for name in fo.PINCH_JOINTS]
+    thumb, index = hand.tips_in_flange(posture)
+    np.testing.assert_allclose(
+        np.asarray(POLICY_TOOL_OFFSET_XYZ), 0.5 * (thumb + index), atol=1e-6
+    )
+
+
+def test_policy_tool_offset_matches_the_controller_profiles():
+    """hardware.py, controllers_policy.yaml and controllers_sim_policy.yaml agree."""
+
+    yaml = pytest.importorskip("yaml")
+    from pathlib import Path
+
+    from policy_rollout.hardware import (
+        POLICY_TOOL_OFFSET_RPY,
+        POLICY_TOOL_OFFSET_XYZ,
+    )
+
+    config_root = (
+        Path(__file__).resolve().parents[3]
+        / "src/inspire_franka_trajectory_replay/config"
+    )
+
+    def find_parameters(node):
+        """ros2 profiles nest controllers under a node name or a '/**' wildcard."""
+        if isinstance(node, dict):
+            controller = node.get("cartesian_trajectory_replay_controller")
+            if isinstance(controller, dict) and "ros__parameters" in controller:
+                return controller["ros__parameters"]
+            for value in node.values():
+                found = find_parameters(value)
+                if found is not None:
+                    return found
+        return None
+
+    for name in ("controllers_policy.yaml", "controllers_sim_policy.yaml"):
+        document = yaml.safe_load((config_root / name).read_text())
+        parameters = find_parameters(document)
+        assert parameters is not None, f"no Cartesian controller block in {name}"
+        np.testing.assert_allclose(
+            parameters["tool_offset_xyz"], POLICY_TOOL_OFFSET_XYZ, atol=1e-9
+        )
+        np.testing.assert_allclose(
+            parameters["tool_offset_rpy"], POLICY_TOOL_OFFSET_RPY, atol=1e-9
+        )
+
+
+def test_hand_joint_state_to_arrays_orders_the_driven_joints():
+    from policy_rollout.hardware import HAND_JOINTS, hand_joint_state_to_arrays
+
+    shuffled = list(reversed(HAND_JOINTS))
+    message = SimpleNamespace(
+        name=list(shuffled),
+        position=[0.1 * (i + 1) for i in range(len(shuffled))],
+        velocity=[0.01 * (i + 1) for i in range(len(shuffled))],
+    )
+    positions, velocities = hand_joint_state_to_arrays(message)
+    expected = {n: 0.1 * (i + 1) for i, n in enumerate(shuffled)}
+    np.testing.assert_allclose(positions, [expected[n] for n in HAND_JOINTS])
+    assert velocities.shape == (len(HAND_JOINTS),)
+
+
+def test_hand_joint_state_to_arrays_rejects_a_partial_hand():
+    from policy_rollout.hardware import HAND_JOINTS, hand_joint_state_to_arrays
+
+    message = SimpleNamespace(
+        name=list(HAND_JOINTS[:-1]),
+        position=[0.0] * (len(HAND_JOINTS) - 1),
+        velocity=[0.0] * (len(HAND_JOINTS) - 1),
+    )
+    with pytest.raises(RuntimeError, match="all driven RH56 joints"):
+        hand_joint_state_to_arrays(message)

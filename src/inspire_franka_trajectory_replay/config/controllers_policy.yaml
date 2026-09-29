@@ -53,8 +53,13 @@
       arm_prefix: ""
       base_frame: fr3_link0
       model_source: franka
-      # Threading grasp centre, shared with replay.yaml and checked at startup.
-      tool_offset_xyz: [-0.0874, -0.0327, 0.1453]
+      # The compliance centre. Training applied its operational-space wrench at
+      # the live thumb/index fingertip midpoint; this is that midpoint frozen at
+      # the threading grip, in ForgeUltra's hand geometry. It is deliberately
+      # NOT replay.yaml's tcp (-0.0874, -0.0327, 0.1453), which is a closed
+      # replay pinch 40 mm away; trajectory replay keeps that one. Checked at
+      # startup against POLICY_TOOL_OFFSET_XYZ in policy_rollout/hardware.py.
+      tool_offset_xyz: [-0.059067, -0.028773, 0.173311]
       tool_offset_rpy: [0.0, 0.0, 0.0]
       # Forge threading task-space gains. The setpoint is already clipped and
       # filtered by the checkpoint adapter, so do not add the example's 0.005

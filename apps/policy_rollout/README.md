@@ -156,9 +156,68 @@ The simulation does not model:
 It does model frames, units, rates and the camera contract.
 
 `utils/analyze_rollout_motion.py RUN_DIR [--plot out.png]` rebuilds the grasp
-frame of any hardware or ros-sim recording from URDF kinematics. It compares
-that frame with the goal the policy was steering to. In a healthy stack the
-distance falls to about 1 cm.
+frame of any hardware or ros-sim recording. It compares that frame with the
+goal the policy was steering to. In a healthy stack the distance falls to
+about 1 cm.
+
+## The grasp frame
+
+The policy's actions are decoded relative to, and executed at, the thumb/index
+fingertip midpoint. That frame is taken from **ForgeUltra's training hand
+geometry**, not from this workspace's URDF, because the two are independent
+derivations of the same Inspire RH56 and they disagree:
+
+| at the training grasp posture | training | workspace URDF |
+|---|---|---|
+| tip separation | 57.8 mm | 113.6 mm |
+| midpoint in the flange frame | (-0.0591, -0.0288, 0.1733) | (-0.0638, -0.0422, 0.1773) |
+| grasp-frame orientation | reference | 14.7 deg away |
+
+The tips hang off parent links that themselves differ by 26 mm / 16 deg
+(thumb) and 12 mm / 179 deg (index), posed by different mimic ratios, so no
+fixed tip offset reconciles them at every posture. `TrainingHandKinematics` in
+`policy_rollout/hardware.py` therefore evaluates the training asset's own
+kinematics on the measured joints; TF still supplies the flange, where the two
+descriptions agree. The hand is rigid on the flange, so this depends only on
+the three policy hand joints.
+
+This puts the policy's observation and command frame in its training
+distribution. Which of the two models describes the *physical* hand is still
+an open bench measurement: put the hand at the training grasp posture and read
+the real thumb-to-index distance, then make the losing model follow the
+winner.
+
+### The controlled point
+
+The Cartesian controller shifts its measured pose *and its Jacobian* onto
+`tool_offset_xyz`, so that offset is the compliance centre: where the spring
+and damper are anchored. Training anchored its operational-space wrench at the
+live fingertip midpoint, which travels about 20 mm over a threading cycle. A
+fixed offset cannot follow that, so the policy profiles use the midpoint frozen
+at the threading grip:
+
+    tool_offset_xyz: [-0.059067, -0.028773, 0.173311]
+
+That is `POLICY_TOOL_OFFSET_XYZ` in `policy_rollout/hardware.py`, mirrored in
+`controllers_policy.yaml` and `controllers_sim_policy.yaml` and checked at
+startup. It deliberately differs from `replay.yaml`'s `tcp.offset_xyz`
+(-0.0874, -0.0327, 0.1453), which is a *closed* replay pinch 40 mm away;
+trajectory replay keeps that one, because its recorded Cartesian poses are
+expressed at it. Both are marked in `inspire_hand_on_flange.xml` as the
+`grasp_tcp` and `policy_grasp_tcp` sites (group 4, hidden by default).
+
+Distance from the live grasp midpoint over the reference episode's 328
+policy rows:
+
+| tool offset | mean | min | max |
+|---|---|---|---|
+| old (replay pinch) | 37.8 mm | 20.6 mm | 52.8 mm |
+| new (threading grip) | 11.5 mm | 3.2 mm | 23.0 mm |
+
+The remaining 3 to 23 mm is the live midpoint's own travel, which a fixed
+offset cannot express. `retarget_grasp_pose_to_controlled_pose` still
+compensates the commanded pose either way; what this changes is only where the
+impedance acts.
 
 ## Run in MuJoCo
 

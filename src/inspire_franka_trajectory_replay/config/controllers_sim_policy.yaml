@@ -55,7 +55,9 @@ cartesian_trajectory_replay_controller:
     arm_prefix: ""
     base_frame: fr3_link0
     model_source: dh
-    tool_offset_xyz: [-0.0874, -0.0327, 0.1453]
+    # The training grasp midpoint at the threading grip; see
+    # controllers_policy.yaml. Keep the two equal.
+    tool_offset_xyz: [-0.059067, -0.028773, 0.173311]
     tool_offset_rpy: [0.0, 0.0, 0.0]
     translational_stiffness: 565.0
     rotational_stiffness: 28.0

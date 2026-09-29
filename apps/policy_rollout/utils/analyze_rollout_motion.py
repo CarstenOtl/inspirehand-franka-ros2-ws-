@@ -5,9 +5,12 @@
         logs/policy_rollout/hardware-20260912-184327-287247 [--plot out.png]
 
 The recording holds joint positions and filtered policy actions but no poses.
-This rebuilds the fingertip grasp frame with forward kinematics of
-``inspire_franka.urdf.xacro`` (hand on the flange, thumb-yaw overlay applied,
-reset approach axis transported like training) and decodes each action into
+This rebuilds the fingertip grasp frame the way the rollout does: the flange
+from forward kinematics of ``inspire_franka.urdf.xacro`` (hand on the flange,
+thumb-yaw overlay applied), and the thumb/index tips from the *training*
+asset's hand geometry, because the workspace URDF places the same fingertips
+about 15 mm and 21 deg away from where the student was distilled. The reset
+approach axis is transported like training. Each action is decoded into
 its unclipped target, the pose the policy is steering towards, in the
 training world. A healthy rollout closes the distance (the MuJoCo student
 reaches ~10 mm within 50 steps); a frame or unit bug shows the grasp walking
@@ -116,6 +119,10 @@ def analyze(run_dir: Path):
     actions = data["filtered_native_action"]
     t = data["sample_time_s"] - data["sample_time_s"][0]
     kinematics = UrdfKinematics()
+    # Same grasp-frame geometry the rollout commands in; see hardware.py.
+    from policy_rollout.hardware import TrainingHandKinematics
+
+    training_hand = TrainingHandKinematics()
     q_yaw = fo.quat_from_euler_xyz(0.0, 0.0, math.pi)
     world_rotation = fo.matrix_from_quat(q_yaw)
 
@@ -128,8 +135,9 @@ def analyze(run_dir: Path):
     for k in range(len(q)):
         positions = physical_positions(q[k])
         flange = kinematics.pose("fr3_link8", positions)
-        thumb = world(kinematics.pose("thumb_tip", positions)[:3, 3])
-        index = world(kinematics.pose("index_tip", positions)[:3, 3])
+        thumb_flange, index_flange = training_hand.tips_in_flange(q[k][7:10])
+        thumb = world(flange[:3, 3] + flange[:3, :3] @ thumb_flange)
+        index = world(flange[:3, 3] + flange[:3, :3] @ index_flange)
         flange_quaternion = fo.quat_mul(q_yaw, fo.quat_from_matrix(flange[:3, :3]))
         if z_transport is None:
             z_transport = fo.reset_z_transport(thumb, index, world(flange[:3, 3]), flange_quaternion)

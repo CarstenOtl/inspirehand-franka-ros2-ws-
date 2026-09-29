@@ -83,6 +83,19 @@ def physical_hand_state_to_policy(
     return q_policy, dq_policy
 
 
+def hand_joint_state_to_arrays(message) -> tuple[np.ndarray, np.ndarray]:
+    """Pull the six driven RH56 joints out of a ``JointState``, in HAND_JOINTS order."""
+
+    positions = dict(zip(message.name, message.position))
+    velocities = dict(zip(message.name, message.velocity))
+    if any(name not in positions for name in HAND_JOINTS):
+        raise RuntimeError("hand state does not contain all driven RH56 joints")
+    return (
+        np.array([positions[name] for name in HAND_JOINTS], dtype=float),
+        np.array([velocities.get(name, 0.0) for name in HAND_JOINTS], dtype=float),
+    )
+
+
 def grasp_z_transport_at_reset(
     thumb_position, index_position, flange_position, flange_quaternion
 ) -> np.ndarray:
@@ -119,6 +132,103 @@ def grasp_frame_from_tips(
         approach,
     )
     return position, fo.quat_from_matrix(rotation)
+
+
+TRAINING_INACTIVE_FINGERS = {
+    "middle_joint_0": 1.333,
+    "ring_joint_0": 1.333,
+    "little_joint_0": 1.333,
+}
+
+
+class TrainingHandKinematics:
+    """Fingertip frames exactly as ForgeUltra's training asset defines them.
+
+    The workspace URDF and the training asset are independent derivations of
+    the same Inspire RH56, and they disagree. At the same commanded joints
+    their ``thumb_tip``/``index_tip`` frames sit about 15 mm apart and their
+    grasp frames about 21 degrees apart, because the tips hang off parent
+    links that differ by 26 mm / 16 deg (thumb) and 12 mm / 179 deg (index)
+    and are posed by different mimic ratios. No fixed tip offset reconciles
+    them at every posture.
+
+    The student was distilled on the training asset's frame, so the rollout
+    reconstructs that frame from the measured joints rather than reading the
+    URDF's tips out of TF. The hand is rigid on the flange, so tip positions
+    in the flange frame depend only on the three policy hand joints and the
+    arm pose cancels; TF still supplies the flange itself, where the two
+    descriptions agree.
+
+    This makes the policy's observation and command frame the one it was
+    trained in. Whether the *physical* fingers then land on the nut depends on
+    which of the two hand models actually describes this workcell's hand,
+    which is still an open bench measurement.
+    """
+
+    def __init__(self) -> None:
+        import mujoco
+
+        from .mujoco_scene import load_training_scene
+
+        self._mujoco = mujoco
+        self.model, self.data = load_training_scene(urdf_tip_frames=True)
+        self._address = {
+            self.model.joint(index).name: self.model.jnt_qposadr[index]
+            for index in range(self.model.njnt)
+        }
+        self._flange = self.model.body("fr3_link8").id
+        self._thumb = self.model.body("thumb_tip").id
+        self._index = self.model.body("index_tip").id
+
+    def tips_in_flange(self, pinch_positions) -> tuple[np.ndarray, np.ndarray]:
+        """Return the ``(thumb, index)`` tip positions in the flange frame."""
+
+        values = np.asarray(pinch_positions, dtype=float).flatten()
+        if values.shape != (3,) or not np.isfinite(values).all():
+            raise ValueError("pinch_positions must contain three finite values")
+        data = self.data
+        data.qpos[:] = 0.0
+        targets = dict(zip(fo.PINCH_JOINTS, values))
+        targets.update(TRAINING_INACTIVE_FINGERS)
+        for name, value in fo.expand_hand_mimic(targets).items():
+            address = self._address.get(name)
+            if address is not None:
+                data.qpos[address] = float(value)
+        self._mujoco.mj_kinematics(self.model, data)
+        rotation = data.xmat[self._flange].reshape(3, 3)
+        origin = data.xpos[self._flange]
+        return (
+            rotation.T @ (data.xpos[self._thumb] - origin),
+            rotation.T @ (data.xpos[self._index] - origin),
+        )
+
+
+# The Cartesian controller's compliance centre for a policy rollout.
+#
+# Training applied its operational-space wrench at the *live* fingertip
+# midpoint, which travels about 20 mm over a threading cycle. The controller
+# needs a constant, so this is that midpoint frozen at the threading grip:
+# TrainingHandKinematics evaluated at forge_osc.THREADING_GRASP_POSTURE.
+#
+# It deliberately differs from `tcp.offset_xyz` in replay.yaml
+# (-0.0874, -0.0327, 0.1453), which is the midpoint of a *closed* replay pinch
+# and is 40 mm away. Trajectory replay keeps that one; its recorded Cartesian
+# poses are expressed at it. Keep this equal to `tool_offset_xyz` in
+# controllers_policy.yaml and controllers_sim_policy.yaml, which preflight
+# checks, and to the `policy_grasp_tcp` marker in inspire_hand_on_flange.xml.
+POLICY_TOOL_OFFSET_XYZ = (-0.059067, -0.028773, 0.173311)
+POLICY_TOOL_OFFSET_RPY = (0.0, 0.0, 0.0)
+
+
+def policy_tool_offset_config() -> dict:
+    """The policy rollout's own flange-to-tool transform, in config form."""
+
+    return {
+        "tcp": {
+            "offset_xyz": list(POLICY_TOOL_OFFSET_XYZ),
+            "offset_rpy": list(POLICY_TOOL_OFFSET_RPY),
+        }
+    }
 
 
 @dataclass(frozen=True)
@@ -565,6 +675,10 @@ def _hardware_node_class():
             self.max_state_age_s = float(max_state_age_s)
             self.max_frame_skew_s = float(max_frame_skew_s)
             self._rgbd = RgbdFrameSynchronizer(self.max_frame_skew_s)
+            # The grasp frame is rebuilt in the training asset's hand geometry,
+            # not the workspace URDF's; see TrainingHandKinematics.
+            self._training_hand = TrainingHandKinematics()
+            self._policy_hand_position = None
             controller = "/" + config["cartesian"]["controller_name"].strip("/")
             self.policy_publisher = self.create_publisher(
                 CartesianGoto, controller + "/policy_command", 1
@@ -744,13 +858,7 @@ def _hardware_node_class():
             indices = [arm_columns[name] for name in ARM_JOINTS]
             q_arm = np.asarray(arm.feedback.positions, dtype=float)[indices]
             dq_arm = np.asarray(arm.feedback.velocities, dtype=float)[indices]
-            hand = messages["hand"]
-            hand_positions = dict(zip(hand.name, hand.position))
-            hand_velocities = dict(zip(hand.name, hand.velocity))
-            if any(name not in hand_positions for name in HAND_JOINTS):
-                raise RuntimeError("hand state does not contain all driven RH56 joints")
-            q_hand = np.array([hand_positions[name] for name in HAND_JOINTS])
-            dq_hand = np.array([hand_velocities.get(name, 0.0) for name in HAND_JOINTS])
+            q_hand, dq_hand = hand_joint_state_to_arrays(messages["hand"])
             rgb, _ = image_message_to_numpy(messages["rgb"])
             depth, depth_units = image_message_to_numpy(messages["depth"])
             controller_pose = messages["cartesian"].target
@@ -789,7 +897,7 @@ def _hardware_node_class():
                 ],
                 dtype=float,
             )
-            return LiveSample(
+            sample = LiveSample(
                 arm_position=q_arm,
                 arm_velocity=dq_arm,
                 hand_position=q_hand,
@@ -803,6 +911,12 @@ def _hardware_node_class():
                 controller_measured_quaternion=controller_measured_quaternion,
                 sample_time_s=now,
             )
+            # The grasp frame is rebuilt from these logical hand joints rather
+            # than read from TF, so keep the latest ones for _hand_frames.
+            self._policy_hand_position = physical_hand_state_to_policy(
+                sample.hand_position, sample.hand_velocity
+            )[0]
+            return sample
 
         def wait_for_fresh_sample(self, timeout_s: float) -> LiveSample:
             """Wait through transient callback gaps without hiding contract errors."""
@@ -843,6 +957,24 @@ def _hardware_node_class():
                 sample.hand_position, sample.hand_velocity
             )
 
+        def policy_hand_positions(self) -> np.ndarray:
+            """The three logical hand joints, from the hand topic alone.
+
+            The grasp frame needs only the hand, so this deliberately does not
+            require the arm, Cartesian and camera streams that ``sample``
+            checks. The hand driver and TF are up well before the Cartesian
+            controller starts publishing, and the reset grasp transport is
+            captured in that window.
+            """
+
+            with self._lock:
+                message = self._hand
+            if message is None:
+                raise RuntimeError("missing live inputs: hand")
+            return physical_hand_state_to_policy(
+                *hand_joint_state_to_arrays(message)
+            )[0]
+
         def _hand_frames(self):
             from rclpy.time import Time
 
@@ -852,9 +984,21 @@ def _hardware_node_class():
                 r = transform.transform.rotation
                 return np.array([t.x, t.y, t.z]), np.array([r.w, r.x, r.y, r.z])
 
-            thumb, _ = lookup("thumb_tip")
-            index, _ = lookup("index_tip")
             flange_position, flange_quaternion = lookup("fr3_link8")
+            # TF's thumb_tip/index_tip come from the workspace URDF, whose hand
+            # geometry is not the one the student was distilled on. Rebuild the
+            # tips in the training asset's geometry from the measured joints so
+            # the policy sees and commands its trained grasp frame.
+            # Prefer the value that came with the sample the policy is about to
+            # consume, so the grasp frame and the observation share an instant.
+            # Before the first sample, read the hand topic on its own.
+            hand = self._policy_hand_position
+            if hand is None:
+                hand = self.policy_hand_positions()
+            thumb_flange, index_flange = self._training_hand.tips_in_flange(hand)
+            rotation = fo.matrix_from_quat(flange_quaternion)
+            thumb = flange_position + rotation @ thumb_flange
+            index = flange_position + rotation @ index_flange
             return thumb, index, flange_position, flange_quaternion
 
         def capture_grasp_z_transport(self) -> np.ndarray:
@@ -1039,7 +1183,9 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             flush=True,
         )
 
-        tool = policy_tool_transform(config)
+        # The policy controls the training grasp midpoint, not the replay TCP
+        # that `config` carries; see POLICY_TOOL_OFFSET_XYZ.
+        tool = policy_tool_transform(policy_tool_offset_config())
         arm_client.check_tool(tool, print)
         if sim:
             # MuJoCo has no franka_hardware robot model or FrankaRobotState: the
@@ -1356,11 +1502,16 @@ __all__ = [
     "TrainingFrameAdapter",
     "assess_hardware_readiness",
     "grasp_frame_from_tips",
+    "hand_joint_state_to_arrays",
     "grasp_z_transport_at_reset",
     "assert_policy_camera_frames",
     "image_message_to_numpy",
     "limit_cartesian_step",
     "physical_hand_state_to_policy",
+    "POLICY_TOOL_OFFSET_RPY",
+    "POLICY_TOOL_OFFSET_XYZ",
+    "TrainingHandKinematics",
+    "policy_tool_offset_config",
     "policy_tool_transform",
     "retarget_grasp_pose_to_controlled_pose",
     "run_hardware_rollout",
