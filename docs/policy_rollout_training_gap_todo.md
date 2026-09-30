@@ -1,0 +1,522 @@
+# Closing the training gap: policy rollout vs Isaac Lab
+
+Checklist of changes that bring the ROS rollout stack (`run_policy_rollout.py hardware` and
+`ros-sim`) in line with the setup the student was trained and evaluated in
+(`forgeUltra/distillation`, Isaac Lab), so that the only remaining difference is physics that
+has not been measured yet.
+
+Scope: checkpoint `sequential_threading_cycle10_hybrid_teacher_d415_20ep`, task
+`vanilla_threading.yaml`, cyclic-student-owned lifecycle. Measurements are from the
+2026-09-30 crosscheck (see "Evidence sources" at the end). Each item states what was measured,
+what to change, and a test that decides when it is done. Tick the box when the "done when"
+test passes; append a dated note under the item.
+
+Priority tags: **blocking** = the stack cannot reproduce training without it;
+**should** = measurable effect, do after the blockers; **minor** = small or sim-only;
+**bench** = needs a physical measurement first.
+
+Working rules for agents:
+
+- Do not change the checkpoint, the DP3 camera contract, or the 29-D proprio layout. Those are
+  verified identical (last section).
+- One item per commit where possible. Cite the "done when" evidence in the commit message.
+- Runs happen in the `inspire_franka` container (`/root/develop_ws` is this workspace) with
+  `MUJOCO_GL=egl`. Check `ros2 node list` before starting anything; the graph is shared.
+
+---
+
+## Status
+
+2026-09-30, after A1a + A2 + B1 (`ros_sim-20260930-143512-493634`): the rollout reached
+`release_started` at a 63.3 deg grasp-turn proxy, the first ros-sim run ever to leave the
+`policy` phase. 321 steps at 15 Hz, 0 missed policy deadlines, 1 clipped target, no controller
+watchdog. It then ended in `return_failed` with 0 completed cycles.
+
+So the arm now descends and turns the nut, and the open frontier moved from "cannot descend" to
+the return-to-reset phase -- which is where the MuJoCo-only loop on the training plant also
+failed on 2026-09-30 (0.24 deg short on the orientation check). Both stacks now fail at the same
+place, so the next thing to look at is the return itself (B4, C2, and the `_returned` tolerances
+in `GripCycleCoordinator`: 5 mm / 5 deg / 0.15 rad), not the controller law.
+
+---
+
+## Layer A: arm controller law
+
+Training executes Forge's operational-space controller
+(`forge_ultra/tasks/utils/control.py`, `compute_dof_torque`) at 120 Hz. The ROS stack executes
+the franka_ros2 example Cartesian impedance law
+(`src/franka_trajectory_replay/include/franka_trajectory_replay/cartesian_impedance.hpp`) at
+1 kHz. The gains are the same numbers (565 / 28, damping 2*sqrt(K), nullspace 10); the law
+behind them is not.
+
+### A1. Replace the example nullspace term with Forge's mass-weighted, dynamically consistent projection  [blocking]
+
+- [x] A1a. Exact projector (`nullspace_damping_lambda: 0.0`) -- done 2026-09-30
+- [ ] A1b. Mass weighting (needs an arm mass matrix in the `dh` path)
+
+A1a is the part that mattered and it needed no mass matrix. `nullspace_damping_lambda` is now a
+controller parameter (`cartesian_impedance.hpp`, default 0.2 = the example); both policy profiles
+set 0.0, and `run_hardware_rollout` refuses a controller that does not. A1b is what remains to
+make the term bit-exact; it is worth 0.52 Nm of 18.2 (see the residual table below), so treat it
+as fidelity work rather than a blocker.
+
+Evidence. Forge: `tau_null = (I - J^T Jbar^T) M (10 (q0 - q) - 6.32 qdot)` with
+`Jbar = M_task J M^-1`. ROS: `tau_null = (I - J^T pinv_lambda(J^T)) (10 (q0 - q) - 6.32 qdot)`
+with a damped pseudo-inverse (lambda 0.2) that leaks into task space and no mass weighting.
+Measured on the training scene at the M24 reset pose, for the wrist excursion the MuJoCo-only
+loop uses to descend to the nut:
+
+| wrist offset from home | Isaac projected torque | ROS projected torque | ROS on joints 5 / 7 |
+|---|---|---|---|
+| joint 5 +0.5 rad | 0.01 Nm | 1.17 Nm | -0.86 / +0.52 Nm |
+| joint 5 +1.1, joint 7 -0.9 rad | 0.07 Nm | 4.24 Nm | -2.97 / +2.56 Nm |
+
+Why a nullspace difference reaches the tool at all. A nullspace torque is by definition the
+part of the command the tool should not feel. Forge's projector is dynamically consistent, so
+it does not: mapping `tau_null` back through `Jbar` gives 0.00 N at the grasp frame. The
+example's damped pseudo-inverse is not a projector at all for lambda 0.2, because lambda sits
+right on top of the three smallest singular values of `J^T` (0.21 / 0.29 / 0.31 at this
+posture), so it stops annihilating `range(J^T)` and the joint spring pushes on the tool:
+
+| wrist offset | Forge: M-weighted + dyn. consistent | ROS: unweighted + damped pinv | unweighted + exact pinv (lambda 0) |
+|---|---|---|---|
+| joint 5 +0.5 rad | 0.00 N / 0.00 Nm | 3.19 N / 1.99 Nm | 0.22 N / 0.08 Nm |
+| joint 5 +1.1, joint 7 -0.9 rad | 0.00 N / 0.00 Nm | 12.49 N / 7.98 Nm | 0.38 N / 0.12 Nm |
+
+For scale, a full 20 mm clipped policy step commands 11.3 N through the 565 N/m task spring.
+So at the descent posture the uncommanded nullspace force exceeds the policy's entire
+authority, and it settles the tool about 22 mm away from the commanded pose. The student is a
+progress-conditioned trajectory player with no integral action, so that offset is never
+corrected, and it grows with the wrist excursion rather than staying a trimmable bias. Note
+the decomposition: lambda, not the missing mass weighting, is what leaks (0.38 N vs 12.49 N),
+so dropping lambda is the cheap fix and the M weighting is what makes the term match training
+bit for bit.
+
+That restoring torque is the same order as the joint friction removed in the uncommitted
+`fr3.xml` experiment (1.14 / 0.76 Nm), which is why zeroing friction did not restore the
+descent. Joints 5 to 7 saturate at 12 Nm. In the 2026-09-30 ros-sim run joint 5 reached only
+1.86 rad where the MuJoCo-only loop reaches 2.81 rad by progress 0.05.
+
+Change.
+- `cartesian_impedance.hpp`: add a Forge-law variant that takes the arm mass matrix and
+  projects with `Jbar`.
+- Mass matrix source: `franka_robot_model_->getMass()` on hardware (`model_source: franka`).
+  The DH path (`model_source: dh`, used by ros-sim) has no mass model: add a rigid-body model
+  to the DH path, or let ros-sim read `M` from MuJoCo.
+- A1b, the mass matrix. On hardware it already exists: `franka_robot_model_->getMass()`
+  (`model_source: franka`). The `dh` path has no mass model, and ros-sim runs on it, so add one.
+  Pinocchio is already available in the container (C++ config at
+  `/opt/ros/jazzy/lib/x86_64-linux-gnu/cmake/pinocchio`, python 4.0.0) and
+  `controller_interface::ControllerInterfaceBase::get_robot_description()` hands the controller
+  the URDF at configure time. Build a `pinocchio::Model` from it once in `on_configure`, keep a
+  `pinocchio::Data`, and call `crba(model, data, q)` in `update()` -- allocation-free, so
+  realtime-safe -- then take the 7x7 arm block. The full tree (not a KDL chain) is what matches
+  training, because Isaac's `arm_mass_matrix` is the arm block of the whole articulation and so
+  carries the hand's inertia through the finger joints. Expand the URDF with
+  `xacro src/inspire_franka_description/urdf/inspire_franka.urdf.xacro` (21 inertials, 19
+  revolute joints) and check the result against MuJoCo's `mj_fullM` on the arm DOFs before
+  wiring it into the law. Open question: whether to add the arm armature to the diagonal --
+  `assets/fr3_inspirehand/robot.py` sets `armature` for hand joints only, so the arm keeps
+  whatever the USD carries, and the USD is a git-lfs pointer here. MuJoCo uses 0.195 (joints 1-4)
+  and 0.074 (joints 5-7).
+- Quick A/B before the real fix: `nullspace_stiffness: 0.0` in
+  `src/inspire_franka_trajectory_replay/config/controllers_policy.yaml` and
+  `controllers_sim_policy.yaml`, plus the `expected` dict in
+  `apps/policy_rollout/policy_rollout/hardware.py` (`run_hardware_rollout`).
+
+Done when. `src/franka_trajectory_replay/test/test_cartesian_impedance.cpp` reproduces
+`forge_osc.compute_dof_torque` for the same state and target to numerical precision, and the
+projected nullspace torque at a 1 rad wrist offset is below 0.1 Nm.
+
+Residual after A1a and A2, against `forge_osc.compute_dof_torque` on the training scene with
+the same state and target (`|tau_ros - tau_forge|`, Nm):
+
+| wrist offset | `|tau_forge|` | example law | + lambda 0 | + axis-angle |
+|---|---|---|---|---|
+| at the reset pose | 8.66 | 2.87 | 2.87 | **0.00** |
+| joint 5 +0.5 rad | 13.72 | 3.11 | 2.85 | **0.35** |
+| joint 5 +1.1, joint 7 -0.9 rad | 18.20 | 5.29 | 3.02 | **0.52** |
+
+At the reset pose the nullspace error is zero, so the whole 2.87 Nm discrepancy there is the
+rotation error (A2) and the patched law is exact. The 0.35 / 0.52 Nm that survive at a wrist
+excursion are the missing mass weighting, i.e. A1b.
+
+Nullspace target and gain already match training: `hardware.py` publishes `home_arm` as
+`nullspace_positions` and the controller runs `nullspace_stiffness: 10.0`, against Forge's
+`kp_null: 10.0` / `kd_null: 6.3246` toward `default_dof_pos_tensor`. Only the projection differs.
+
+Reference scripts: session scratch `nullspace.py` and `nullspace_decompose.py` (ThreadingScene at
+the reset pose; all four weighting x projector combinations, plus the task-wrench equivalent
+`Jbar tau_null`).
+
+### A2. Use the axis-angle rotation error, not the quaternion vector part  [blocking]
+
+- [x] done 2026-09-30
+
+`example_cartesian_error` takes a `RotationErrorForm`; `kAxisAngle` builds the rotation block
+from `Eigen::AngleAxisd(q_c^-1 q_d)`, which is the same axis with the full angle. The controller
+parameter is `rotation_error` (`quaternion_vector` | `axis_angle`), both policy profiles set
+`axis_angle`, and `ForgeCartesianImpedance.axis_angle_error_carries_the_full_angle` pins
+`|rot| == theta` against the example's `sin(theta/2)` at five angles. The example law is
+byte-identical at the defaults --
+`ExampleCartesianImpedance.matches_upstream_update_over_a_moving_sequence` still passes -- so
+trajectory replay and the hardware bringup profiles are untouched.
+
+Evidence. ROS `example_cartesian_error` uses `-R vec(q_c^-1 q_d)` = `sin(theta/2) axis`.
+Forge `get_pose_error` uses `axis_angle_from_quat(q_d q_c^-1)` = `theta axis`. The
+proportional term is half of training's (ratio 0.500 at 0.05 rad, 0.493 at 0.6 rad):
+14 Nm/rad effective instead of 28, while damping stays 2*sqrt(28) on the full angular
+velocity. Orientation is soft and over-damped; yaw is what threads the nut.
+
+Change. In `example_cartesian_error`, after the hemisphere flip, replace the vector part with
+`2 atan2(|v|, w) v / |v|` (same convention as `forge_osc.get_pose_error`).
+
+Done when. A 0.3 rad yaw error produces 8.4 Nm of task torque about the tool z axis at K = 28
+in `test_cartesian_impedance.cpp`.
+
+### A3. Anchor the compliance at the live fingertip midpoint instead of a fixed tool offset  [should]
+
+- [ ] done
+
+Evidence. Training applies the wrench at the live thumb/index midpoint, which travels about
+20 mm over a threading cycle. The policy profile freezes it at the threading grip
+(`POLICY_TOOL_OFFSET_XYZ = (-0.059067, -0.028773, 0.173311)`); the commanded pose is
+retargeted, the spring anchor is not. Distance to the live midpoint over the reference
+episode: mean 11.5 mm, range 3.2 to 23.0 mm.
+
+Change. Add a per-command flange-relative tool offset to `CartesianGoto` (or a
+`tool_offset` topic) and let `hardware.py` send the midpoint it already computes with
+`TrainingHandKinematics`; the controller shifts the Jacobian per tick with `shift_jacobian`.
+Then `retarget_grasp_pose_to_controlled_pose` becomes the identity.
+
+Done when. `grasp_controlled_offset_m` in `report.json` stays under 1 mm through a full cycle.
+
+### A4. Re-clip the 20 mm / 0.097 rad target step at the controller rate, from the live grasp pose  [minor]
+
+- [ ] done
+
+Evidence. Isaac decodes `bolt_tip + a * 0.05` and clips it against the current grasp pose at
+every 120 Hz substep, so the target keeps leading the hand by up to 20 mm as it moves. The ROS
+path clips once per policy tick and the controller holds that target for the whole period.
+
+Change. Send the unclipped goal (already computed as `_policy_goal_base` in `hardware.py`)
+and do the component-wise clip against the measured tool pose inside the controller's 1 kHz
+loop. Keep `limit_cartesian_step` (36 mm / 0.18 rad) as the safety guard.
+
+Done when. Tool-to-target distance logged by the controller sits at the clip limit while the
+hand is moving, as it does in `mujoco_threading_env.ThreadingScene.control_tick`.
+
+---
+
+## Layer B: run lifecycle (rate, cycles, timing)
+
+The student is progress-conditioned and phase-conditioned. If the clock or the cycle state
+machine diverges from training, the policy plays the right trajectory against the wrong
+state.
+
+### B1. Fix the sign of the release-trigger proxy (grasp-frame yaw)  [blocking]
+
+- [x] done 2026-09-30
+
+`turn_progress_rad` no longer negates. Because the reset grasp z points down
+(`grasp z . world z = -0.993`), a tightening turn already reads positive in that frame; the
+`-1.0` was the bug. Verified on the training reset pose: a -56 deg world-z (tightening) turn now
+reads +55.5 deg and fires `release_started`, a +56 deg (loosening) turn reads negative and fires
+nothing. Both coordinator tests were rebuilt on the real z-down reset frame -- with the identity
+quaternion they used before, either sign passes -- and
+`test_cycle_coordinator_ignores_a_loosening_turn` now pins the direction.
+
+Evidence. `GripCycleCoordinator.turn_progress_rad` in `hardware.py` takes the yaw of
+`R_reset^T R_now`, a rotation about the grasp frame's own z axis, which points world-down. A
+clockwise hand turn viewed from above (training's positive
+`threading_directional_turn_progress`) therefore reads -60 deg and release never fires. The
+unit test `test_cycle_coordinator_enters_release_after_clockwise_turn` passes only because it
+uses an identity reset quaternion, where z points up. In the 2026-09-30 ros-sim run all 427
+steps stayed in the `policy` phase.
+
+Numeric check (numpy, no ROS): z-down reset frame from `grasp_frame_from_tips`, hand rotated
+-60 deg about world +z -> proxy = -60 deg, no event; +60 deg -> +60 deg, `release_started`.
+
+Change. Measure yaw about world +z (`fr3_link0` z, same as the training world) and keep
+`progress = -delta_yaw`; rewrite the test in `apps/policy_rollout/tests/test_hardware.py`
+with a z-down reset frame.
+
+Done when. The numeric check above returns +60 deg and `release_started` for the clockwise
+case; a ros-sim recording contains `follow_waypoints` rows.
+
+### B2. Run the policy at 15 Hz, in simulated time for ros-sim  [blocking]
+
+- [ ] done
+
+Evidence. The checkpoint is a 15 Hz policy (decimation 8 at 120 Hz, 64.6 s horizon). The
+2026-09-30 ros-sim run requested a 0.1333 s period (`--rate 7.5`) and recorded a median
+sim-time step of 0.134 s. The temporal ensemble then blends actions meant for 66 ms later
+against a 133 ms tick, and the progress clock advances twice as far per policy step.
+
+Change. Launch `sim_policy.launch.py sim_speed:=0.5 headless:=true camera_view:=false` and
+run `ros-sim --rate 15`; the runner already paces on `/clock`. On hardware keep the 90 %
+preflight budget at 66 ms.
+
+Done when. `report.json` shows `requested_period_s: 0.0667` and `missed_policy_deadlines`
+near zero.
+
+### B3. Give ros-sim a longer policy-command watchdog  [minor]
+
+- [ ] done
+
+Evidence. The controller drops to hold after `policy_command_timeout: 0.5` s without a
+command. On the shared 4-core CPU five missed deadlines ended the 2026-09-30 run with
+`controller_watchdog` before anything task-related happened. Isaac has no equivalent.
+
+Change. `controllers_sim_policy.yaml`: raise `policy_command_timeout` for rehearsal only, and
+relax the matching check in `hardware.py` when `sim` is true. Keep 0.5 s on hardware.
+
+Done when. A rehearsal ends on the step budget or a cycle limit, never on
+`controller_watchdog`.
+
+### B4. Document the progress-clock origin  [minor]
+
+- [ ] done
+
+Evidence. Training episodes start at the first policy row (no reset rows,
+`sample_time_s[0] = 0`). Isaac's evaluator (`TrajectoryProgressClock.prime_before_reset`)
+primes its clock before the 0.25 s reset settle, so its progress runs about +0.005 ahead of
+the data. The local loops start at the first tick, which matches the data.
+
+Change. Comment in `hardware.py` (`start = node.now_s()`) and
+`utils/mujoco_student_rollout.py` so nobody "aligns" it with the evaluator.
+
+Done when. Documented.
+
+---
+
+## Layer C: what the policy sees
+
+The 29-D proprioception, the previous-action semantics, the phase one-hot and the DP3 camera
+contract are verified identical to training. Three inputs still differ.
+
+### C1. Publish hand joint velocities from the Inspire driver  [should]
+
+- [ ] done
+
+Evidence. `src/inspire_hand_driver/inspire_hand_driver/driver_node.py` (around line 701)
+fills `JointState.position` only, so the three hand-velocity slots of the proprio vector are
+exactly zero on hardware and in ros-sim. In the reference training episode the hand velocity
+averages 0.16 rad/s and reaches 0.97 rad/s at the first row; the MuJoCo-only loop averages
+0.13 rad/s.
+
+Change. Finite-difference the 50 Hz register reads in the driver (light low-pass) and publish
+`velocity` for the six driven joints; the mock transport can differentiate its slew.
+`hand_joint_state_to_arrays` already consumes it and `physical_hand_state_to_policy` already
+rescales thumb yaw by 1/0.75.
+
+Done when. `joint_velocity[:, 7:10]` in a rollout recording is non-zero and of the same
+magnitude as the training episode.
+
+### C2. Start the policy from the training start state, not from a settled grasp posture  [should]
+
+- [ ] done
+
+Evidence. Training row 0 has the hand at thumb yaw 1.085, thumb pitch 0.001, index 0.220 rad
+with the index closing at 0.97 rad/s: episodes begin while the hand is still moving from a
+more open posture to the grasp. Both local loops begin at the settled grasp posture
+(1.185 / 0.051 / 0.215, zero velocity). With the same image, that changes the first commanded
+z by 1.4 cm and yaw by 0.18 (filtered units). `apps/traj_replay/demo_trajs/traj_2/homing.yaml`
+(thumb yaw 1.086, pitch 0.0002) is almost exactly the training row-0 posture.
+
+Change. In `run_hardware_rollout`, home the hand to the row-0 posture, command the grasp
+posture, and take the first policy sample on the first hand-state message after that command
+instead of after `wait_for_hand`. Same for the reset in `utils/mujoco_student_rollout.py`.
+
+Done when. The first recorded proprio row matches the training row-0 hand state to about
+0.05 rad and shows a non-zero index velocity.
+
+### C3. Bring the ros-sim scene appearance closer to the Isaac render  [minor, sim-only]
+
+- [ ] done
+
+Evidence. This checkpoint barely tracks the nut (its training set has one nut pose), but
+appearance still moves the first action: with identical proprio the Isaac frame gives a
+filtered z of 2.8, the ros-sim relay frame 2.5, the MuJoCo-only render 1.55 (a 6 cm spread).
+The real D415 is the training camera, so hardware is unaffected.
+
+Change. `apps/policy_rollout/utils/make_ros_sim_scene.py`: walnut table top, Isaac's floor
+and dome lighting, no marker geometry; regenerate `inspire_franka_policy_scene.xml`. Verify
+with `checkpoints/reference_episode/scratch/vision_head_crosscheck.py`.
+
+Done when. Latent cosine to the Isaac frame above 0.9 at the reset view and the step-0 z
+action within 0.3 of the Isaac-frame value.
+
+### C4. Use 16 flow integration steps when the CPU budget allows  [minor]
+
+- [ ] done
+
+Evidence. Isaac samples with 16 Euler steps; the hardware and ros-sim default is 2.
+Teacher-forced first-action MAE on training frames (rows 0..119, unified units): 0.0072 with
+2 steps, 0.0063 with 4, 0.0052 with 16, i.e. 2.5 mm vs 1.1 mm in z. Not a cause of the
+failures, but a free gain once the loop fits at 15 Hz.
+
+Change. `--integration-steps 16`, or 4 as the compromise; the preflight rejects what does not
+fit.
+
+Done when. Preflight passes at 15 Hz with the chosen value.
+
+---
+
+## Layer D: hand posture, model, actuation
+
+The policy's three hand coordinates are logical training-model joints. What the physical
+fingers do with them is a separate question that needs a ruler.
+
+### D1. Measure which hand model matches the real fingertips, then make the other follow  [should, bench]
+
+- [ ] done
+
+Evidence. Two independent RH56 descriptions: training (Tiangong URDF, tip frames added by
+forgeUltra) and this workspace (dex-urdf). At the same joint command the tip separation is
+57.8 mm vs 113.6 mm, the midpoint 14.8 mm apart, the grasp frame 20.9 deg apart. The rollout
+now computes the policy's frame with the training kinematics, so the control loop is
+consistent with training, but whether the physical pads land on the nut depends on which
+model is right.
+
+Change. At the threading grasp posture, measure the real thumb-to-index distance and the pad
+midpoint relative to the flange. If the training model wins, update
+`src/inspire_hand_description`; if the workspace model wins, retrain or add a joint remap in
+`forge_osc.pinch_targets`.
+
+Done when. One model, used by TF, MuJoCo and `TrainingHandKinematics`, within 3 mm of the
+measured tips.
+
+### D2. Decide the thumb-yaw overlay for policy commands  [should, bench]
+
+- [ ] done
+
+Evidence. The driver remaps thumb abduction into the top 75 % of its travel
+(`command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO = 0.25`). A logical 1.185 rad is executed
+as 0.889 rad physically, and the rollout inverts the overlay on feedback so the policy never
+sees the difference. Training has no such remap: it commanded and observed the same joint.
+
+Change. Check on the bench whether the training posture (1.185 rad thumb yaw in the training
+model) is physically reachable. If it is, bypass the overlay for policy commands in
+`publish_hand_target` and drop the inversion in `physical_hand_state_to_policy`; if not, the
+retrain in D1 has to include the reachable range.
+
+Done when. Commanded and reported thumb yaw agree without an inversion step.
+
+### D3. Match the simulated hand response to training's PD drive  [minor, sim-only]
+
+- [ ] done
+
+Evidence. Training: PhysX PD, stiffness 30, damping 3, effort 20 Nm on the pinch joints,
+targets refreshed at 120 Hz. ros-sim: mock driver quantises to 0..1000 registers and slews at
+1200 counts/s in wall time, then `mujoco_ros2_control` PID (p 20, d 0.4, +-1 Nm) on the
+dex-urdf hand. Only matters once the sim hand has contact geometry (E1).
+
+Change. Slew the mock in sim time (`use_sim_time` in `MockTransport`); raise the hand PID
+clamp toward the training effort in `src/inspire_franka_sim/config/pids.yaml` once contact
+exists.
+
+Done when. A 1 rad step on the index joint settles in about the same time in ros-sim as in
+the MuJoCo-only loop.
+
+---
+
+## Layer E: ros-sim plant fidelity (sim-only)
+
+These make the rehearsal predictive of hardware; they do not change the hardware stack.
+
+### E1. Give ros-sim hand collision geometry and the dynamic thread pair  [should]
+
+- [ ] done
+
+Evidence. `inspire_franka_policy_scene.xml` has a fixed nut and a hand without collision
+geometry, so no grasp, no turn, and the release trigger must rely on the yaw proxy.
+`apps/policy_rollout/policy_rollout/mujoco_threading_env.py` already ports Isaac's simplified
+thread pair (200 kN/m axial drive, 0.002 Nm Coulomb, hold during release) and the training
+hand PD.
+
+Change. Compose the policy scene from `ThreadingScene._add_thread_pair` and the training hand
+collision classes; expose `nut_twist` on a topic so the coordinator can use the real turn in
+sim and the proxy only on hardware.
+
+Done when. A ros-sim run completes a cycle on the physical turn, not the proxy.
+
+### E2. Pin the FR3 joint dynamics to the training asset and commit the choice  [minor]
+
+- [ ] done
+
+Evidence. The working tree has an uncommitted experiment in
+`src/inspire_franka_sim/mjcf/fr3.xml` that zeroes damping and friction but keeps Menagerie's
+armature (0.195 / 0.074). The Isaac USD (`forgeUltra/assets/fr3_inspirehand/fr3_no_hand.usd`)
+is a git-lfs pointer in the local checkout, so its joint armature and friction could not be
+read; `robot.py`'s ArticulationCfg leaves the arm values at the USD defaults. The MuJoCo-only
+loop zeroes damping and friction and keeps armature too.
+
+Change. Read the arm joint properties from the USD on the training machine, set `fr3.xml`
+and `assets/fr3_inspirehand/fr3_inspirehand_replay.xml` to the same values, and commit with
+the numbers in the comment.
+
+Done when. `git status` is clean and both MJCFs cite the USD values.
+
+---
+
+## Leave as the sim-to-real gap
+
+Physics that training approximated and nobody has measured. Once every item above is done,
+these are the only things that can still explain a hardware difference. Measure them; do not
+tune around them.
+
+| Gap | Training assumption | Reality / how to measure |
+|---|---|---|
+| FR3 joint friction and armature | PhysX asset values (not readable locally) | Unknown; libfranka compensates gravity, not friction. Slow joint-space sine sweep. |
+| Hand response and RS485 timing | Ideal 120 Hz PD | About 0.17 s settling, bus latency, register quantisation. |
+| Finger-pad and nut friction | 0.75 static/dynamic on nut and robot, 0.25 to 1.25 on the bolt | Real pad rubber on a steel nut, unmeasured. |
+| Thread engagement | Coaxial slide with a 200 kN/m spring, 0.002 Nm Coulomb, releases after one turn | A real M24 binds, cross-threads, has backlash. |
+| Nut spawn | One pose, yaw 30 deg, 7.66 mm axial start, bit-exact in all 20 episodes | Operator-placed. |
+| D415 depth | Ideal pinhole depth | Holes, edge noise, 6 px principal-point offset, camera-pose calibration RMSE 27 mm / 3.5 deg. |
+| Coriolis and model mismatch | Isaac OSC has no coriolis term | Hardware compensates it from Franka's model; the DH sim has neither. Small at threading speeds. |
+
+---
+
+## Already identical, no work needed
+
+- Unified action -> filtered native action: Isaac inverts the EMA
+  (`forge_raw_native_action_for_filtered_target`), the local `OscActionFilter` multiplies by
+  the scale `[3, 4, 16, 3, 3, 3, 2, 2, 2]`. Same applied target.
+- Previous action in the proprio vector is the previous step's filtered native action:
+  bit-exact in the training data (`prev[t] == osc_filtered_action[t-1]`, set by
+  `rewards/threading.py` post-step), in Isaac (`head_rgbd_env.py` uses `self.prev_actions`),
+  and locally.
+- Nominal replay in Isaac (`disable_domain_randomization`) zeroes gain noise, threshold noise
+  and the dead zone, and fixes the EMA at 0.0625; the local stacks use the same constants and
+  no dead zone.
+- Phase one-hot schema and ordering; temporal-ensemble weighting (0.5 per age); decoder
+  clipping math; 20 mm / 0.097 rad thresholds; 565 / 28 / 10 gains; 2*sqrt(K) damping;
+  torque clamp 100 Nm then 87 / 12 Nm effort limits.
+- Frames: training world = `fr3_link0` yawed by pi at (1.2, 0, 0); bolt tip, nut pose and
+  camera pose agree to 0.1 mm. Nut yaw differs by a multiple of the hex symmetry only.
+- Grasp approach axis: the untilted reset z transported with the flange, captured after
+  homing, exactly as `randomize_initial_state` stores `hand_grasp_reset_z_transport`.
+- DP3 intrinsics, crop, point-cloud box, RGB scaling and depth validity handling.
+- Release/return timing: 55 deg trigger, four 0.7 s waypoint phases, 1.0 s return, 5 mm /
+  5 deg / 0.15 rad return check, 16 s timeout.
+
+---
+
+## Evidence sources
+
+- Training scene compiled from `assets/fr3_inspirehand/fr3_inspirehand_replay.xml` at the
+  M24 reset pose (`policy_rollout.mujoco_threading_env.ThreadingScene`).
+- Reference training episode
+  `apps/policy_rollout/checkpoints/reference_episode/episode_000_sequential_threading.npz`.
+- Recordings `logs/policy_rollout/ros_sim-20260930-114721-942722` (7.5 Hz, 2 flow steps,
+  427 steps, controller watchdog) and
+  `apps/policy_rollout/checkpoints/reference_episode/student_rollout` (MuJoCo-only, 10 cycles
+  on the 2026-09-11 scene) / `student_rollout_20260930` (release at 2.8 s, return check
+  missed by 0.24 deg).
+- Isaac side: `forgeUltra/distillation/tasks/ablation_offline_flow_matching/evaluate_flow.py`,
+  `distillation/utils/evaluation/cyclic_threading.py`, `distillation/utils/teachers/forge_transitions.py`,
+  `forge_ultra/tasks/mdp/robot_control.py`, `forge_ultra/tasks/utils/control.py`,
+  `forge_ultra/tasks/forge_franka_threading/forge_franka_env.py`, branch `franka-chi`.
+- Checkpoint inference on CPU in the `inspire_franka` container (`torch 2.14.0+cpu`,
+  `mujoco 3.12.0`).
