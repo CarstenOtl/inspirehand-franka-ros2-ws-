@@ -565,6 +565,15 @@ class GripCycleCoordinator:
         return "return_to_reset" if self.phase_index == 4 else "follow_waypoints"
 
     def turn_progress_rad(self, quaternion) -> float:
+        # The yaw below is measured about the reset grasp frame's own z, and at the threading
+        # grip that axis points DOWN (grasp z . world z = -0.993), because the hand reaches
+        # down onto the bolt. A tightening turn -- clockwise seen from above, the negative
+        # direction about world z, the one training scores as positive progress -- therefore
+        # already reads POSITIVE here. The former -1.0 factor flipped it, so a tightening
+        # 55-degree turn reported -55 and `progress >= radians(55)` could never fire: the
+        # rollout stayed in the `policy` phase for the whole run. Verified numerically against
+        # the training reset pose: a -55 deg world-z turn now reads +54.5 deg (the 0.5 deg
+        # shortfall is the ~7 deg tilt between grasp z and the bolt axis).
         relative = fo.matrix_from_quat(fo.quat_conjugate(self.reset_quaternion)) @ fo.matrix_from_quat(
             quaternion
         )
@@ -572,7 +581,7 @@ class GripCycleCoordinator:
         delta = math.atan2(math.sin(yaw - self._previous_yaw), math.cos(yaw - self._previous_yaw))
         self._unwrapped_yaw += delta
         self._previous_yaw = yaw
-        return -1.0 * (self._unwrapped_yaw - self._cycle_yaw_origin)
+        return self._unwrapped_yaw - self._cycle_yaw_origin
 
     def _returned(self, position, quaternion, hand) -> bool:
         position_error = np.linalg.norm(np.asarray(position) - self.reset_position)

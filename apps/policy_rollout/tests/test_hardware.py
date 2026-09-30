@@ -248,38 +248,67 @@ def test_grasp_target_is_retargeted_to_the_fixed_controller_point():
     assert abs(float(np.dot(target_quaternion, expected_quaternion))) == pytest.approx(1.0)
 
 
-def test_cycle_coordinator_enters_release_after_clockwise_turn():
-    reset_q = fo.quat_from_euler_xyz(0.0, 0.0, 0.0)
-    coordinator = GripCycleCoordinator(
+# The coordinator's proxy is only correct in the geometry it actually runs in, so these use
+# the real threading-grip reset frame (URDF_RESET_* below, z pointing world-down) rather than
+# an identity quaternion. With identity the sign error that kept the 2026-09-30 ros-sim run in
+# the `policy` phase for all 427 steps is invisible: both signs pass.
+def _reset_grasp_quaternion():
+    z_transport = grasp_z_transport_at_reset(
+        URDF_RESET_THUMB, URDF_RESET_INDEX, URDF_RESET_FLANGE_POSITION, URDF_RESET_FLANGE_QUATERNION
+    )
+    _, quaternion = grasp_frame_from_tips(
+        URDF_RESET_THUMB, URDF_RESET_INDEX, URDF_RESET_FLANGE_QUATERNION, z_transport
+    )
+    return quaternion
+
+
+def _turned_about_world_z(quaternion, degrees):
+    return fo.quat_mul(fo.quat_from_euler_xyz(0.0, 0.0, np.deg2rad(degrees)), quaternion)
+
+
+def _coordinator(reset_quaternion, *, max_cycles=1):
+    return GripCycleCoordinator(
         rate_hz=10.0,
-        max_cycles=1,
+        max_cycles=max_cycles,
         reset_position=np.zeros(3),
-        reset_quaternion=reset_q,
+        reset_quaternion=reset_quaternion,
         reset_hand=np.zeros(3),
     )
-    turned = fo.quat_from_euler_xyz(0.0, 0.0, np.deg2rad(-56.0))
+
+
+def test_cycle_coordinator_enters_release_after_tightening_turn():
+    # An M24 right-hand thread tightens clockwise seen from above, i.e. negative about world z,
+    # and that is the direction training scores as positive progress.
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _coordinator(reset_q)
     event, progress = coordinator.update(
-        position=np.zeros(3), quaternion=turned, hand=np.zeros(3)
+        position=np.zeros(3), quaternion=_turned_about_world_z(reset_q, -56.0), hand=np.zeros(3)
     )
-    assert progress == pytest.approx(np.deg2rad(56.0))
+    # The grasp z is tilted ~7 degrees off the bolt axis, so the proxy reads ~1 percent low.
+    assert progress == pytest.approx(np.deg2rad(56.0), abs=np.deg2rad(2.0))
     assert event == "release_started"
     assert coordinator.process_phase() == "follow_waypoints"
 
 
-def test_cycle_completion_rebases_without_retriggering_release():
-    reset_q = fo.quat_from_euler_xyz(0.0, 0.0, 0.0)
-    coordinator = GripCycleCoordinator(
-        rate_hz=10.0,
-        max_cycles=2,
-        reset_position=np.zeros(3),
-        reset_quaternion=reset_q,
-        reset_hand=np.zeros(3),
+def test_cycle_coordinator_ignores_a_loosening_turn():
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _coordinator(reset_q)
+    event, progress = coordinator.update(
+        position=np.zeros(3), quaternion=_turned_about_world_z(reset_q, +56.0), hand=np.zeros(3)
     )
+    assert progress < 0.0
+    assert event is None
+    assert coordinator.process_phase() == "policy"
+
+
+def test_cycle_completion_rebases_without_retriggering_release():
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _coordinator(reset_q, max_cycles=2)
     coordinator.active = True
     coordinator.phase_index = 4
     coordinator.phase_steps = 9
-    coordinator._unwrapped_yaw = np.deg2rad(-60.0)
-    coordinator._previous_yaw = np.deg2rad(-60.0)
+    coordinator._unwrapped_yaw = np.deg2rad(60.0)
+    coordinator._previous_yaw = np.deg2rad(60.0)
 
     event, _ = coordinator.update(
         position=np.zeros(3), quaternion=reset_q, hand=np.zeros(3)
