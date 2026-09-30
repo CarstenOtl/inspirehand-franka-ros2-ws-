@@ -109,6 +109,7 @@ class CartesianReplayClient(ReplayClient):
         return self.remote_parameters(self.controller_ns, [
             'translational_stiffness', 'rotational_stiffness', 'nullspace_stiffness',
             'stiffness_scale', 'target_filter', 'nullspace_target', 'coriolis_compensation',
+            'nullspace_damping_lambda', 'rotation_error',
             'torque_rate_limit', 'max_trajectory_start_error_m', 'max_trajectory_start_error_rad',
             'goto_max_velocity', 'goto_max_angular_velocity', 'pause_ramp_duration',
             'max_position_error', 'max_orientation_error', 'base_frame',
@@ -145,11 +146,13 @@ class CartesianReplayClient(ReplayClient):
         status = self.wait_for_status()
         if status.get('command_mode') != 'cartesian_impedance':
             raise Rejected('controller %s is not publishing Cartesian impedance status' % self.controller)
-        log('Cartesian replay uses the example Cartesian impedance law: translational %g N/m, '
-            'rotational %g Nm/rad, nullspace %g (scale %g), target filter %g, nullspace target %s, '
-            '%s model'
+        log('Cartesian replay uses the Cartesian impedance law: translational %g N/m, '
+            'rotational %g Nm/rad (%s error), nullspace %g (scale %g, projector lambda %g), '
+            'target filter %g, nullspace target %s, %s model'
             % (parameters['translational_stiffness'], parameters['rotational_stiffness'],
+               parameters.get('rotation_error', 'quaternion_vector'),
                parameters['nullspace_stiffness'], parameters.get('stiffness_scale', 1.0),
+               parameters.get('nullspace_damping_lambda', 0.2),
                parameters['target_filter'], parameters['nullspace_target'],
                parameters.get('model_source', 'franka')))
         return parameters

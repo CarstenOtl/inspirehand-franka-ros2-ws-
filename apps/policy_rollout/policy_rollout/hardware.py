@@ -1202,6 +1202,11 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "translational_stiffness": 565.0,
             "rotational_stiffness": 28.0,
             "nullspace_stiffness": 10.0,
+            # The exact nullspace projector and ForgeUltra's rotation error; with the
+            # example's lambda 0.2 the joint spring leaks more force onto the tool than the
+            # policy itself commands, and the quaternion-vector error halves the rotational
+            # stiffness. See controllers_sim_policy.yaml.
+            "nullspace_damping_lambda": 0.0,
             "stiffness_scale": 1.0,
             "target_filter": 1.0,
             "torque_rate_limit": 1.0,
@@ -1217,6 +1222,10 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 float(parameters.get(name, float("nan"))), value, rel_tol=1e-6
             )
         ]
+        if str(parameters.get("rotation_error")) != "axis_angle":
+            mismatches.append(
+                f"rotation_error={parameters.get('rotation_error')!r} (expected 'axis_angle')"
+            )
         if mismatches:
             raise Rejected(
                 "controller is not using the policy profile: " + "; ".join(mismatches)

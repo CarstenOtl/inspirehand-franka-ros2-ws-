@@ -15,6 +15,7 @@ using franka_trajectory_replay::example_cartesian_impedance;
 using franka_trajectory_replay::example_gain_filter;
 using franka_trajectory_replay::example_reference_filter;
 using franka_trajectory_replay::Matrix6d;
+using franka_trajectory_replay::RotationErrorForm;
 using franka_trajectory_replay::Matrix6x7d;
 using franka_trajectory_replay::Vector6d;
 using franka_trajectory_replay::Vector7d;
@@ -291,4 +292,58 @@ TEST(ExampleCartesianImpedance, reference_filter_converges_and_bypasses_at_alpha
   EXPECT_TRUE(position_d.isApprox(target, 1e-15));
   EXPECT_NEAR(franka_trajectory_replay::quaternion_angle(orientation_d, target_orientation), 0.0,
               1e-12);
+}
+
+// --- ForgeUltra's law -------------------------------------------------------------------
+// The two options the policy profiles set so the student meets the law it was distilled
+// against (forge_osc.compute_dof_torque / forge_ultra/tasks/utils/control.py).
+
+TEST(ForgeCartesianImpedance, axis_angle_error_carries_the_full_angle) {
+  const Eigen::Vector3d p(0.4, 0.0, 0.3);
+  const Eigen::Vector3d axis = Eigen::Vector3d(0.3, -0.5, 0.81).normalized();
+  const Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
+  for (const double angle : {0.02, 0.1, 0.3, 0.6, 1.2}) {
+    const Eigen::Quaterniond q_d(Eigen::AngleAxisd(angle, axis));
+    const Vector6d example = example_cartesian_error(p, q, p, q_d);
+    const Vector6d forge =
+        example_cartesian_error(p, q, p, q_d, RotationErrorForm::kAxisAngle);
+    // Same axis, different magnitude: the example applies sin(theta/2), training theta. That
+    // is the factor that turns a 28 Nm/rad rotational spring into an effective 14 Nm/rad.
+    EXPECT_NEAR(example.tail(3).norm(), std::sin(0.5 * angle), 1e-12) << "angle " << angle;
+    EXPECT_NEAR(forge.tail(3).norm(), angle, 1e-12) << "angle " << angle;
+    EXPECT_NEAR(forge.tail(3).normalized().dot(example.tail(3).normalized()), 1.0, 1e-12);
+    EXPECT_TRUE(forge.head(3).isApprox(example.head(3), 1e-15));
+  }
+}
+
+TEST(ForgeCartesianImpedance, lambda_zero_keeps_the_nullspace_torque_out_of_the_task_space) {
+  Matrix6d stiffness;
+  Matrix6d damping;
+  example_cartesian_gains({565.0, 565.0, 565.0, 28.0, 28.0, 28.0}, stiffness, damping);
+  const Eigen::Vector3d p(0.45, 0.02, 0.32);
+  const Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
+  Vector7d joints;
+  joints << 0.1, -0.5, 0.0, -2.0, 0.9, 2.4, -0.7;
+  Vector7d q_nullspace;
+  q_nullspace << 0.0, -0.6, 0.0, -2.6, -0.5, 2.9, 0.0;
+
+  for (double phase = 0.0; phase < 3.0; phase += 0.37) {
+    const Matrix6x7d jacobian = synthetic_jacobian(phase);
+    // How much of the nullspace torque a task-space wrench could account for: the residual
+    // after removing the component orthogonal to range(J^T).
+    const auto leak = [&jacobian](const Vector7d& tau) {
+      return (jacobian.transpose() *
+              jacobian.transpose().completeOrthogonalDecomposition().solve(tau))
+          .norm();
+    };
+    const auto terms = [&](double lambda) {
+      return example_cartesian_impedance(p, q, jacobian, Vector7d::Zero(), joints,
+                                        Vector7d::Zero(), p, q, q_nullspace, stiffness, damping,
+                                        10.0, lambda);
+    };
+    const double leak_example = leak(terms(0.2).tau_nullspace);
+    const double leak_exact = leak(terms(0.0).tau_nullspace);
+    EXPECT_LT(leak_exact, 1e-9) << "phase " << phase;
+    EXPECT_GT(leak_example, 20.0 * std::max(leak_exact, 1e-12)) << "phase " << phase;
+  }
 }

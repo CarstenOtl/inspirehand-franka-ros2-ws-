@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -25,8 +26,24 @@ using Matrix7d = Eigen::Matrix<double, 7, 7>;
 using Matrix6x7d = Eigen::Matrix<double, 6, 7>;
 using Matrix7x6d = Eigen::Matrix<double, 7, 6>;
 
-/// The example's damped pseudo-inverse regularisation for the nullspace projector.
+/// The example's damped pseudo-inverse regularisation for the nullspace projector. At this
+/// value lambda sits on top of the three smallest singular values of J^T near the threading
+/// posture, so the "projector" stops annihilating range(J^T) and the joint spring pushes on
+/// the tool (12.5 N at a 1 rad wrist excursion). Pass 0.0 for the exact pseudo-inverse.
 constexpr double kNullspaceDampingLambda = 0.2;
+
+/// Singular values at or below this are treated as zero when lambda is 0.
+constexpr double kNullspaceSingularTolerance = 1.0e-9;
+
+/// Which orientation error the task-space spring sees.
+enum class RotationErrorForm {
+  /// The example's -R vec(q_c^-1 q_d) = sin(theta/2) * axis. Halves the effective rotational
+  /// stiffness at small angles and saturates past 180 deg.
+  kQuaternionVector,
+  /// ForgeUltra's get_pose_error(rot_error_type="axis_angle"): theta * axis. What the policy
+  /// was distilled against.
+  kAxisAngle,
+};
 
 struct CartesianImpedanceTerms {
   Vector7d tau_task{Vector7d::Zero()};
@@ -48,11 +65,13 @@ inline void example_cartesian_gains(const std::array<double, 6>& k, Matrix6d& st
   }
 }
 
-/// computeError(): [p - p_d ; -R * vec(q_c^-1 q_d)] with q_c on q_d's hemisphere.
-inline Vector6d example_cartesian_error(const Eigen::Vector3d& position,
-                                        const Eigen::Quaterniond& orientation,
-                                        const Eigen::Vector3d& position_d,
-                                        const Eigen::Quaterniond& orientation_d) {
+/// computeError(): [p - p_d ; -R * vec(q_c^-1 q_d)] with q_c on q_d's hemisphere. With
+/// kAxisAngle the rotation block carries the full angle instead of its half-angle sine, which
+/// is what ForgeUltra's compute_dof_torque feeds the rotational spring.
+inline Vector6d example_cartesian_error(
+    const Eigen::Vector3d& position, const Eigen::Quaterniond& orientation,
+    const Eigen::Vector3d& position_d, const Eigen::Quaterniond& orientation_d,
+    RotationErrorForm form = RotationErrorForm::kQuaternionVector) {
   Vector6d error;
   error.head(3) = position - position_d;
   Eigen::Quaterniond orientation_corrected = orientation;
@@ -60,7 +79,14 @@ inline Vector6d example_cartesian_error(const Eigen::Vector3d& position,
     orientation_corrected.coeffs() = -orientation_corrected.coeffs();
   }
   const Eigen::Quaterniond error_quaternion(orientation_corrected.inverse() * orientation_d);
-  error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
+  if (form == RotationErrorForm::kAxisAngle) {
+    // R * axis_angle(q_c^-1 q_d) == axis_angle(q_d q_c^-1), i.e. the world-frame rotation
+    // vector ForgeUltra computes as axis_angle_from_quat(quat_mul(target, quat_inv)).
+    const Eigen::AngleAxisd axis_angle(error_quaternion);
+    error.tail(3) = axis_angle.axis() * axis_angle.angle();
+  } else {
+    error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
+  }
   error.tail(3) = -orientation.toRotationMatrix() * error.tail(3);
   return error;
 }
@@ -72,19 +98,25 @@ inline CartesianImpedanceTerms example_cartesian_impedance(
     const Matrix6x7d& jacobian, const Vector7d& coriolis, const Vector7d& q,
     const Vector7d& dq, const Eigen::Vector3d& position_d,
     const Eigen::Quaterniond& orientation_d, const Vector7d& q_nullspace,
-    const Matrix6d& stiffness, const Matrix6d& damping, double nullspace_stiffness) {
+    const Matrix6d& stiffness, const Matrix6d& damping, double nullspace_stiffness,
+    double nullspace_damping_lambda = kNullspaceDampingLambda,
+    RotationErrorForm rotation_error_form = RotationErrorForm::kQuaternionVector) {
   CartesianImpedanceTerms terms;
-  terms.error = example_cartesian_error(position, orientation, position_d, orientation_d);
+  terms.error =
+      example_cartesian_error(position, orientation, position_d, orientation_d, rotation_error_form);
 
   // Damped pseudo-inverse of the Jacobian transpose, as the example computes it.
   const Matrix7x6d jacobian_transpose = jacobian.transpose();
   Eigen::JacobiSVD<Matrix7x6d> svd(jacobian_transpose, Eigen::ComputeFullU | Eigen::ComputeFullV);
   const auto& singular_values = svd.singularValues();
   Matrix7x6d s_inverse = Matrix7x6d::Zero();
+  const double lambda = std::max(0.0, nullspace_damping_lambda);
   for (int i = 0; i < singular_values.size(); ++i) {
-    s_inverse(i, i) = singular_values(i) /
-                      (singular_values(i) * singular_values(i) +
-                       kNullspaceDampingLambda * kNullspaceDampingLambda);
+    if (lambda <= 0.0 && singular_values(i) <= kNullspaceSingularTolerance) {
+      continue;
+    }
+    s_inverse(i, i) =
+        singular_values(i) / (singular_values(i) * singular_values(i) + lambda * lambda);
   }
   const Matrix6x7d jacobian_transpose_pinv =
       svd.matrixV() * s_inverse.transpose() * svd.matrixU().transpose();

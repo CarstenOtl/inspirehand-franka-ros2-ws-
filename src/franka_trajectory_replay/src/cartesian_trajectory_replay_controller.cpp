@@ -677,6 +677,9 @@ void CartesianTrajectoryReplayController::publish_status() {
       std::to_string(gains_applied_snapshot_[1].load(std::memory_order_relaxed)));
   add("nullspace_stiffness_applied",
       std::to_string(gains_applied_snapshot_[2].load(std::memory_order_relaxed)));
+  add("nullspace_damping_lambda", std::to_string(nullspace_damping_lambda_));
+  add("rotation_error",
+      rotation_error_form_ == RotationErrorForm::kAxisAngle ? "axis_angle" : "quaternion_vector");
   {
     char buffer[160];
     std::snprintf(buffer, sizeof(buffer), "%.4f %.4f %.4f %.4f %.4f %.4f %.4f",
@@ -937,7 +940,8 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
   // The example's law on the filtered reference, then its filters toward the new target.
   const CartesianImpedanceTerms terms = example_cartesian_impedance(
       position, orientation, jacobian, coriolis, q_current, dq_current, position_d_,
-      orientation_d_, nullspace_d_, stiffness_, damping_, nullspace_stiffness_);
+      orientation_d_, nullspace_d_, stiffness_, damping_, nullspace_stiffness_,
+      nullspace_damping_lambda_, rotation_error_form_);
   const Vector7d output = saturate_torque_rate(terms.tau_command, tau_command_previous_);
   tau_command_previous_ = output;
   for (int i = 0; i < kNumJoints; ++i) {
@@ -1057,6 +1061,8 @@ CartesianTrajectoryReplayController::CallbackReturn CartesianTrajectoryReplayCon
     auto_declare<double>("stiffness_scale", 1.0);
     auto_declare<double>("target_filter", 0.005);
     auto_declare<std::string>("nullspace_target", "trajectory");
+    auto_declare<double>("nullspace_damping_lambda", kNullspaceDampingLambda);
+    auto_declare<std::string>("rotation_error", "quaternion_vector");
     auto_declare<bool>("coriolis_compensation", true);
     auto_declare<double>("torque_rate_limit", 0.0);
     auto_declare<double>("goto_max_velocity", 0.10);
@@ -1137,6 +1143,25 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
   } else {
     RCLCPP_FATAL(node->get_logger(), "model_source must be 'franka' or 'dh', got '%s'",
                  model_source.c_str());
+    return false;
+  }
+
+  nullspace_damping_lambda_ = node->get_parameter("nullspace_damping_lambda").as_double();
+  if (!std::isfinite(nullspace_damping_lambda_) || nullspace_damping_lambda_ < 0.0) {
+    RCLCPP_FATAL(node->get_logger(), "nullspace_damping_lambda must be finite and >= 0, got %f",
+                 nullspace_damping_lambda_);
+    return false;
+  }
+
+  const auto rotation_error_mode = node->get_parameter("rotation_error").as_string();
+  if (rotation_error_mode == "quaternion_vector") {
+    rotation_error_form_ = RotationErrorForm::kQuaternionVector;
+  } else if (rotation_error_mode == "axis_angle") {
+    rotation_error_form_ = RotationErrorForm::kAxisAngle;
+  } else {
+    RCLCPP_FATAL(node->get_logger(),
+                 "rotation_error must be 'quaternion_vector' or 'axis_angle', got '%s'",
+                 rotation_error_mode.c_str());
     return false;
   }
 
@@ -1403,10 +1428,12 @@ CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State&
       cartesian_publisher);
 
   RCLCPP_INFO(get_node()->get_logger(),
-              "Configured: Cartesian impedance (example law, %s model) about %s%s, nullspace "
-              "target %s, target filter %.4f, goto <= %.2f m/s / %.2f rad/s, max goto step "
-              "%.2f m / %.2f rad.",
-              model_from_dh_ ? "built-in DH" : "franka_hardware",
+              "Configured: Cartesian impedance (%s rotation error, nullspace lambda %.3f, %s "
+              "model) about %s%s, nullspace target %s, target filter %.4f, goto <= %.2f m/s / "
+              "%.2f rad/s, max goto step %.2f m / %.2f rad.",
+              rotation_error_form_ == RotationErrorForm::kAxisAngle ? "axis-angle"
+                                                                   : "quaternion-vector",
+              nullspace_damping_lambda_, model_from_dh_ ? "built-in DH" : "franka_hardware",
               tool_active_ ? format_pose(tool_translation_,
                                          Eigen::Quaterniond(tool_rotation_)).c_str()
                            : "the flange",

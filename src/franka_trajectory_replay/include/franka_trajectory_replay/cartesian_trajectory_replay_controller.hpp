@@ -203,6 +203,11 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   bool tool_active_{false};
   bool model_from_dh_{false};
   bool nullspace_follows_trajectory_{true};
+  // Which impedance law the task and nullspace springs use. The defaults reproduce
+  // franka_example_controllers; the policy profiles set them to ForgeUltra's choices so the
+  // student meets the law it was distilled against.
+  double nullspace_damping_lambda_{kNullspaceDampingLambda};
+  RotationErrorForm rotation_error_form_{RotationErrorForm::kQuaternionVector};
   bool coriolis_compensation_{true};
   double torque_rate_limit_{0.0};
   double goto_max_velocity_{0.10};

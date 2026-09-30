@@ -64,6 +64,16 @@ cartesian_trajectory_replay_controller:
     nullspace_stiffness: 10.0
     stiffness_scale: 1.0
     target_filter: 1.0
+    # The two places the franka example's law departs from ForgeUltra's
+    # compute_dof_torque. lambda 0.2 turns the nullspace projector into a leaky
+    # one: near the threading posture it sits on top of the three smallest
+    # singular values of J^T, so the joint spring pushes 12.5 N on the tool at a
+    # 1 rad wrist excursion, against the 11.3 N the policy commands for a full
+    # 20 mm step. lambda 0 restores the exact projection (0.4 N). axis_angle
+    # feeds the rotational spring the full angle instead of sin(theta/2), which
+    # is what turns 28 Nm/rad into the 14 Nm/rad the example actually applies.
+    nullspace_damping_lambda: 0.0
+    rotation_error: axis_angle
     nullspace_target: trajectory
     coriolis_compensation: true
     torque_rate_limit: 1.0
