@@ -32,11 +32,92 @@ Working rules for agents:
 `policy` phase. 321 steps at 15 Hz, 0 missed policy deadlines, 1 clipped target, no controller
 watchdog. It then ended in `return_failed` with 0 completed cycles.
 
-So the arm now descends and turns the nut, and the open frontier moved from "cannot descend" to
-the return-to-reset phase -- which is where the MuJoCo-only loop on the training plant also
-failed on 2026-09-30 (0.24 deg short on the orientation check). Both stacks now fail at the same
-place, so the next thing to look at is the return itself (B4, C2, and the `_returned` tolerances
-in `GripCycleCoordinator`: 5 mm / 5 deg / 0.15 rad), not the controller law.
+So the open frontier moved from "cannot descend" to the return-to-reset phase -- which is where
+the MuJoCo-only loop on the training plant also failed on 2026-09-30 (0.24 deg short on the
+orientation check). Both stacks now fail at the same place, so the next thing to look at is the
+return itself (B4, C2), not the controller law.
+
+2026-10-01, re-reading that recording. Two things qualify the summary above.
+
+- The release fired at step 23, 1.53 s in, at `trajectory_progress` 0.024. The MuJoCo-only loop
+  releases at 2.8 s, about 43 % into a ~6.5 s cycle; this was 24 %. 23 policy steps is not
+  enough to descend onto the nut and turn it 55 deg, so "the arm descends and turns the nut"
+  is more than that run shows. The grasp-frame yaw proxy cannot tell a nut turn from the wrist
+  yaw of the descent, and training does not use a proxy -- it reads the thread twist joint.
+  Worth settling before reading anything else into release timing (see E1).
+- The phase machine itself ran exactly to spec: 44 steps of `follow_waypoints` (2.93 s, 4 x
+  0.7 s) then 254 of `return_to_reset` (16.9 s, 1.0 s + the 16 s timeout). Joint 5 ended at
+  2.807 rad against the 2.8065 MJCF limit, so the arm sat on a joint limit for the whole
+  return. Note the MuJoCo-only loop also reaches 2.81 rad by progress 0.05, so the limit is
+  the training posture, not by itself the fault.
+
+The return check is NOT suspect: `build_hybrid_transition_sources` passes
+`use_live_policy_reset_pose=(mode == CYCLIC_THREADING)`, so training's evaluator also measures
+against the live grasp pose captured at reset, with the same 5 mm / 5 deg / 0.15 rad and the same
+16 s timeout. `GripCycleCoordinator._returned` is faithful; do not re-audit it.
+
+The recording cannot say which of the three gates failed, or by how much. `hardware.py` passes
+only `completed_cycles` and `watchdog_stop` as task signals, so
+`threading_turn_progress_rad` -- the one signal the release trigger runs on -- is NaN in every
+ros-sim and hardware recording (`data_collection.py` defaults it to NaN; only
+`mujoco_student_rollout.py` fills it), and no grasp pose is recorded at all. Isaac stores and
+logs all three residuals (`_distillation_cyclic_return_{position,orientation,hand}_error*`).
+Recording the proxy, the grasp pose and the return residuals is the cheapest next step on the
+return, and it is a prerequisite for diagnosing it rather than guessing. All three are pure
+functions of the recorded joints, so they can be rebuilt offline (session scratch
+`replay_proxy.py` / `return_residuals.py`: flange from arm FK on the training scene, tips from
+`TrainingHandKinematics`, then `grasp_frame_from_tips` and the coordinator's own arithmetic).
+The reconstruction reproduces the proxy the rollout printed at its events to 0.1 deg, so it is
+trustworthy -- but it should not have to be redone by hand every run.
+
+---
+
+## Status, 2026-10-01: three ros-sim runs with A1b
+
+| run | steps | release | return outcome |
+|---|---|---|---|
+| `20260930-143512` (A1a only) | 321 | step 22, 1.47 s, proxy jumped 68.7 deg to 63.3 | `return_failed` |
+| `20261001-165420` (A1a+A1b) | 321 | step 22, 1.47 s, proxy jumped 99.8 deg to 94.7 | `return_failed` |
+| `20261001-170332` (A1a+A1b, viewer) | 363 | step 64, 4.27 s, smooth ~3 deg/step to 55.5 | `return_failed` |
+
+**The return fails on orientation, and only on orientation.** Reconstructed gates over the 254
+`return_to_reset` steps of `170332`:
+
+| gate | best reached | limit | |
+|---|---|---|---|
+| position | 0.4 mm | 5.0 mm | passes |
+| hand | 0.060 rad | 0.15 rad | passes |
+| orientation | 10.8 deg | 5.0 deg | **fails** |
+
+The near-miss is step ~150, t 10.0 s: 3.2 mm / 12.9 deg / 0.127 rad, two gates in and
+orientation 7.9 deg over. After that it drifts to ~162 mm / ~51 deg and sits there, flat, for
+the last nine seconds of the 16 s wait -- the student has played past the return part of its
+trajectory while the coordinator is still testing the check. The orientation residual tracks the
+turn proxy almost exactly (51 vs 49 deg at the end, 12.9 vs 11.6 deg at the near-miss), so what
+fails is specifically that **the student only partly unwinds the turn it made**. The MuJoCo-only
+loop fails the same gate by 0.24 deg; we fail it by 10.8 deg, 40x worse but the same failure.
+
+**A degenerate grasp frame can fire the release trigger, in some runs.** The grasp frame is built
+from the fingertip midpoint and the thumb->index direction (`fo.hand_grasp_frame`). ros-sim's
+`m24_nut` is `contype="0" conaffinity="0"` with zero joints -- a fixed visual, as
+`make_ros_sim_scene.py` says in its own docstring -- so when the student closes the pinch there
+is nothing between the fingers and the tips converge: 57.8 mm at reset to 4.5 mm by step 22.
+At that separation the thumb->index direction is meaningless, the frame tips over
+(`grasp_z . world_z` from -0.99 to -0.27 in two steps) and the proxy jumps ~100 deg in one 67 ms
+step. In `143512` and `165420` that jump crossed the 55 deg gate and fired `release_started`; in
+`170332` the same jump happened (37.2 deg at step 24, tips at 8.3 mm) but peaked near 49.5 deg,
+under the gate, and release then fired later on a genuine smooth wrist turn. So it is a real
+hazard that fired in two runs out of three, not a deterministic one. Guard it: the proxy should
+refuse to fire when the fingertip separation is degenerate. That matters on hardware too, where
+a narrow pinch can do the same thing even though the real nut stops the fingers.
+
+**ros-sim runs are not reproducible, so do not compare single runs.** `170332` differed from
+`165420` only in having the viewer open: preflight 0.048 s against 0.020 s, one missed deadline.
+Camera frames arrive on wall clock while the runner paces the policy on `/clock`, so the policy
+saw different frames and the trajectories separated -- different release step, different
+posture, 363 steps against 321. Any claim of the form "change X moved metric Y" needs repeated
+runs. In particular, steps with `|joint5| > 2.80` went 240 (A1a) / 24 (A1b) / 178 (A1b), so
+A1b's effect on the joint-5 excursion is NOT established; the spread is run-to-run.
 
 ---
 
@@ -52,13 +133,68 @@ behind them is not.
 ### A1. Replace the example nullspace term with Forge's mass-weighted, dynamically consistent projection  [blocking]
 
 - [x] A1a. Exact projector (`nullspace_damping_lambda: 0.0`) -- done 2026-09-30
-- [ ] A1b. Mass weighting (needs an arm mass matrix in the `dh` path)
+- [x] A1b. Mass weighting -- done 2026-10-01; fidelity now capped by the hand model, see D1
 
 A1a is the part that mattered and it needed no mass matrix. `nullspace_damping_lambda` is now a
 controller parameter (`cartesian_impedance.hpp`, default 0.2 = the example); both policy profiles
-set 0.0, and `run_hardware_rollout` refuses a controller that does not. A1b is what remains to
-make the term bit-exact; it is worth 0.52 Nm of 18.2 (see the residual table below), so treat it
-as fidelity work rather than a blocker.
+set 0.0, and `run_hardware_rollout` refuses a controller that does not. A1b was worth 0.52 Nm of
+18.2 (see the residual table below), i.e. fidelity work rather than a blocker.
+
+A1b, done 2026-10-01. `forge_nullspace_torque` in `cartesian_impedance.hpp` is Forge's term as
+written: `M_task = (J M^-1 J^T)^-1`, `Jbar^T = M_task J M^-1`,
+`tau_null = (I - J^T Jbar^T) M (kp wrap(q0 - q) - kd qdot)`, including the wrap to [-pi, pi]
+the ROS law did not have. `example_cartesian_impedance` takes an optional `arm_mass_matrix` and
+uses it instead of the damped-pseudo-inverse term; both policy profiles set
+`mass_weighted_nullspace: true` and `run_hardware_rollout` refuses a controller that does not.
+
+The mass matrix (`arm_mass_model.hpp` / `src/arm_mass_model.cpp`, pimpl so pinocchio stays out
+of the impedance header). On the `dh` path it is a pinocchio `crba` over the description the
+controller gets from `get_robot_description()`, with every non-arm joint locked by
+`buildReducedModel` -- a 7-DOF model whose mass matrix *is* the arm block, so there is no index
+juggling and nothing to allocate in `update()`. On hardware it is
+`franka_robot_model_->getMassMatrix()`, which carries the configured end-effector load, so the
+Inspire hand has to be set as the load or it is the mass matrix of a bare flange.
+
+Verified 2026-10-01, all in the `inspire_franka` container:
+
+| check | result |
+|---|---|
+| `forge_nullspace_torque` vs a transcription of `compute_dof_torque` | 1e-12 (gtest) |
+| `Jbar^T tau_null` over six postures (dynamic consistency) | < 1e-9 N, i.e. no leak to the tool |
+| Forge term at `M = I` vs the A1a exact-pinv term | agree, so lambda 0 really is the exact projector |
+| reduced (hand-locked) model vs the full tree's arm block | 1.4e-17 kg m^2 |
+| `ArmMassModel` on the real description vs MuJoCo `mj_fullM` arm block | 8.1e-04 kg m^2 (0.05 %) |
+| controller configure in ros-sim | builds the model from the description, no fault |
+
+The 8.1e-04 residual is the frozen hand posture, not an error in the model: sweeping every
+finger joint from limit to limit moves the arm block by at most 1.2e-03 kg m^2 (0.06 %). The
+controller has no hand state interfaces, so locking the hand is also the only option it has.
+
+What A1b does NOT fix, and this is the part that matters. The arm mass matrix carries the hand's
+inertia, and the three stacks do not agree on the hand:
+
+| model | mass distal to `fr3_link7` | dominated by |
+|---|---|---|
+| `assets/fr3_inspirehand/fr3_inspirehand_replay.xml` (training mirror) | 0.5392 kg | `palm`, 0.3876 kg |
+| `src/inspire_franka_sim/mjcf/inspire_franka_policy_scene.xml` (ros-sim) | 0.1918 kg | `hand_base_link`, 0.1414 kg |
+| `inspire_franka.urdf.xacro hand_mount:=flange` (what the controller models) | 0.1918 kg | matches ros-sim to 9.1e-07 |
+
+The seven FR3 link masses are identical in all three, and MuJoCo's `mj_fullM` was confirmed to
+include armature (the difference is exactly `dof_armature`), so that 2.8x hand is the whole
+remaining gap: 0.125 kg m^2, 6.5 % of the arm block at the reset pose. The ROS description and
+the ros-sim plant agree with each other and both disagree with training. Which one is right is
+D1's question -- weigh the hand -- and until it is settled the mass weighting is exact against
+our own plant and 6.5 % off training's. Note this is the same root cause as the grasp-frame
+mismatch: one RH56, two independent derivations.
+
+Open, needs the training machine. The arm armature. `arm_armature` is a controller parameter and
+both profiles set it to zeros (rigid-body only), because `assets/fr3_inspirehand/robot.py` sets
+armature for the hand joints only and `fr3_no_hand.usd` is still a git-lfs pointer in this
+checkout, so the arm's USD value could not be read. Both MJCFs carry Menagerie's 0.195 (joints
+1-4) / 0.074 (joints 5-7), which are simulation-stability values rather than Franka data. Fetch
+the USD (`git lfs pull`) or read it on the training machine, then set the parameter and say so
+here. If PhysX reports armature in `get_generalized_mass_matrices()` and the USD carries any,
+zeros are wrong.
 
 Evidence. Forge: `tau_null = (I - J^T Jbar^T) M (10 (q0 - q) - 6.32 qdot)` with
 `Jbar = M_task J M^-1`. ROS: `tau_null = (I - J^T pinv_lambda(J^T)) (10 (q0 - q) - 6.32 qdot)`
@@ -113,9 +249,11 @@ Change.
   realtime-safe -- then take the 7x7 arm block. The full tree (not a KDL chain) is what matches
   training, because Isaac's `arm_mass_matrix` is the arm block of the whole articulation and so
   carries the hand's inertia through the finger joints. Expand the URDF with
-  `xacro src/inspire_franka_description/urdf/inspire_franka.urdf.xacro` (21 inertials, 19
-  revolute joints) and check the result against MuJoCo's `mj_fullM` on the arm DOFs before
-  wiring it into the law. Open question: whether to add the arm armature to the diagonal --
+  `xacro src/inspire_franka_description/urdf/inspire_franka.urdf.xacro hand_mount:=flange`
+  (21 inertials, 19 revolute joints) and check the result against MuJoCo's `mj_fullM` on the
+  arm DOFs before wiring it into the law. `hand_mount` defaults to `bench`, which parents the
+  hand to `world` and leaves the arm block with no hand inertia at all (10 to 14 % low); only
+  `sim.launch.py`'s `flange` is the articulation training models. Open question: whether to add the arm armature to the diagonal --
   `assets/fr3_inspirehand/robot.py` sets `armature` for hand joints only, so the arm keeps
   whatever the USD carries, and the USD is a git-lfs pointer here. MuJoCo uses 0.195 (joints 1-4)
   and 0.074 (joints 5-7).
@@ -246,10 +384,14 @@ case; a ros-sim recording contains `follow_waypoints` rows.
 
 ### B2. Run the policy at 15 Hz, in simulated time for ros-sim  [blocking]
 
-- [ ] done
+- [x] done 2026-09-30, ticked 2026-10-01
+
+The `ros_sim-20260930-143512-493634` report already meets the test below:
+`requested_period_s: 0.06666666666666667` and `missed_policy_deadlines: 0`. The evidence
+paragraph describes the earlier `114721` run; the box was simply never ticked.
 
 Evidence. The checkpoint is a 15 Hz policy (decimation 8 at 120 Hz, 64.6 s horizon). The
-2026-09-30 ros-sim run requested a 0.1333 s period (`--rate 7.5`) and recorded a median
+2026-09-30 `114721` ros-sim run requested a 0.1333 s period (`--rate 7.5`) and recorded a median
 sim-time step of 0.134 s. The temporal ensemble then blends actions meant for 66 ms later
 against a 133 ms tick, and the progress clock advances twice as far per policy step.
 
@@ -273,6 +415,10 @@ relax the matching check in `hardware.py` when `sim` is true. Keep 0.5 s on hard
 
 Done when. A rehearsal ends on the step budget or a cycle limit, never on
 `controller_watchdog`.
+
+2026-10-01. The change was never made, but the symptom has not recurred: `143512` ran 321 steps
+with `missed_policy_deadlines: 0` and `watchdog_stop: false`. Leave the item open -- the margin
+is a shared-CPU accident, not a fix.
 
 ### B4. Document the progress-clock origin  [minor]
 
@@ -386,6 +532,13 @@ midpoint relative to the flange. If the training model wins, update
 
 Done when. One model, used by TF, MuJoCo and `TrainingHandKinematics`, within 3 mm of the
 measured tips.
+
+2026-10-01, the two models also disagree on mass, which A1b made load-bearing. Everything distal
+to `fr3_link7` weighs 0.5392 kg in the training mirror (a 0.3876 kg `palm`) and 0.1918 kg here (a
+0.1414 kg `hand_base_link`) -- 2.8x. That is 6.5 % of the arm mass matrix, which the nullspace
+term is now weighted by, so the hand model is no longer only a geometry question. Weigh the hand
+and its palm shell on the bench along with the tip measurement; a scale settles this one
+outright, unlike the tip frames.
 
 ### D2. Decide the thumb-yaw overlay for policy commands  [should, bench]
 
