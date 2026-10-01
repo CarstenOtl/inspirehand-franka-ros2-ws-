@@ -16,6 +16,12 @@ reference is replaced by a waypoint sampler, and the surrounding replay
 machinery (goto, trajectory, pause, abort, status) is the same design as
 `TrajectoryReplayController`, expressed in pose space.
 
+Superseded in one respect as of 2026-09-30: the example's torque law is still what
+trajectory replay uses, but the two policy profiles now run ForgeUltra's variant of it
+(exact nullspace projection, axis-angle rotation error). The law, the measurements behind
+the change and what is still different from training are in
+[cartesian_impedance_nullspace_design.md](cartesian_impedance_nullspace_design.md).
+
 ## 1. The upstream controller, and why it cannot be used as-is
 
 `franka_example_controllers/CartesianImpedanceExampleController`
