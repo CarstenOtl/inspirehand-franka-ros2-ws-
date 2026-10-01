@@ -91,8 +91,54 @@ inline Vector6d example_cartesian_error(
   return error;
 }
 
+/// ForgeUltra's nullspace term, `compute_dof_torque` in forge_ultra/tasks/utils/control.py:
+///
+///   M_task = (J M^-1 J^T)^-1                  the task-space (operational-space) mass
+///   Jbar^T = M_task J M^-1                    the dynamically consistent generalised inverse
+///   u_null = M (kp (q0 - q) - kd qdot)        a joint PD, weighted by the arm mass matrix
+///   tau_null = (I - J^T Jbar^T) u_null
+///
+/// Two things separate this from the example's `I - J^T pinv_lambda(J^T)` term. The projector
+/// here annihilates range(J^T) exactly for any posture, so the joint spring cannot push on the
+/// tool -- the example's damped pseudo-inverse stops being a projector once lambda reaches the
+/// smallest singular values of J^T and leaks up to 12.5 N at a 1 rad wrist excursion. And the
+/// mass weighting makes the joint PD act on accelerations rather than torques, which is what
+/// the policy was distilled against.
+///
+/// `arm_mass_matrix` is the arm block of the WHOLE articulation's generalized mass matrix, as
+/// Isaac takes it (`forge_franka_env.py`: `mass_matrix[:, arm_joint_ids, :][:, :, arm_joint_ids]`
+/// over `root_physx_view.get_generalized_mass_matrices()`), so it carries the hand's inertia
+/// through the finger joints. An arm-only chain is not the same matrix.
+///
+/// Allocation-free: every inverse is on a fixed-size Eigen matrix.
+inline Vector7d forge_nullspace_torque(const Matrix6x7d& jacobian,
+                                       const Matrix7d& arm_mass_matrix, const Vector7d& q,
+                                       const Vector7d& dq, const Vector7d& q_nullspace,
+                                       double nullspace_stiffness, double nullspace_damping) {
+  const Matrix7x6d jacobian_transpose = jacobian.transpose();
+  const Matrix7d mass_inverse = arm_mass_matrix.inverse();
+  const Matrix6d mass_task = (jacobian * mass_inverse * jacobian_transpose).inverse();
+  const Matrix6x7d jacobian_eef_inverse = mass_task * jacobian * mass_inverse;
+
+  // Forge normalises the joint distance to [-pi, pi] before the spring; std::remainder is the
+  // same wrap as its `(d + pi) % (2 pi) - pi`. No FR3 joint pair can be more than pi apart
+  // within the limits today, but the policy's q0 is a parameter and the wrap is free.
+  Vector7d distance = q_nullspace - q;
+  for (int i = 0; i < distance.size(); ++i) {
+    distance(i) = std::remainder(distance(i), 2.0 * M_PI);
+  }
+
+  const Vector7d u_null =
+      arm_mass_matrix * (nullspace_stiffness * distance - nullspace_damping * dq);
+  return (Matrix7d::Identity() - jacobian_transpose * jacobian_eef_inverse) * u_null;
+}
+
 /// The example's update() torque: task-space PD through J^T, a damped-pseudo-inverse
 /// nullspace projection of a joint PD toward q_null, plus coriolis.
+///
+/// With `arm_mass_matrix` non-null the nullspace term is Forge's instead
+/// (`forge_nullspace_torque`), which is what the policy was distilled against; the task term
+/// and coriolis are unchanged. `nullspace_damping_lambda` is then unused.
 inline CartesianImpedanceTerms example_cartesian_impedance(
     const Eigen::Vector3d& position, const Eigen::Quaterniond& orientation,
     const Matrix6x7d& jacobian, const Vector7d& coriolis, const Vector7d& q,
@@ -100,7 +146,8 @@ inline CartesianImpedanceTerms example_cartesian_impedance(
     const Eigen::Quaterniond& orientation_d, const Vector7d& q_nullspace,
     const Matrix6d& stiffness, const Matrix6d& damping, double nullspace_stiffness,
     double nullspace_damping_lambda = kNullspaceDampingLambda,
-    RotationErrorForm rotation_error_form = RotationErrorForm::kQuaternionVector) {
+    RotationErrorForm rotation_error_form = RotationErrorForm::kQuaternionVector,
+    const Matrix7d* arm_mass_matrix = nullptr) {
   CartesianImpedanceTerms terms;
   terms.error =
       example_cartesian_error(position, orientation, position_d, orientation_d, rotation_error_form);
@@ -123,9 +170,15 @@ inline CartesianImpedanceTerms example_cartesian_impedance(
 
   terms.tau_task =
       jacobian_transpose * (-stiffness * terms.error - damping * (jacobian * dq));
-  terms.tau_nullspace =
-      (Matrix7d::Identity() - jacobian_transpose * jacobian_transpose_pinv) *
-      (nullspace_stiffness * (q_nullspace - q) - 2.0 * std::sqrt(nullspace_stiffness) * dq);
+  if (arm_mass_matrix != nullptr) {
+    terms.tau_nullspace =
+        forge_nullspace_torque(jacobian, *arm_mass_matrix, q, dq, q_nullspace,
+                               nullspace_stiffness, 2.0 * std::sqrt(nullspace_stiffness));
+  } else {
+    terms.tau_nullspace =
+        (Matrix7d::Identity() - jacobian_transpose * jacobian_transpose_pinv) *
+        (nullspace_stiffness * (q_nullspace - q) - 2.0 * std::sqrt(nullspace_stiffness) * dq);
+  }
   terms.tau_coriolis = coriolis;
   terms.tau_command = terms.tau_task + terms.tau_nullspace + terms.tau_coriolis;
   return terms;

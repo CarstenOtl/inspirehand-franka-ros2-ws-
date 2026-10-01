@@ -14,6 +14,8 @@ using franka_trajectory_replay::example_cartesian_gains;
 using franka_trajectory_replay::example_cartesian_impedance;
 using franka_trajectory_replay::example_gain_filter;
 using franka_trajectory_replay::example_reference_filter;
+using franka_trajectory_replay::forge_nullspace_torque;
+using franka_trajectory_replay::Matrix7d;
 using franka_trajectory_replay::Matrix6d;
 using franka_trajectory_replay::RotationErrorForm;
 using franka_trajectory_replay::Matrix6x7d;
@@ -121,6 +123,44 @@ struct UpstreamExample {
     return tau_d;
   }
 };
+
+// A symmetric positive definite stand-in for the arm mass matrix, in the range the FR3's
+// actually occupies (diagonal about 0.03 to 2.2 kg m^2 at the threading posture).
+Matrix7d synthetic_mass_matrix(double phase) {
+  Matrix7d a;
+  for (int row = 0; row < 7; ++row) {
+    for (int column = 0; column < 7; ++column) {
+      a(row, column) = 0.3 * std::cos(0.9 * row + 1.1 * column + phase);
+    }
+  }
+  Matrix7d mass = a.transpose() * a;
+  for (int i = 0; i < 7; ++i) {
+    mass(i, i) += 0.05 + 0.3 * (6 - i);
+  }
+  return mass;
+}
+
+// compute_dof_torque's nullspace block, transcribed from forge_ultra/tasks/utils/control.py.
+Vector7d forge_reference_nullspace(const Matrix6x7d& jacobian, const Matrix7d& mass,
+                                   const Vector7d& q, const Vector7d& dq,
+                                   const Vector7d& q_null, double kp_null, double kd_null) {
+  const Eigen::MatrixXd jacobian_t = jacobian.transpose();
+  const Eigen::MatrixXd mass_inv = mass.inverse();
+  const Eigen::MatrixXd mass_task = (jacobian * mass_inv * jacobian_t).inverse();
+  const Eigen::MatrixXd j_eef_inv = mass_task * jacobian * mass_inv;
+  Eigen::VectorXd distance = q_null - q;
+  for (int i = 0; i < distance.size(); ++i) {
+    distance(i) = std::fmod(distance(i) + M_PI, 2.0 * M_PI);
+    if (distance(i) < 0.0) {
+      distance(i) += 2.0 * M_PI;  // python's % returns the sign of the divisor
+    }
+    distance(i) -= M_PI;
+  }
+  const Eigen::VectorXd u_null = mass * (kd_null * -dq + kp_null * distance);
+  const Eigen::VectorXd torque_null =
+      (Eigen::MatrixXd::Identity(7, 7) - jacobian_t * j_eef_inv) * u_null;
+  return Vector7d(torque_null);
+}
 
 }  // namespace
 
@@ -346,4 +386,96 @@ TEST(ForgeCartesianImpedance, lambda_zero_keeps_the_nullspace_torque_out_of_the_
     EXPECT_LT(leak_exact, 1e-9) << "phase " << phase;
     EXPECT_GT(leak_example, 20.0 * std::max(leak_exact, 1e-12)) << "phase " << phase;
   }
+}
+
+TEST(ForgeNullspace, matches_compute_dof_torque) {
+  const Matrix6x7d jacobian = synthetic_jacobian(0.3);
+  const Matrix7d mass = synthetic_mass_matrix(0.2);
+  Vector7d q, dq, q_null;
+  q << 0.2, -0.4, 0.1, -2.1, 1.7, 2.0, -1.0;
+  dq << 0.05, -0.1, 0.02, 0.3, -0.2, 0.1, 0.4;
+  q_null << 0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785;
+  const double kp_null = 10.0;
+  const double kd_null = 6.3246;  // vanilla_threading.yaml; 2 sqrt(10) to four places
+  const Vector7d actual =
+      forge_nullspace_torque(jacobian, mass, q, dq, q_null, kp_null, kd_null);
+  const Vector7d expected =
+      forge_reference_nullspace(jacobian, mass, q, dq, q_null, kp_null, kd_null);
+  EXPECT_TRUE(actual.isApprox(expected, 1e-12)) << actual.transpose() << " vs " << expected.transpose();
+}
+
+TEST(ForgeNullspace, is_dynamically_consistent_so_it_cannot_push_on_the_tool) {
+  // The point of the mass-weighted projector: mapping tau_null back through the dynamically
+  // consistent inverse gives exactly no task wrench, at any posture. The example's damped
+  // pseudo-inverse does not (see kNullspaceDampingLambda).
+  Vector7d q, dq, q_null;
+  q << 0.2, -0.4, 0.1, -2.1, 1.7, 2.0, -1.0;
+  dq << 0.05, -0.1, 0.02, 0.3, -0.2, 0.1, 0.4;
+  q_null << 0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785;
+  for (double phase = 0.0; phase < 3.0; phase += 0.5) {
+    const Matrix6x7d jacobian = synthetic_jacobian(phase);
+    const Matrix7d mass = synthetic_mass_matrix(0.4 * phase);
+    const Vector7d tau_null =
+        forge_nullspace_torque(jacobian, mass, q, dq, q_null, 10.0, 6.3246);
+    const Matrix7d mass_inverse = mass.inverse();
+    const Matrix6d mass_task = (jacobian * mass_inverse * jacobian.transpose()).inverse();
+    const Matrix6x7d jacobian_eef_inverse = mass_task * jacobian * mass_inverse;
+    const Vector6d wrench = jacobian_eef_inverse * tau_null;
+    EXPECT_LT(wrench.norm(), 1e-9) << "phase " << phase << " leaked " << wrench.transpose();
+  }
+}
+
+TEST(ForgeNullspace, reduces_to_the_exact_projector_when_the_mass_matrix_is_the_identity) {
+  // With M = I the dynamically consistent inverse becomes the Moore-Penrose pseudo-inverse,
+  // so Forge's term must agree with the example's at nullspace_damping_lambda = 0 -- the A1a
+  // state. Any disagreement would mean the lambda-0 path is not the exact projector.
+  const Eigen::Vector3d p(0.4, 0.1, 0.5);
+  const Eigen::Quaterniond orientation(Eigen::AngleAxisd(0.3, Eigen::Vector3d::UnitY()));
+  const Eigen::Quaterniond orientation_d(Eigen::AngleAxisd(0.35, Eigen::Vector3d::UnitY()));
+  Matrix6d stiffness, damping;
+  example_cartesian_gains({565.0, 565.0, 565.0, 28.0, 28.0, 28.0}, stiffness, damping);
+  Vector7d q, dq, q_null;
+  q << 0.2, -0.4, 0.1, -2.1, 1.7, 2.0, -1.0;
+  dq << 0.05, -0.1, 0.02, 0.3, -0.2, 0.1, 0.4;
+  q_null << 0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785;
+  const Matrix6x7d jacobian = synthetic_jacobian(0.9);
+  const Matrix7d identity = Matrix7d::Identity();
+  const auto exact_pinv = example_cartesian_impedance(
+      p, orientation, jacobian, Vector7d::Zero(), q, dq, p, orientation_d, q_null, stiffness,
+      damping, 10.0, 0.0, RotationErrorForm::kAxisAngle);
+  const auto forge = example_cartesian_impedance(
+      p, orientation, jacobian, Vector7d::Zero(), q, dq, p, orientation_d, q_null, stiffness,
+      damping, 10.0, 0.0, RotationErrorForm::kAxisAngle, &identity);
+  EXPECT_TRUE(forge.tau_nullspace.isApprox(exact_pinv.tau_nullspace, 1e-9))
+      << forge.tau_nullspace.transpose() << " vs " << exact_pinv.tau_nullspace.transpose();
+  EXPECT_TRUE(forge.tau_task.isApprox(exact_pinv.tau_task, 1e-12));
+}
+
+TEST(ForgeNullspace, mass_weighting_changes_the_term_at_a_realistic_mass_matrix) {
+  // Guard against the mass matrix being accepted and then ignored.
+  const Matrix6x7d jacobian = synthetic_jacobian(0.9);
+  Vector7d q, dq, q_null;
+  q << 0.2, -0.4, 0.1, -2.1, 1.7, 2.0, -1.0;
+  dq << 0.05, -0.1, 0.02, 0.3, -0.2, 0.1, 0.4;
+  q_null << 0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785;
+  const Vector7d weighted =
+      forge_nullspace_torque(jacobian, synthetic_mass_matrix(0.2), q, dq, q_null, 10.0, 6.3246);
+  const Vector7d unweighted =
+      forge_nullspace_torque(jacobian, Matrix7d::Identity(), q, dq, q_null, 10.0, 6.3246);
+  EXPECT_GT((weighted - unweighted).norm(), 1e-3);
+}
+
+TEST(ForgeNullspace, wraps_the_joint_distance_to_pi) {
+  const Matrix6x7d jacobian = synthetic_jacobian(0.1);
+  const Matrix7d mass = synthetic_mass_matrix(0.0);
+  const Vector7d q = Vector7d::Zero();
+  Vector7d q_null = Vector7d::Zero();
+  q_null(0) = 1.5 * M_PI;  // wraps to -0.5 pi
+  const Vector7d wrapped =
+      forge_nullspace_torque(jacobian, mass, q, Vector7d::Zero(), q_null, 10.0, 6.3246);
+  Vector7d q_equivalent = Vector7d::Zero();
+  q_equivalent(0) = -0.5 * M_PI;
+  const Vector7d direct =
+      forge_nullspace_torque(jacobian, mass, q, Vector7d::Zero(), q_equivalent, 10.0, 6.3246);
+  EXPECT_TRUE(wrapped.isApprox(direct, 1e-12));
 }

@@ -79,6 +79,12 @@
       # is what turns 28 Nm/rad into the 14 Nm/rad the example actually applies.
       nullspace_damping_lambda: 0.0
       rotation_error: axis_angle
+      # A1b, as in controllers_sim_policy.yaml. On hardware the mass matrix comes
+      # from franka_robot_model_->getMassMatrix() rather than the description, and it
+      # carries whatever end-effector load is configured -- so the Inspire hand has
+      # to be set as the load or this is the mass matrix of a bare flange.
+      mass_weighted_nullspace: true
+      arm_armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
       nullspace_target: trajectory
       coriolis_compensation: true
       torque_rate_limit: 1.0

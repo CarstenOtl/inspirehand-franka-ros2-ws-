@@ -110,6 +110,7 @@ class CartesianReplayClient(ReplayClient):
             'translational_stiffness', 'rotational_stiffness', 'nullspace_stiffness',
             'stiffness_scale', 'target_filter', 'nullspace_target', 'coriolis_compensation',
             'nullspace_damping_lambda', 'rotation_error',
+            'mass_weighted_nullspace', 'arm_armature',
             'torque_rate_limit', 'max_trajectory_start_error_m', 'max_trajectory_start_error_rad',
             'goto_max_velocity', 'goto_max_angular_velocity', 'pause_ramp_duration',
             'max_position_error', 'max_orientation_error', 'base_frame',

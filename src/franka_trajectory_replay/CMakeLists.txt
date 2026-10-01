@@ -29,10 +29,12 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(pinocchio REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
     src/trajectory_replay_controller.cpp
     src/cartesian_trajectory_replay_controller.cpp
+    src/arm_mass_model.cpp
 )
 
 target_include_directories(${PROJECT_NAME}
@@ -41,6 +43,8 @@ target_include_directories(${PROJECT_NAME}
         $<INSTALL_INTERFACE:include>
         ${EIGEN3_INCLUDE_DIRS}
 )
+
+target_link_libraries(${PROJECT_NAME} pinocchio::pinocchio)
 
 ament_target_dependencies(${PROJECT_NAME}
     control_msgs
@@ -99,6 +103,11 @@ if(BUILD_TESTING)
     ament_add_gmock(${PROJECT_NAME}_test_cartesian_impedance test/test_cartesian_impedance.cpp)
     target_include_directories(${PROJECT_NAME}_test_cartesian_impedance PRIVATE
         include ${EIGEN3_INCLUDE_DIRS})
+
+    ament_add_gmock(${PROJECT_NAME}_test_arm_mass_model test/test_arm_mass_model.cpp)
+    target_include_directories(${PROJECT_NAME}_test_arm_mass_model PRIVATE
+        include ${EIGEN3_INCLUDE_DIRS})
+    target_link_libraries(${PROJECT_NAME}_test_arm_mass_model ${PROJECT_NAME})
 
     ament_add_gmock(${PROJECT_NAME}_test_fr3_kinematics test/test_fr3_kinematics.cpp)
     target_include_directories(${PROJECT_NAME}_test_fr3_kinematics PRIVATE

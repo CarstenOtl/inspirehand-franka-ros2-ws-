@@ -39,6 +39,7 @@
 
 #include "franka_semantic_components/franka_cartesian_pose_interface.hpp"
 #include "franka_semantic_components/franka_robot_model.hpp"
+#include "franka_trajectory_replay/arm_mass_model.hpp"
 #include "franka_trajectory_replay/cartesian_impedance.hpp"
 #include "franka_trajectory_replay/fr3_kinematics.hpp"
 
@@ -208,6 +209,14 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   // student meets the law it was distilled against.
   double nullspace_damping_lambda_{kNullspaceDampingLambda};
   RotationErrorForm rotation_error_form_{RotationErrorForm::kQuaternionVector};
+  // Forge's mass-weighted nullspace term (A1b). Off by default: it changes the law, so a
+  // profile has to ask for it. `arm_mass_model_` serves the `dh` path (ros-sim), where there
+  // is no franka_hardware robot model to ask; on hardware the mass matrix comes from
+  // franka_robot_model_->getMass() instead and the model stays unloaded.
+  bool mass_weighted_nullspace_{false};
+  ArmMassModel arm_mass_model_;
+  Vector7d arm_armature_{Vector7d::Zero()};
+  Matrix7d arm_mass_matrix_{Matrix7d::Identity()};
   bool coriolis_compensation_{true};
   double torque_rate_limit_{0.0};
   double goto_max_velocity_{0.10};

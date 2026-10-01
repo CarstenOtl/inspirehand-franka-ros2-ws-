@@ -678,6 +678,7 @@ void CartesianTrajectoryReplayController::publish_status() {
   add("nullspace_stiffness_applied",
       std::to_string(gains_applied_snapshot_[2].load(std::memory_order_relaxed)));
   add("nullspace_damping_lambda", std::to_string(nullspace_damping_lambda_));
+  add("mass_weighted_nullspace", mass_weighted_nullspace_ ? "true" : "false");
   add("rotation_error",
       rotation_error_form_ == RotationErrorForm::kAxisAngle ? "axis_angle" : "quaternion_vector");
   {
@@ -938,10 +939,26 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
   }
 
   // The example's law on the filtered reference, then its filters toward the new target.
+  const Matrix7d* arm_mass_matrix = nullptr;
+  if (mass_weighted_nullspace_) {
+    if (arm_mass_model_.loaded()) {
+      if (arm_mass_model_.compute(q_current, arm_armature_, arm_mass_matrix_)) {
+        arm_mass_matrix = &arm_mass_matrix_;
+      }
+    } else if (franka_robot_model_) {
+      // getMassMatrix() is already the 7x7 arm block, column major like libfranka's Jacobian
+      // (and symmetric, so the convention only matters for reading the code). It carries the
+      // configured end-effector load, so the hand must be set as the load for this to match
+      // training rather than a bare flange.
+      const std::array<double, 49> mass_array = franka_robot_model_->getMassMatrix();
+      arm_mass_matrix_ = Eigen::Map<const Matrix7d>(mass_array.data());
+      arm_mass_matrix = &arm_mass_matrix_;
+    }
+  }
   const CartesianImpedanceTerms terms = example_cartesian_impedance(
       position, orientation, jacobian, coriolis, q_current, dq_current, position_d_,
       orientation_d_, nullspace_d_, stiffness_, damping_, nullspace_stiffness_,
-      nullspace_damping_lambda_, rotation_error_form_);
+      nullspace_damping_lambda_, rotation_error_form_, arm_mass_matrix);
   const Vector7d output = saturate_torque_rate(terms.tau_command, tau_command_previous_);
   tau_command_previous_ = output;
   for (int i = 0; i < kNumJoints; ++i) {
@@ -1053,6 +1070,8 @@ CartesianTrajectoryReplayController::CallbackReturn CartesianTrajectoryReplayCon
     auto_declare<std::string>("arm_prefix", "");
     auto_declare<std::string>("base_frame", "fr3_link0");
     auto_declare<std::string>("model_source", "franka");
+    auto_declare<bool>("mass_weighted_nullspace", false);
+    auto_declare<std::vector<double>>("arm_armature", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     auto_declare<std::vector<double>>("tool_offset_xyz", {0.0, 0.0, 0.0});
     auto_declare<std::vector<double>>("tool_offset_rpy", {0.0, 0.0, 0.0});
     auto_declare<double>("translational_stiffness", 150.0);
@@ -1151,6 +1170,22 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
     RCLCPP_FATAL(node->get_logger(), "nullspace_damping_lambda must be finite and >= 0, got %f",
                  nullspace_damping_lambda_);
     return false;
+  }
+
+  mass_weighted_nullspace_ = node->get_parameter("mass_weighted_nullspace").as_bool();
+  const auto armature = node->get_parameter("arm_armature").as_double_array();
+  if (armature.size() != static_cast<std::size_t>(kNumJoints)) {
+    RCLCPP_FATAL(node->get_logger(), "arm_armature must hold %d values, got %zu", kNumJoints,
+                 armature.size());
+    return false;
+  }
+  for (int i = 0; i < kNumJoints; ++i) {
+    if (!std::isfinite(armature[i]) || armature[i] < 0.0) {
+      RCLCPP_FATAL(node->get_logger(), "arm_armature[%d] must be finite and >= 0, got %f", i,
+                   armature[i]);
+      return false;
+    }
+    arm_armature_(i) = armature[i];
   }
 
   const auto rotation_error_mode = node->get_parameter("rotation_error").as_string();
@@ -1342,6 +1377,27 @@ CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State&
 
   franka_cartesian_pose_.reset();
   franka_robot_model_.reset();
+  if (mass_weighted_nullspace_ && model_from_dh_) {
+    // ForgeUltra's nullspace term needs the arm block of the whole articulation's mass
+    // matrix, which the DH model cannot supply. Build it from the description the controller
+    // manager hands us; this is the ros-sim path.
+    std::string error;
+    if (!arm_mass_model_.load(get_robot_description(), joint_names(), error)) {
+      RCLCPP_FATAL(get_node()->get_logger(),
+                   "mass_weighted_nullspace is set but the arm mass model could not be built "
+                   "from the robot description: %s",
+                   error.c_str());
+      return CallbackReturn::FAILURE;
+    }
+    RCLCPP_INFO(get_node()->get_logger(),
+                "mass-weighted nullspace: arm mass matrix from the robot description "
+                "(non-arm joints locked), armature [%g %g %g %g %g %g %g]",
+                arm_armature_(0), arm_armature_(1), arm_armature_(2), arm_armature_(3),
+                arm_armature_(4), arm_armature_(5), arm_armature_(6));
+  } else if (mass_weighted_nullspace_) {
+    RCLCPP_INFO(get_node()->get_logger(),
+                "mass-weighted nullspace: arm mass matrix from franka_robot_model_->getMass()");
+  }
   if (model_from_dh_) {
     RCLCPP_WARN(get_node()->get_logger(),
                 "model_source is 'dh': pose and Jacobian come from the built-in FR3 DH model with "

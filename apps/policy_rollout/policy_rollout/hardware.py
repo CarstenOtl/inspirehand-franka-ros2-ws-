@@ -1235,6 +1235,13 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             mismatches.append(
                 f"rotation_error={parameters.get('rotation_error')!r} (expected 'axis_angle')"
             )
+        # A1b. Without the mass weighting the nullspace term is still a projector but not
+        # Forge's: the joint PD acts on torques instead of accelerations.
+        if parameters.get("mass_weighted_nullspace") is not True:
+            mismatches.append(
+                f"mass_weighted_nullspace={parameters.get('mass_weighted_nullspace')!r} "
+                "(expected True)"
+            )
         if mismatches:
             raise Rejected(
                 "controller is not using the policy profile: " + "; ".join(mismatches)

@@ -74,6 +74,18 @@ cartesian_trajectory_replay_controller:
     # is what turns 28 Nm/rad into the 14 Nm/rad the example actually applies.
     nullspace_damping_lambda: 0.0
     rotation_error: axis_angle
+    # A1b: Forge's nullspace term in full -- the joint PD weighted by the arm mass
+    # matrix and projected by (I - J^T Jbar^T) instead of a pseudo-inverse. On this
+    # 'dh' path the mass matrix is a pinocchio CRBA over the robot description with
+    # the hand joints locked, which matched MuJoCo's own arm block to 8e-04 kg m^2
+    # on 2026-10-01 (the residual is the frozen hand posture, bounded at 1.2e-03 by
+    # sweeping every finger limit to limit).
+    mass_weighted_nullspace: true
+    # Rigid-body inertia only. Both MJCFs carry Menagerie's 0.195 / 0.074 armature,
+    # but Isaac's arm armature lives in fr3_no_hand.usd, which is a git-lfs pointer
+    # in this checkout, and robot.py sets armature for the hand joints only. Set
+    # this to [0.195 x4, 0.074 x3] once the USD confirms it.
+    arm_armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     nullspace_target: trajectory
     coriolis_compensation: true
     torque_rate_limit: 1.0
