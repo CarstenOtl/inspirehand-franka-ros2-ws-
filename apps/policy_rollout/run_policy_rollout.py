@@ -92,6 +92,17 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--max-state-age", type=float, default=0.5)
     parser.add_argument("--max-frame-skew", type=float, default=0.04)
     parser.add_argument("--max-home-delta", type=float, default=0.01)
+    parser.add_argument(
+        "--debug-viz",
+        action="store_true",
+        help="publish the DP3 cloud and control frames for RViz",
+    )
+    parser.add_argument(
+        "--debug-viz-every",
+        type=int,
+        default=2,
+        help="publish every Nth policy step (default 2)",
+    )
     return parser
 
 

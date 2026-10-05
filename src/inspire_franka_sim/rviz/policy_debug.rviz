@@ -1,0 +1,73 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: fr3_link0
+    Frame Rate: 30
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.1
+      Plane Cell Count: 20
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+      Visual Enabled: true
+      Collision Enabled: false
+      Alpha: 0.45
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: false
+      Marker Scale: 0.1
+      Show Axes: true
+      Show Names: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: DP3 cloud (what the policy sees)
+      Enabled: true
+      Topic:
+        Value: /fr3_policy_rollout/dp3_points
+        Depth: 1
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: RGB8
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Above the table (base frame)
+      Enabled: true
+      Topic:
+        Value: /fr3_policy_rollout/scene_points
+        Depth: 1
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Style: Spheres
+      Size (m): 0.004
+      Color Transformer: RGB8
+      Decay Time: 0
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Control frames
+      Enabled: true
+      Topic:
+        Value: /fr3_policy_rollout/markers
+        Depth: 1
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 1.2
+      Focal Point:
+        X: 0.55
+        Y: 0.0
+        Z: 0.15
+      Pitch: 0.42
+      Yaw: 2.6

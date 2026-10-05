@@ -97,6 +97,7 @@ def launch_setup(context, *args, **kwargs):
             "hardware_type": "mujoco",
             "headless": arg("headless"),
             "start_rviz": arg("start_rviz"),
+            "rviz_config_path": arg("rviz_config"),
             "arm_command_interface": "none",
             "hand_command_interface": "position_direct",
             "controllers_config_path": controllers_yaml,
@@ -186,7 +187,23 @@ def generate_launch_description():
                 default_value="false",
                 description="false opens the MuJoCo viewer (needs xhost +local:root on the host).",
             ),
-            DeclareLaunchArgument("start_rviz", default_value="false", description="Start RViz2."),
+            DeclareLaunchArgument(
+                "start_rviz",
+                default_value="false",
+                description="Start RViz2 on rviz_config. With run_policy_rollout.py --debug-viz "
+                "this shows the 4096 points the DP3 encoder actually sampled.",
+            ),
+            DeclareLaunchArgument(
+                "rviz_config",
+                default_value=str(
+                    Path(get_package_share_directory("inspire_franka_sim"))
+                    / "rviz"
+                    / "policy_debug.rviz"
+                ),
+                description="RViz2 config. The default shows the policy's DP3 cloud, the points "
+                "above the table in the base frame, and the control frames published by "
+                "run_policy_rollout.py --debug-viz.",
+            ),
             DeclareLaunchArgument(
                 "camera_rate",
                 default_value="15.0",

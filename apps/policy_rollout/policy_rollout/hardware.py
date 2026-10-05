@@ -476,6 +476,28 @@ class TrainingFrameAdapter:
         )
 
 
+def _policy_goal_base(frame, filtered_action, grasp_position_base, grasp_quaternion_base):
+    """The policy's unclipped goal (``bolt_tip + action``), in the base frame.
+
+    ``decode_action_target`` anchors the position action at the bolt tip and
+    only then clips it to a 20 mm step from the current grasp frame. The
+    clipped step is what gets commanded; this is what the policy is aiming at.
+    """
+
+    grasp_world_position, grasp_world_quaternion = frame.pose_base_to_world(
+        grasp_position_base, grasp_quaternion_base
+    )
+    grasp = fo.GraspFrameState(
+        pos=grasp_world_position,
+        quat=grasp_world_quaternion,
+        linvel=np.zeros(3),
+        angvel=np.zeros(3),
+        jacobian=np.zeros((6, 7)),
+    )
+    goal = fo.decode_action_target(filtered_action, grasp, clip=False)
+    return frame.pose_world_to_base(goal.pos, goal.quat)[0]
+
+
 def retarget_grasp_pose_to_controlled_pose(
     *,
     grasp_position_base,
@@ -1295,6 +1317,21 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         max_frame_skew_s=args.max_frame_skew,
         use_sim_time=sim,
     )
+    debug_viz = None
+    if getattr(args, "debug_viz", False):
+        from .debug_viz import PolicyDebugPublisher
+
+        debug_viz = PolicyDebugPublisher(
+            node,
+            calibration,
+            runner.model.fusion.visual_encoder,
+            publish_every=getattr(args, "debug_viz_every", 2),
+        )
+        print(
+            "debug viz on: /fr3_policy_rollout/{dp3_points,scene_points,markers}",
+            flush=True,
+        )
+
     # The setup clients get their own executor, retired after homing. Every
     # policy-node callback only stores a message, and one spin thread for it
     # measured ~25 % faster and far less jittery than a shared five-thread
@@ -1588,6 +1625,23 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 limited_policy_targets += 1
             node.publish_policy_target(target_position, target_quaternion, home_arm)
             node.publish_hand_target(fo.pinch_targets(filtered))
+            if debug_viz is not None:
+                debug_viz.publish(
+                    rgb=sample.rgb,
+                    depth=sample.depth,
+                    depth_units=sample.depth_units,
+                    grasp_position=grasp_position,
+                    grasp_quaternion=grasp_quaternion,
+                    controller_target_position=target_position,
+                    controller_measured_position=sample.controller_measured_position,
+                    bolt_tip_base=frame.pose_world_to_base(
+                        fo.BOLT_TIP_POSITION, np.array([1.0, 0.0, 0.0, 0.0])
+                    )[0],
+                    policy_goal_position=_policy_goal_base(
+                        frame, filtered, grasp_position, grasp_quaternion
+                    ),
+                    step=steps,
+                )
             event, turn_progress = coordinator.update(
                 position=grasp_position,
                 quaternion=grasp_quaternion,
