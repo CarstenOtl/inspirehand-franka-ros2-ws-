@@ -70,6 +70,12 @@ functions of the recorded joints, so they can be rebuilt offline (session scratc
 The reconstruction reproduces the proxy the rollout printed at its events to 0.1 deg, so it is
 trustworthy -- but it should not have to be redone by hand every run.
 
+2026-10-05, partly closed by E1. `threading_turn_progress_rad` is now filled in ros-sim
+recordings with the simulated nut's own twist, and `report.json` carries `turn_source` and
+`final_nut_twist_deg`. Still missing everywhere: the grasp pose and the three return residuals,
+which is what would say *which* gate failed without the offline rebuild. On hardware the turn
+signal is still NaN, because there is nothing there to measure it with.
+
 ---
 
 ## Status, 2026-10-01: three ros-sim runs with A1b
@@ -107,9 +113,15 @@ At that separation the thumb->index direction is meaningless, the frame tips ove
 step. In `143512` and `165420` that jump crossed the 55 deg gate and fired `release_started`; in
 `170332` the same jump happened (37.2 deg at step 24, tips at 8.3 mm) but peaked near 49.5 deg,
 under the gate, and release then fired later on a genuine smooth wrist turn. So it is a real
-hazard that fired in two runs out of three, not a deterministic one. Guard it: the proxy should
-refuse to fire when the fingertip separation is degenerate. That matters on hardware too, where
-a narrow pinch can do the same thing even though the real nut stops the fingers.
+hazard that fired in two runs out of three, not a deterministic one.
+
+2026-10-05, E1 removes this in ros-sim two ways over: the nut is now collidable, so the
+fingertips cannot converge past it, and the release no longer reads the proxy at all -- it reads
+the nut's own twist. **Hardware is unchanged and still exposed**, because a narrow pinch can
+collapse the pads there too even though the real nut stops them; the proxy still needs a guard
+that refuses to fire on a degenerate fingertip separation. `GripCycleCoordinator` now records
+the proxy alongside whatever it gates on, so the size of that error is measurable from any
+ros-sim recording.
 
 **ros-sim runs are not reproducible, so do not compare single runs.** `170332` differed from
 `165420` only in having the viewer open: preflight 0.048 s against 0.020 s, one missed deadline.
@@ -578,21 +590,101 @@ the MuJoCo-only loop.
 
 These make the rehearsal predictive of hardware; they do not change the hardware stack.
 
-### E1. Give ros-sim hand collision geometry and the dynamic thread pair  [should]
+### E1. Give ros-sim the dynamic thread pair, and read the real turn  [should]
 
-- [ ] done
+- [x] ported 2026-10-05; the "done when" below is not yet demonstrated
 
-Evidence. `inspire_franka_policy_scene.xml` has a fixed nut and a hand without collision
-geometry, so no grasp, no turn, and the release trigger must rely on the yaw proxy.
-`apps/policy_rollout/policy_rollout/mujoco_threading_env.py` already ports Isaac's simplified
-thread pair (200 kN/m axial drive, 0.002 Nm Coulomb, hold during release) and the training
-hand PD.
+**The original evidence here was wrong on one point: the ros-sim hand DOES have collision
+geometry.** Measured on the compiled scene: 20 collidable group-3 geoms on the hand (plus 8 on
+the arm), which `make_hand_mjcf.py` has always emitted. What the scene lacked was anything for
+them to touch -- the nut was `contype="0" conaffinity="0"` with no joints, a fixed visual -- and
+training's pad friction. The generator docstring, `sim_policy.launch.py` and this item all
+claimed "no collision geometry"; all three are corrected.
 
-Change. Compose the policy scene from `ThreadingScene._add_thread_pair` and the training hand
-collision classes; expose `nut_twist` on a topic so the coordinator can use the real turn in
-sim and the proxy only on hardware.
+Ported 2026-10-05.
 
-Done when. A ros-sim run completes a cycle on the physical turn, not the proxy.
+- `make_ros_sim_scene.py` emits ForgeUltra's thread pair as static MJCF (`thread_pair_xml` /
+  `thread_equality_xml`): `nut_carrier` at the bolt tip with the `nut_axial` slide (armature
+  5 kg, so MuJoCo's equality is as stiff as Isaac's 200 kN/m drive), the `m24_nut` body with the
+  `nut_twist` hinge (0.002 Nm Coulomb, 0.0002 viscous, armature 0.001), a collidable nut geom at
+  0.05 kg, the `thread_coupling` joint equality (`axial = 0.00766 + 4.77e-4 * twist`) and an
+  inactive `thread_hold`. The keyframe now carries the nut's start pose.
+- `make_hand_mjcf.py` sets the pads to training's 0.75 (`CONTACT_FRICTION`). This matters because
+  MuJoCo takes the element-wise MAXIMUM of the two geoms' friction, so lowering the nut alone
+  would have left contacts at the hand's default 1.0.
+- The bolt stays non-collidable -- `contype=0` in the training asset too. The equality already
+  constrains the nut to the bolt axis; meshing the two convex hulls would fight it.
+- `inspire_franka_sim`'s thread pair plugin (new C++ pluginlib plugin for
+  `mujoco_ros2_control_plugins`) publishes `/thread_state` (JointState, 100 Hz sim time),
+  clamps on `/thread_hold` and resets on `/reset_thread`. The nut is not part of the robot, so
+  no ros2_control state interface can reach it. Loaded via the `mujoco_plugins` parameter in
+  `controllers_sim_policy.yaml`.
+- `hardware.py`'s `ThreadPairClient` feeds the measured turn into `GripCycleCoordinator.update`,
+  holds the thread for the release/return transition and rebases on a completed cycle. The proxy
+  is still advanced and recorded, so the gap between the two is now measurable, and
+  `threading_turn_progress_rad` is no longer NaN in ros-sim recordings. `turn_source` and
+  `final_nut_twist_deg` are in `report.json`.
+
+Verified (container, `MUJOCO_GL=egl`):
+
+| check | result |
+|---|---|
+| thread pair parameters vs `ThreadingScene` (joints, equalities, nut geom, masses) | 27/27 identical |
+| coupling: d(axial)/d(twist) against pitch/2pi | 0.00047678 vs 0.00047746 (0.14 %) |
+| mechanism vs training under the same loads | -0.02 Nm: -479 vs -486 deg; 20 N push: -202 vs -208 deg |
+| unloaded drift | 0.000 deg (training -0.01 deg, its gravity on the 50 g nut) |
+| pinch closes onto the nut | contact at index 0.565 rad, 14.6 N across thumb_distal + index_intermediate |
+| wrist yaw with the nut gripped | twist -47.8 deg, axial -0.437 mm, i.e. it tightens and descends |
+| `thread_hold` clamps | 0.00 deg under a torque that otherwise spins it > 360 deg |
+| plugin in a live ros-sim | loads, publishes at 100 Hz sim time, service answers |
+
+Gotchas found on the way, both now in the code as comments: `mujoco_vendor`'s exported cmake
+target carries a RELATIVE library path, so `ament_target_dependencies(mujoco_vendor)` fails to
+link and `mujoco::mujoco` from its extras file must be used instead; and `mujoco_plugins` is a
+NESTED parameter (`mujoco_plugins.<name>.type`) -- passing it as a flat list of plugin names
+crashes `MujocoSystemInterface` with `basic_string::substr: __pos (which is 15) > this->size()`
+and takes the whole hardware component down.
+
+Two things this does NOT settle.
+
+- **Whether the policy's pinch lands on the nut is D1's question, not E1's.** At `policy_home`
+  the ros-sim fingertips are 114.9 mm apart against training's 57.8, and the hand sits 154 mm
+  above the nut (the student descends onto it). Contact needed index at 0.565 rad; the policy
+  reached 0.66 rad in the `170332` run, so the range does overlap -- but where the pads land is
+  the 2x geometry mismatch, and that is decided by a ruler.
+- **Gravity is off in ros-sim** (libfranka compensates it on the real arm) while training has it
+  on with `gravcomp=1` on the robot bodies only, so training's nut carries its own 0.49 N. On
+  this thread that is worth 2.3e-4 Nm against the hinge's 2e-3 Nm Coulomb, i.e. it cannot turn
+  the nut; measured drift over a second is 0.084 mm. Left as-is and noted rather than changed.
+
+A side effect worth having: with the nut collidable the fingertips can no longer collapse to
+4.5 mm, so the degenerate-grasp-frame release artefact described in the 2026-10-01 status
+section is both unreachable (the nut is between the pads) and no longer what the release reads.
+
+Done when. A ros-sim run completes a cycle on the physical turn, not the proxy. **Not yet
+shown -- the blocker is CPU, not the port.** Five attempts on 2026-10-05, all in
+`ROS_DOMAIN_ID=73` beside the long-lived simulator in the default domain, on a box at load
+16-25:
+
+| attempt | setting | outcome |
+|---|---|---|
+| 1 | 15 Hz, sim_speed 0.5 | homed, controller switched, thread pair live, then `controller_watchdog`; steady policy pass 0.354 s against the 0.060 s budget |
+| 2 | 5 Hz, sim_speed 0.2 | `sim_speed` 0.2 is out of range: `Pid is called with negative dt` deactivates `InspireFrankaSystem` during write, and no controller can then activate. 0.5 is the usable floor |
+| 3, 4 | 5 Hz, sim_speed 0.5 | leftover nodes from the earlier attempts were still publishing `/clock` in the same domain; two clocks give the PID a negative dt, same failure. Clearing the domain by `ROS_DOMAIN_ID` in each process's environment fixed it |
+| 5 | 5 Hz, sim_speed 0.5, camera 15 Hz | reached the policy loop again, `controller_watchdog`; policy pass 0.672 s (worse -- the camera rate it needs costs the CPU the loop needs) |
+
+So everything up to and including the first policy tick is exercised: homing, the controller
+switch, `/thread_state` arriving, the reset service answering, and the release switching to the
+measured turn. What is unproven is the only thing that needs a loop fast enough to hold a
+period: the cycle itself. Re-run on a quiet machine (close the viewer simulator first), or do
+B3 and raise `policy_command_timeout` for rehearsal.
+
+Two bugs the attempts found, both fixed:
+
+- the hold publisher was VOLATILE against the plugin's TRANSIENT_LOCAL subscription. DDS reports
+  `requesting incompatible QoS ... DURABILITY` once and then silently delivers nothing, which
+  presents as a thread that refuses to clamp. `ThreadPairClient` now publishes TRANSIENT_LOCAL.
+- `mujoco_plugins` is a nested parameter, not a list (see the gotchas above).
 
 ### E2. Pin the FR3 joint dynamics to the training asset and commit the choice  [minor]
 
