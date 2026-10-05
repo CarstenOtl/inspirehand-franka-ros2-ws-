@@ -301,6 +301,53 @@ def test_cycle_coordinator_ignores_a_loosening_turn():
     assert coordinator.process_phase() == "policy"
 
 
+def test_cycle_coordinator_gates_on_the_measured_turn_when_it_has_one():
+    """In ros-sim the simulated nut reports its own twist, and that wins.
+
+    The proxy is still advanced and recorded -- it is the only signal hardware
+    has, so the gap between the two is worth measuring -- but it must not decide
+    the release when the real angle is available.
+    """
+
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _coordinator(reset_q)
+
+    # The hand has not turned at all, so the proxy says nothing happened; the nut
+    # has gone past the 55-degree gate.
+    event, progress = coordinator.update(
+        position=np.zeros(3),
+        quaternion=reset_q,
+        hand=np.zeros(3),
+        measured_turn_progress=np.deg2rad(56.0),
+    )
+    assert event == "release_started"
+    assert progress == pytest.approx(np.deg2rad(56.0))
+    assert coordinator.gated_on_measured_turn
+    assert coordinator.last_proxy_turn_rad == pytest.approx(0.0, abs=1e-9)
+
+
+def test_cycle_coordinator_ignores_a_proxy_spike_when_the_nut_has_not_turned():
+    """The degenerate-fingertip artefact must not fire the release in ros-sim.
+
+    A closing pinch used to collapse the fingertips to a few millimetres, where
+    the thumb-to-index direction is meaningless and the proxy jumped ~100 degrees
+    in one step -- which fired the release in two runs out of three. Gating on the
+    nut's own twist makes that unreachable.
+    """
+
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _coordinator(reset_q)
+    event, progress = coordinator.update(
+        position=np.zeros(3),
+        quaternion=_turned_about_world_z(reset_q, -100.0),
+        hand=np.zeros(3),
+        measured_turn_progress=0.0,
+    )
+    assert event is None
+    assert progress == pytest.approx(0.0)
+    assert coordinator.last_proxy_turn_rad > np.deg2rad(90.0)
+
+
 def test_cycle_completion_rebases_without_retriggering_release():
     reset_q = _reset_grasp_quaternion()
     coordinator = _coordinator(reset_q, max_cycles=2)

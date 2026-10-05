@@ -48,6 +48,10 @@ M24_BOLT_HEIGHT = 0.035
 M24_BOLT_BASE_HEIGHT = 0.01732
 M24_NUT_HEIGHT = 0.01732
 M24_THREAD_PITCH = 0.003
+# Which way tightens. ForgeUltra's `threading_directional_turn_progress` scores a
+# clockwise turn -- negative about the world's up axis -- as positive progress,
+# so progress = THREADING_DIRECTION_SIGN * (twist - twist_at_cycle_start).
+THREADING_DIRECTION_SIGN = -1.0
 BOLT_TIP_OFFSET = M24_BOLT_HEIGHT + M24_BOLT_BASE_HEIGHT
 BOLT_TIP_POSITION = BOLT_BASE_POSITION + np.array([0.0, 0.0, BOLT_TIP_OFFSET])
 

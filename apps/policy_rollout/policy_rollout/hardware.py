@@ -541,6 +541,10 @@ class GripCycleCoordinator:
     directional turn is observable as grasp-frame yaw, so that signal drives
     the same 55-degree transition threshold as the simulator. It is recorded as
     a proxy and is never promoted to task-success evidence.
+
+    In ros-sim the nut's real twist IS available (``ThreadPairClient``), and
+    ``update`` then gates on that instead; the proxy is still advanced and
+    recorded alongside it.
     """
 
     def __init__(self, *, rate_hz, max_cycles, reset_position, reset_quaternion, reset_hand):
@@ -558,6 +562,8 @@ class GripCycleCoordinator:
         self._previous_yaw = 0.0
         self._unwrapped_yaw = 0.0
         self._cycle_yaw_origin = 0.0
+        self.last_proxy_turn_rad = 0.0
+        self.gated_on_measured_turn = False
 
     def process_phase(self) -> str:
         if not self.active:
@@ -590,8 +596,19 @@ class GripCycleCoordinator:
         hand_error = np.max(np.abs(np.asarray(hand) - self.reset_hand))
         return position_error <= 0.005 and orientation_error <= 5.0 and hand_error <= 0.15
 
-    def update(self, *, position, quaternion, hand) -> tuple[str | None, float]:
-        progress = self.turn_progress_rad(quaternion)
+    def update(
+        self, *, position, quaternion, hand, measured_turn_progress=None
+    ) -> tuple[str | None, float]:
+        # The proxy is always advanced and recorded, even when it is not what
+        # gates the release: it is the only turn signal hardware has, so how far
+        # it drifts from the simulated nut's real twist is worth measuring.
+        self.last_proxy_turn_rad = self.turn_progress_rad(quaternion)
+        progress = (
+            self.last_proxy_turn_rad
+            if measured_turn_progress is None
+            else float(measured_turn_progress)
+        )
+        self.gated_on_measured_turn = measured_turn_progress is not None
         event = None
         if self.active:
             self.phase_steps += 1
@@ -628,6 +645,133 @@ class GripCycleCoordinator:
             self.wait_steps = 0
             event = "release_started"
         return event, progress
+
+
+class ThreadPairClient:
+    """The simulated nut's measured turn, and the clamp the transition needs.
+
+    ros-sim's scene carries ForgeUltra's thread pair, and
+    ``inspire_franka_sim``'s thread pair plugin publishes its state on
+    ``/thread_state`` and clamps it on ``/thread_hold``. That replaces the
+    grasp-frame yaw proxy with the quantity training actually scores -- the nut's
+    own twist -- which matters because the proxy cannot distinguish a nut turn
+    from the wrist yaw of the descent, and jumps ~100 degrees in one step when
+    the fingertips converge.
+
+    The physical workcell has no such topic, so hardware keeps the proxy and
+    never constructs this. Both numbers are recorded in ros-sim, so how far
+    apart they run is finally measurable.
+    """
+
+    def __init__(self, node, *, state_topic="/thread_state", hold_topic="/thread_hold",
+                 reset_service="/reset_thread"):
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import JointState
+        from std_msgs.msg import Bool
+        from std_srvs.srv import Trigger
+
+        # The plugin subscribes with TRANSIENT_LOCAL so a late or restarted
+        # simulator still learns the current hold state. A VOLATILE publisher is
+        # incompatible with that and DDS drops the connection silently -- it
+        # reports "requesting incompatible QoS: DURABILITY" once and then no hold
+        # ever arrives, which looks exactly like a thread that will not clamp.
+        hold_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._node = node
+        self._lock = threading.Lock()
+        self._twist_rad = None
+        self._axial_m = None
+        self._reference_rad = 0.0
+        self._held = None
+        self._Bool = Bool
+        self._hold_publisher = node.create_publisher(Bool, hold_topic, hold_qos)
+        self._reset_client = node.create_client(Trigger, reset_service)
+        node.create_subscription(
+            JointState, state_topic, self._put, qos_profile_sensor_data
+        )
+
+    def _put(self, message):
+        try:
+            axial = message.position[list(message.name).index("nut_axial")]
+            twist = message.position[list(message.name).index("nut_twist")]
+        except (ValueError, IndexError):
+            return
+        with self._lock:
+            self._axial_m = float(axial)
+            self._twist_rad = float(twist)
+
+    def wait_for_state(self, timeout_s: float) -> bool:
+        deadline = self._node.now_s() + float(timeout_s)
+        while self._node.now_s() < deadline:
+            with self._lock:
+                if self._twist_rad is not None:
+                    return True
+            time.sleep(0.02)
+        with self._lock:
+            return self._twist_rad is not None
+
+    @property
+    def axial_m(self):
+        with self._lock:
+            return self._axial_m
+
+    @property
+    def twist_rad(self):
+        with self._lock:
+            return self._twist_rad
+
+    def turn_progress_rad(self):
+        """Progress since the last rebase, in training's sign convention."""
+
+        with self._lock:
+            twist = self._twist_rad
+            reference = self._reference_rad
+        if twist is None:
+            return None
+        return fo.THREADING_DIRECTION_SIGN * (twist - reference)
+
+    def rebase(self) -> None:
+        """Start a new cycle's turn count here, as ``rebase_turn_reference`` does."""
+
+        with self._lock:
+            if self._twist_rad is not None:
+                self._reference_rad = self._twist_rad
+
+    def hold(self, engaged: bool) -> None:
+        """Clamp or free the thread. Idempotent, so it is safe to call per event."""
+
+        engaged = bool(engaged)
+        if self._held == engaged:
+            return
+        message = self._Bool()
+        message.data = engaged
+        self._hold_publisher.publish(message)
+        self._held = engaged
+
+    def reset(self, timeout_s: float = 5.0) -> bool:
+        """Put the nut back at its start pose on the bolt, for a repeat run.
+
+        The simulator is long-lived -- several rollouts share one
+        sim_policy.launch.py -- so without this a second run would start on a
+        nut the first one already turned.
+        """
+
+        if not self._reset_client.wait_for_service(timeout_sec=timeout_s):
+            return False
+        from std_srvs.srv import Trigger
+
+        future = self._reset_client.call_async(Trigger.Request())
+        deadline = time.monotonic() + timeout_s
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self._held = False
+        with self._lock:
+            self._reference_rad = 0.0
+        return future.done() and bool(future.result() and future.result().success)
 
 
 @dataclass(frozen=True)
@@ -1337,6 +1481,35 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             reset_quaternion=grasp_quaternion,
             reset_hand=q_policy_hand,
         )
+        # ros-sim's nut sits on ForgeUltra's thread pair and reports its own
+        # twist, so the release can be gated on the real turn. If the topic is
+        # absent -- an older scene, or the plugin not configured -- say so and
+        # fall back to the proxy rather than failing the run.
+        thread_pair = None
+        if sim:
+            thread_pair = ThreadPairClient(node)
+            if thread_pair.wait_for_state(args.input_timeout):
+                if not thread_pair.reset():
+                    print(
+                        "warning: /reset_thread did not answer; the nut starts "
+                        "wherever the previous run left it",
+                        flush=True,
+                    )
+                print(
+                    "thread pair live: nut twist "
+                    f"{math.degrees(thread_pair.twist_rad or 0.0):.1f} deg, "
+                    f"axial {1.0e3 * (thread_pair.axial_m or 0.0):.2f} mm; "
+                    "the release gates on the measured turn",
+                    flush=True,
+                )
+            else:
+                thread_pair = None
+                print(
+                    "warning: no /thread_state in this simulator; falling back to "
+                    "the grasp-frame yaw proxy. Regenerate the scene and set "
+                    "mujoco_plugins in controllers_sim_policy.yaml.",
+                    flush=True,
+                )
         if not args.yes:
             input("Start closed-loop physical policy execution? [Enter/Ctrl-C] ")
 
@@ -1379,6 +1552,15 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 task_signals={
                     "completed_cycles": coordinator.completed_cycles,
                     "watchdog_stop": False,
+                    # The turn the release actually gates on. NaN on hardware,
+                    # which has no nut-angle topic; every ros-sim and hardware
+                    # recording before this left it NaN, so the return failures
+                    # had to be reconstructed offline from the joints.
+                    "threading_turn_progress_rad": (
+                        math.nan
+                        if thread_pair is None or thread_pair.turn_progress_rad() is None
+                        else thread_pair.turn_progress_rad()
+                    ),
                 },
             )
             filtered = result.filtered_native_action.numpy()
@@ -1410,13 +1592,27 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 position=grasp_position,
                 quaternion=grasp_quaternion,
                 hand=q_hand,
+                measured_turn_progress=(
+                    None if thread_pair is None else thread_pair.turn_progress_rad()
+                ),
             )
             if event is not None:
+                source = "nut twist" if coordinator.gated_on_measured_turn else "grasp-turn proxy"
                 print(
                     f"policy event: {event}; cycles={coordinator.completed_cycles}, "
-                    f"grasp-turn proxy={math.degrees(turn_progress):.1f} deg",
+                    f"{source}={math.degrees(turn_progress):.1f} deg "
+                    f"(proxy={math.degrees(coordinator.last_proxy_turn_rad):.1f} deg)",
                     flush=True,
                 )
+            if thread_pair is not None and event is not None:
+                # Isaac clamps the thread for the whole release/return
+                # transition, so the nut cannot unwind while the fingers let go.
+                if event == "release_started":
+                    thread_pair.hold(True)
+                else:
+                    thread_pair.hold(False)
+                    if event == "cycle_completed":
+                        thread_pair.rebase()
             if event == "cycle_completed":
                 world_position, world_quaternion = frame.pose_base_to_world(
                     grasp_position, grasp_quaternion
@@ -1480,6 +1676,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             error=error,
             steps=steps,
             coordinator=locals().get("coordinator"),
+            thread_pair=locals().get("thread_pair"),
             missed_deadlines=missed_deadlines,
             limited_policy_targets=limited_policy_targets,
             watchdog_stop=watchdog_stop,
@@ -1498,6 +1695,7 @@ def _rollout_report(
     error,
     steps,
     coordinator,
+    thread_pair=None,
     missed_deadlines,
     limited_policy_targets,
     watchdog_stop,
@@ -1512,6 +1710,14 @@ def _rollout_report(
         "steps": steps,
         "requested_period_s": loop_period_s,
         "completed_cycles": 0 if coordinator is None else coordinator.completed_cycles,
+        # What gated the release. "nut_twist" is the simulated thread pair's own
+        # angle; "grasp_yaw_proxy" is the inferred one hardware has to use.
+        "turn_source": "grasp_yaw_proxy" if thread_pair is None else "nut_twist",
+        "final_nut_twist_deg": (
+            None
+            if thread_pair is None or thread_pair.twist_rad is None
+            else math.degrees(thread_pair.twist_rad)
+        ),
         "missed_policy_deadlines": missed_deadlines,
         "limited_policy_targets": limited_policy_targets,
         "watchdog_stop": watchdog_stop,
