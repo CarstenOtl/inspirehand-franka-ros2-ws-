@@ -18,6 +18,15 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <!-- thread_pair_plugin: the threaded nut's state and the release hold. -->
+  <depend>mujoco_ros2_control_plugins</depend>
+  <depend>mujoco_vendor</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>realtime_tools</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+
   <exec_depend>inspire_franka_description</exec_depend>
   <exec_depend>inspire_hand_description</exec_depend>
   <exec_depend>ament_index_python</exec_depend>

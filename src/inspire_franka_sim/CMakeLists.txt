@@ -2,6 +2,47 @@ cmake_minimum_required(VERSION 3.8)
 project(inspire_franka_sim)
 
 find_package(ament_cmake REQUIRED)
+find_package(mujoco_ros2_control_plugins REQUIRED)
+find_package(mujoco_vendor REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(realtime_tools REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+
+# The threaded nut in inspire_franka_policy_scene.xml is not part of the robot,
+# so no ros2_control interface reaches it. This plugin publishes its state and
+# clamps the thread for the release/return transition; see the header.
+add_library(${PROJECT_NAME}_thread_pair_plugin SHARED src/thread_pair_plugin.cpp)
+target_compile_features(${PROJECT_NAME}_thread_pair_plugin PUBLIC cxx_std_17)
+target_include_directories(${PROJECT_NAME}_thread_pair_plugin PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(${PROJECT_NAME}_thread_pair_plugin
+  mujoco_ros2_control_plugins
+  pluginlib
+  rclcpp
+  realtime_tools
+  sensor_msgs
+  std_msgs
+  std_srvs
+)
+# NOT ament_target_dependencies(mujoco_vendor): its exported target carries a
+# RELATIVE library path ("opt/mujoco_vendor/lib/libmujoco.so"), which the linker
+# reads as -lopt/... and cannot find. mujoco_vendor-extras.cmake defines a
+# correct imported target, so link that.
+target_link_libraries(${PROJECT_NAME}_thread_pair_plugin mujoco::mujoco)
+pluginlib_export_plugin_description_file(
+  mujoco_ros2_control_plugins thread_pair_plugin.xml)
+
+install(TARGETS ${PROJECT_NAME}_thread_pair_plugin
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+install(DIRECTORY include/ DESTINATION include)
 
 install(
   DIRECTORY mjcf config launch rviz

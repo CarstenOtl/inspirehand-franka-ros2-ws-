@@ -8,6 +8,19 @@
 # franka_robot_state_broadcaster, and gravity is off in the scene in place of
 # libfranka's compensation. The hand controllers are controllers_sim_impedance.yaml's.
 
+# The threaded nut in inspire_franka_policy_scene.xml is not part of the robot,
+# so no ros2_control interface reaches it. inspire_franka_sim's thread pair
+# plugin publishes its twist on /thread_state and clamps the thread on
+# /thread_hold, which is what the rollout's release/return lifecycle needs
+# instead of the grasp-frame yaw proxy. MujocoSystemInterface reads this off the
+# node it gets from get_node(), hence the wildcard: the parameter belongs to the
+# simulator's own node, not to a controller.
+/**:
+  ros__parameters:
+    mujoco_plugins:
+      thread_pair:
+        type: inspire_franka_sim/ThreadPairPlugin
+
 controller_manager:
   ros__parameters:
     update_rate: 1000

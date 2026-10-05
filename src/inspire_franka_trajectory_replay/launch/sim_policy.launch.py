@@ -13,7 +13,8 @@ also opens rqt_image_view on the relayed colour stream the policy consumes.
 Everything the hardware backend talks to is here, under the same names:
 
 - the FR3 in ``inspire_franka_policy_scene.xml`` (the flange torque scene in
-  the student's training environment: bench, M24 bolt and nut) with
+  the student's training environment: bench, M24 bolt, and the nut on
+  ForgeUltra's thread pair) with
   ``trajectory_replay_controller`` active for homing and
   ``cartesian_trajectory_replay_controller`` inactive, both from
   ``controllers_sim_policy.yaml`` (the policy profile on the DH model);
@@ -25,11 +26,20 @@ Everything the hardware backend talks to is here, under the same names:
   colour/aligned-depth topics, with the profile's camera matrix and frame, and
   a static fr3_link0 -> camera_color_optical_frame transform for RViz.
 
-What it does not model: contact (the hand model has no collision geometry and
-the nut is fixed), the FR3's own dynamics (DH kinematics, no coriolis, gravity
-off), RealSense depth noise, and the hand's RS485 timing. It exercises frames,
-units, rates, the controller switch, the policy command path and the camera
-contract end to end, and shows in the viewer where each command sends the arm.
+- ``inspire_franka_sim``'s thread pair plugin, loaded through the
+  ``mujoco_plugins`` parameter in ``controllers_sim_policy.yaml``. The nut is
+  not part of the robot, so no ros2_control interface reaches it; the plugin
+  publishes its twist on ``/thread_state`` and clamps the thread on
+  ``/thread_hold``, which is what lets the runner gate the release on the
+  nut's real turn instead of on grasp-frame yaw.
+
+What it does not model: the FR3's own dynamics (the controller runs on DH
+kinematics with no coriolis term, and gravity is off in the scene in place of
+libfranka's compensation), RealSense depth noise, and the hand's RS485 timing.
+The nut now has contact geometry and a thread, but the hand's own fingertip
+geometry is this workspace's RH56 model rather than training's, and the two
+disagree by 2x on tip separation (D1 in docs/policy_rollout_training_gap_todo.md)
+-- so where the pads land on the nut is not yet the training answer.
 """
 
 from pathlib import Path

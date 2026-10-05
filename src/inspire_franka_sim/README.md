@@ -257,11 +257,51 @@ physics, not a tuning failure.
 - **Soft joint limits.** Driving a joint hard into its limit overshoots it by
   around 10 mrad, which is MuJoCo's default limit softness rather than a bug.
 
+## The thread pair plugin
+
+`mjcf/inspire_franka_policy_scene.xml` carries ForgeUltra's simplified threading
+pair: the M24 nut on an axial slide coupled to a twist hinge, so a grasped nut
+can be turned down the bolt. The nut is not part of the robot, so no
+`ros2_control` interface reaches it, and `joint_state_broadcaster` cannot see
+it. `src/thread_pair_plugin.cpp` fills that gap as a
+`mujoco_ros2_control_plugins` plugin:
+
+| | |
+|---|---|
+| `/thread_state` | `sensor_msgs/JointState` — `nut_axial` (m) and `nut_twist` (rad), 100 Hz in simulated time |
+| `/thread_hold` | `std_msgs/Bool` — clamps the thread, as Isaac does for the release/return transition |
+| `/reset_thread` | `std_srvs/Trigger` — nut back to its start pose on the bolt, for a repeat run |
+
+Load it with the `mujoco_plugins` parameter (see
+`inspire_franka_trajectory_replay/config/controllers_sim_policy.yaml`):
+
+```yaml
+/**:
+  ros__parameters:
+    mujoco_plugins:
+      thread_pair:
+        type: inspire_franka_sim/ThreadPairPlugin
+```
+
+That parameter is **nested** — `mujoco_plugins.<name>.type`. Passing a flat list
+of plugin names instead throws `basic_string::substr: __pos (which is 15) >
+this->size() (which is 14)` inside `MujocoSystemInterface` and takes the whole
+hardware component down with it, which looks nothing like a configuration
+mistake.
+
+The plugin is idle in every other scene here: it logs once that the scene has no
+thread pair and its `update` returns immediately.
+
 ## Regenerating the assets
 
 ```bash
 python3 scripts/make_hand_mjcf.py --side right
 python3 scripts/make_hand_mjcf.py --side left
 ```
+
+The generated hand carries the finger-pad friction in `CONTACT_FRICTION`
+(training's 0.75, not MuJoCo's default 1.0). MuJoCo takes the element-wise
+*maximum* of two geoms' friction, so a contact only sees 0.75 if both the pads
+and the object carry it.
 
 Then re-run `colcon test --packages-select inspire_franka_sim`.
