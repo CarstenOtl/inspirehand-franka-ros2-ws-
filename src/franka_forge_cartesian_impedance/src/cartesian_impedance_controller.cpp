@@ -852,9 +852,29 @@ controller_interface::return_type CartesianImpedanceController::update(
   const bool new_command = command != nullptr && command->id != rt_command_id_;
   if (new_command && command->kind == CommandKind::kPolicyGoal && command->has_tool) {
     const auto& tool = command->tool_in_flange;
-    rt_tool_translation_ = Eigen::Vector3d(tool[0], tool[1], tool[2]);
-    rt_tool_rotation_ =
-        Eigen::Quaterniond(tool[6], tool[3], tool[4], tool[5]).toRotationMatrix();
+    const Eigen::Vector3d tool_translation(tool[0], tool[1], tool[2]);
+    const Eigen::Quaterniond tool_rotation =
+        Eigen::Quaterniond(tool[6], tool[3], tool[4], tool[5]).normalized();
+    // Moving the controlled point moves the MEASURED pose, so carry the reference and the
+    // target with it by the same rigid change. The law's error is
+    // (p - p_d, -axis_angle(q_d q^-1)) in the base frame, and both measured and reference are
+    // right-multiplied by the same q_old^-1 q_new here, so the error -- and the tracking-fault
+    // check that reads it -- is exactly invariant across the change instead of jumping by the
+    // difference between the two frames. The first goal makes that jump the whole grasp
+    // rotation: the profile's tool_offset_rpy is identity while the live grasp frame's
+    // approach axis is 80 deg off the flange's, i.e. four times max_orientation_error, so
+    // without this the first goal always faults on orientation.
+    const Eigen::Matrix3d flange_rotation = orientation.toRotationMatrix();
+    const Eigen::Vector3d translation_shift =
+        flange_rotation * (tool_translation - rt_tool_translation_);
+    const Eigen::Quaterniond rotation_shift(rt_tool_rotation_.transpose() *
+                                            tool_rotation.toRotationMatrix());
+    position_target_ += translation_shift;
+    position_d_ += translation_shift;
+    orientation_target_ = (orientation_target_ * rotation_shift).normalized();
+    orientation_d_ = (orientation_d_ * rotation_shift).normalized();
+    rt_tool_translation_ = tool_translation;
+    rt_tool_rotation_ = tool_rotation.toRotationMatrix();
     rt_tool_active_ = true;
   }
 

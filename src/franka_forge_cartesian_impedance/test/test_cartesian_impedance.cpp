@@ -664,3 +664,62 @@ TEST(ForgeDecode, clip_frame_matters_for_the_euler_clip_only_through_its_yaw_wra
   EXPECT_NEAR(franka_forge_cartesian_impedance::quaternion_angle(in_world.orientation, measured_q), 0.097,
               1e-9);
 }
+
+// A PolicyGoal moves the controlled frame, which moves the MEASURED pose. The controller
+// carries its reference and target through the same rigid change, so the law's error and the
+// tracking-fault check are invariant across it. Without that, the first policy goal faults on
+// orientation: the profile's static tool_offset_rpy is identity while the live grasp frame is
+// nearly a half turn from the flange, which is several times max_orientation_error.
+TEST(ForgePolicyGoal, a_tool_frame_change_leaves_the_tracking_error_invariant) {
+  // An arbitrary flange pose, and the hold reference the controller carries at it.
+  const Eigen::Vector3d flange_p(0.42, -0.11, 0.31);
+  const Eigen::Quaterniond flange_q =
+      Eigen::Quaterniond(Eigen::AngleAxisd(0.6, Eigen::Vector3d::UnitZ())) *
+      Eigen::Quaterniond(Eigen::AngleAxisd(2.1, Eigen::Vector3d::UnitY()));
+
+  // Before the first goal: the profile's frozen offset, identity rotation (tool_offset_rpy 0).
+  const Eigen::Vector3d old_t(-0.059067, -0.028773, 0.173311);
+  const Eigen::Matrix3d old_r = Eigen::Matrix3d::Identity();
+  // The first goal's tool_in_flange: the live grasp frame. Its approach axis is 80 deg off the
+  // flange's, so the rotation itself is most of a half turn.
+  const Eigen::Vector3d new_t(-0.0591, -0.0288, 0.1733);
+  const Eigen::Quaterniond new_q =
+      Eigen::Quaterniond(0.191265, 0.710503, 0.643425, -0.211205).normalized();
+  const Eigen::Matrix3d new_r = new_q.toRotationMatrix();
+  ASSERT_GT(franka_forge_cartesian_impedance::quaternion_angle(Eigen::Quaterniond::Identity(),
+                                                               new_q),
+            4.0 * 0.35);  // the profile's max_orientation_error
+
+  const Eigen::Matrix3d flange_rotation = flange_q.toRotationMatrix();
+  const auto measure = [&](const Eigen::Vector3d& t, const Eigen::Matrix3d& r) {
+    return std::make_pair(Eigen::Vector3d(flange_p + flange_rotation * t),
+                          Eigen::Quaterniond(flange_rotation * r).normalized());
+  };
+  const auto before = measure(old_t, old_r);
+  const auto after = measure(new_t, new_r);
+
+  // The reference the controller holds: a small genuine tracking error at the old frame.
+  Eigen::Vector3d reference_p = before.first + Eigen::Vector3d(0.004, -0.002, 0.003);
+  Eigen::Quaterniond reference_q =
+      (before.second * Eigen::Quaterniond(Eigen::AngleAxisd(0.05, Eigen::Vector3d(1, 2, 3)
+                                                                      .normalized())))
+          .normalized();
+  const Vector6d error_before = example_cartesian_error(
+      before.first, before.second, reference_p, reference_q, RotationErrorForm::kAxisAngle);
+  const double angle_before =
+      franka_forge_cartesian_impedance::quaternion_angle(before.second, reference_q);
+
+  // Unshifted, the measured pose alone jumps and the fault check fires.
+  EXPECT_GT(franka_forge_cartesian_impedance::quaternion_angle(after.second, reference_q), 0.35);
+
+  // The controller's shift, as update() applies it.
+  reference_p += flange_rotation * (new_t - old_t);
+  reference_q = (reference_q * Eigen::Quaterniond(old_r.transpose() * new_r)).normalized();
+
+  const Vector6d error_after = example_cartesian_error(
+      after.first, after.second, reference_p, reference_q, RotationErrorForm::kAxisAngle);
+  EXPECT_TRUE(error_after.isApprox(error_before, 1e-12));
+  EXPECT_NEAR(franka_forge_cartesian_impedance::quaternion_angle(after.second, reference_q),
+              angle_before, 1e-12);
+  EXPECT_LT(angle_before, 0.35);
+}
