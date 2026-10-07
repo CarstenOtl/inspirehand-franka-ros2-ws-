@@ -12,7 +12,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 
-namespace franka_trajectory_replay {
+namespace franka_forge_cartesian_impedance {
 
 /// Declares the collision-threshold parameters with the values
 /// franka_example_controllers/default_robot_behavior_utils.hpp installs before the upstream
@@ -91,4 +91,4 @@ inline bool apply_collision_behavior(
   return true;
 }
 
-}  // namespace franka_trajectory_replay
+}  // namespace franka_forge_cartesian_impedance

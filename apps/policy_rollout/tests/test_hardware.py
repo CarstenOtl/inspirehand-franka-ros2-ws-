@@ -10,12 +10,12 @@ from policy_rollout.hardware import (
     TrainingFrameAdapter,
     assert_policy_camera_frames,
     grasp_frame_from_tips,
+    grasp_in_flange,
     grasp_z_transport_at_reset,
     image_message_to_numpy,
-    limit_cartesian_step,
     physical_hand_state_to_policy,
+    policy_goal_base,
     policy_tool_transform,
-    retarget_grasp_pose_to_controlled_pose,
 )
 
 
@@ -147,26 +147,7 @@ def test_rgbd_synchronizer_prefers_fresh_pair_over_older_exact_pair():
     assert pair[2:] == pytest.approx((100.20, 100.21))
 
 
-def test_cartesian_step_limiter_uses_translation_and_quaternion_norms():
-    reference_p = np.zeros(3)
-    reference_q = fo.quat_from_euler_xyz(0.0, 0.0, 0.0)
-    target_q = fo.quat_from_euler_xyz(0.12, 0.12, 0.12)
-    position, quaternion, position_limited, orientation_limited = limit_cartesian_step(
-        np.array([0.04, 0.03, 0.0]),
-        target_q,
-        reference_p,
-        reference_q,
-        max_position_step_m=0.036,
-        max_orientation_step_rad=0.18,
-    )
-    assert position_limited
-    assert orientation_limited
-    assert np.linalg.norm(position - reference_p) == pytest.approx(0.036 * 0.98)
-    angle = 2.0 * np.arccos(abs(float(np.dot(reference_q, quaternion))))
-    assert angle == pytest.approx(0.18 * 0.98)
-
-
-def test_training_frame_round_trip_and_controller_target():
+def test_training_frame_round_trip():
     adapter = TrainingFrameAdapter()
     position = np.array([0.5, -0.1, 0.4])
     quaternion = fo.quat_from_euler_xyz(0.2, -0.3, 0.4)
@@ -176,76 +157,73 @@ def test_training_frame_round_trip_and_controller_target():
     )
     assert round_position == pytest.approx(position)
     assert abs(float(np.dot(round_quaternion, quaternion))) == pytest.approx(1.0)
+    # The yaw the controller's clip frame is configured with is this adapter's.
+    roll, pitch, yaw = fo.get_euler_xyz(adapter.world_from_base_quaternion)
+    assert (roll, pitch) == pytest.approx((0.0, 0.0), abs=1e-12)
+    assert yaw == pytest.approx(adapter.world_from_base_yaw)
 
+
+def test_policy_goal_is_the_preclipped_bolt_anchored_target():
+    """The runner sends `_apply_action` steps (0)-(1); the clip is the controller's."""
+
+    adapter = TrainingFrameAdapter()
+    zero = np.zeros(9)
+    goal_position, goal_quaternion = policy_goal_base(adapter, zero)
+    bolt_tip_base, _ = adapter.pose_world_to_base(
+        fo.BOLT_TIP_POSITION, np.array([1.0, 0.0, 0.0, 0.0])
+    )
+    # Zero action: the bolt tip itself, facing down with the yaw window's midpoint.
+    assert goal_position == pytest.approx(bolt_tip_base)
+    expected = fo.decode_action_target(
+        zero,
+        fo.GraspFrameState(np.zeros(3), np.array([1.0, 0, 0, 0]), np.zeros(3), np.zeros(3), np.zeros((6, 7))),
+        clip=False,
+    )
+    _, expected_quaternion = adapter.pose_world_to_base(expected.pos, expected.quat)
+    assert abs(float(np.dot(goal_quaternion, expected_quaternion))) == pytest.approx(1.0)
+
+    # A full position action moves the goal by the 50 mm bound, never clipped here,
+    # and the goal does not depend on where the grasp frame happens to be.
     action = np.zeros(9)
-    target_position, target_quaternion = adapter.controller_target(
-        action,
-        grasp_position_base=position,
-        grasp_quaternion_base=quaternion,
-        controlled_position_base=position,
-        controlled_quaternion_base=quaternion,
-    )
-    expected_world = fo.decode_action_target(
-        action,
-        fo.GraspFrameState(
-            world_position,
-            world_quaternion,
-            np.zeros(3),
-            np.zeros(3),
-            np.zeros((6, 7)),
-        ),
-    )
-    expected_position, expected_grasp_quaternion = adapter.pose_world_to_base(
-        expected_world.pos, expected_world.quat
-    )
-    assert target_position == pytest.approx(expected_position)
-
-    assert abs(float(np.dot(target_quaternion, expected_grasp_quaternion))) == pytest.approx(1.0)
+    action[0:3] = [1.0, -1.0, 0.5]
+    far_position, _ = policy_goal_base(adapter, action)
+    expected_world = fo.BOLT_TIP_POSITION + np.array([1.0, -1.0, 0.5]) * fo.POS_ACTION_BOUNDS
+    expected_base, _ = adapter.pose_world_to_base(expected_world, np.array([1.0, 0.0, 0.0, 0.0]))
+    assert far_position == pytest.approx(expected_base)
+    assert np.linalg.norm(far_position - bolt_tip_base) > 0.07
 
 
-def test_grasp_target_is_retargeted_to_the_fixed_controller_point():
-    grasp_position = np.array([0.58, 0.00, 0.26])
-    grasp_quaternion = fo.quat_from_euler_xyz(0.1, -0.2, 0.3)
-    controlled_in_grasp = np.array([-0.029, -0.001, -0.012])
-    controlled_in_grasp_quaternion = fo.quat_from_euler_xyz(-0.2, 0.1, 0.05)
-    controlled_position = grasp_position + fo.quat_rotate(
-        grasp_quaternion, controlled_in_grasp
-    )
-    controlled_quaternion = fo.quat_mul(
-        grasp_quaternion, controlled_in_grasp_quaternion
-    )
+def test_grasp_in_flange_composes_back_to_the_grasp_pose():
+    """tool_in_flange is the grasp frame on the flange: flange o tool == grasp."""
 
-    # An unchanged grasp target must reproduce the measured controller pose;
-    # this is the invariant the old direct-position mapping violated by 31 mm.
-    hold_position, hold_quaternion = retarget_grasp_pose_to_controlled_pose(
-        grasp_position_base=grasp_position,
-        grasp_quaternion_base=grasp_quaternion,
-        controlled_position_base=controlled_position,
-        controlled_quaternion_base=controlled_quaternion,
-        target_grasp_position_base=grasp_position,
-        target_grasp_quaternion_base=grasp_quaternion,
-    )
-    assert hold_position == pytest.approx(controlled_position)
-    assert abs(float(np.dot(hold_quaternion, controlled_quaternion))) == pytest.approx(1.0)
+    flange_position = np.array([0.45, 0.05, 0.35])
+    flange_quaternion = fo.quat_from_euler_xyz(2.9, 0.1, -0.7)
+    tool_translation = np.array([-0.059, -0.029, 0.173])
+    tool_quaternion = fo.quat_from_euler_xyz(0.2, -1.3, 0.4)
+    grasp_position = flange_position + fo.quat_rotate(flange_quaternion, tool_translation)
+    grasp_quaternion = fo.quat_mul(flange_quaternion, tool_quaternion)
 
-    target_grasp_position = np.array([0.60, -0.02, 0.22])
-    target_grasp_quaternion = fo.quat_from_euler_xyz(-0.3, 0.25, -0.1)
-    target_position, target_quaternion = retarget_grasp_pose_to_controlled_pose(
-        grasp_position_base=grasp_position,
-        grasp_quaternion_base=grasp_quaternion,
-        controlled_position_base=controlled_position,
-        controlled_quaternion_base=controlled_quaternion,
-        target_grasp_position_base=target_grasp_position,
-        target_grasp_quaternion_base=target_grasp_quaternion,
+    tool = grasp_in_flange(grasp_position, grasp_quaternion, flange_position, flange_quaternion)
+    assert tool.shape == (7,)
+    assert tool[:3] == pytest.approx(tool_translation)
+    recovered = np.array([tool[6], tool[3], tool[4], tool[5]])  # xyzw -> wxyz
+    assert abs(float(np.dot(recovered, tool_quaternion))) == pytest.approx(1.0)
+    assert np.linalg.norm(recovered) == pytest.approx(1.0)
+
+    # The same hand posture on a different arm pose gives the same tool.
+    other_flange_position = np.array([0.2, -0.3, 0.6])
+    other_flange_quaternion = fo.quat_from_euler_xyz(-1.0, 0.4, 2.0)
+    moved = grasp_in_flange(
+        other_flange_position + fo.quat_rotate(other_flange_quaternion, tool_translation),
+        fo.quat_mul(other_flange_quaternion, tool_quaternion),
+        other_flange_position,
+        other_flange_quaternion,
     )
-    assert target_position == pytest.approx(
-        target_grasp_position
-        + fo.quat_rotate(target_grasp_quaternion, controlled_in_grasp)
-    )
-    expected_quaternion = fo.quat_mul(
-        target_grasp_quaternion, controlled_in_grasp_quaternion
-    )
-    assert abs(float(np.dot(target_quaternion, expected_quaternion))) == pytest.approx(1.0)
+    assert moved[:3] == pytest.approx(tool[:3])
+    assert abs(float(np.dot(moved[3:], tool[3:]))) == pytest.approx(1.0)
+
+    with pytest.raises(ValueError):
+        grasp_in_flange(grasp_position, np.zeros(4), flange_position, flange_quaternion)
 
 
 # The coordinator's proxy is only correct in the geometry it actually runs in, so these use
@@ -539,6 +517,54 @@ def test_policy_tool_offset_matches_the_controller_profiles():
         np.testing.assert_allclose(
             parameters["tool_offset_rpy"], POLICY_TOOL_OFFSET_RPY, atol=1e-9
         )
+
+
+def test_policy_profiles_run_forge_s_law_and_decode():
+    """Both profiles carry compute_dof_torque's structure and _apply_action's clip.
+
+    These are the values `run_hardware_rollout` refuses to run without; pinning
+    them here means a profile edit fails a unit test before it fails on the bench.
+    """
+
+    yaml = pytest.importorskip("yaml")
+    from pathlib import Path
+
+    config_root = (
+        Path(__file__).resolve().parents[3]
+        / "src/inspire_franka_trajectory_replay/config"
+    )
+
+    def find_parameters(node):
+        if isinstance(node, dict):
+            controller = node.get("cartesian_trajectory_replay_controller")
+            if isinstance(controller, dict) and "ros__parameters" in controller:
+                return controller["ros__parameters"]
+            for value in node.values():
+                found = find_parameters(value)
+                if found is not None:
+                    return found
+        return None
+
+    adapter = TrainingFrameAdapter()
+    for name in ("controllers_policy.yaml", "controllers_sim_policy.yaml"):
+        parameters = find_parameters(yaml.safe_load((config_root / name).read_text()))
+        assert parameters is not None, name
+        assert parameters["translational_stiffness"] == pytest.approx(fo.DEFAULT_TASK_PROP_GAINS[0])
+        assert parameters["rotational_stiffness"] == pytest.approx(fo.DEFAULT_TASK_PROP_GAINS[3])
+        assert parameters["nullspace_stiffness"] == pytest.approx(fo.KP_NULL)
+        assert parameters["rotation_error"] == "axis_angle", name
+        assert parameters["nullspace_damping_lambda"] == 0.0, name
+        assert parameters["mass_weighted_nullspace"] is True, name
+        # compute_dof_torque has no Coriolis term and clamps at +-100 Nm.
+        assert parameters["coriolis_compensation"] is False, name
+        assert parameters["torque_limit"] == pytest.approx(fo.ARM_TORQUE_LIMIT), name
+        # _apply_action's per-substep clip, now the controller's per-cycle clip, in
+        # the training world frame.
+        assert parameters["policy_clip_position_m"] == pytest.approx(fo.POS_ACTION_THRESHOLD[0]), name
+        assert parameters["policy_clip_orientation_rad"] == pytest.approx(fo.ROT_ACTION_THRESHOLD[0]), name
+        assert parameters["policy_clip_frame_yaw"] == pytest.approx(adapter.world_from_base_yaw), name
+        # The setpoint is clipped in the controller; no second filter on it.
+        assert parameters["target_filter"] == 1.0, name
 
 
 def test_hand_joint_state_to_arrays_orders_the_driven_joints():

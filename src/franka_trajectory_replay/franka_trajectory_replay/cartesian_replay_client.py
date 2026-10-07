@@ -30,7 +30,7 @@ from franka_trajectory_replay import cartesian
 from franka_trajectory_replay.replay_client import Rejected, ReplayClient
 from franka_trajectory_replay.runconfig import namespaced
 
-CONTROLLER_TYPE = 'franka_trajectory_replay/CartesianTrajectoryReplayController'
+CONTROLLER_TYPE = 'franka_forge_cartesian_impedance/CartesianImpedanceController'
 
 
 class CartesianReplayClient(ReplayClient):
@@ -50,7 +50,7 @@ class CartesianReplayClient(ReplayClient):
             self._on_robot_state, 10)
 
     def _create_command_publishers(self):
-        from franka_trajectory_replay_msgs.msg import CartesianGoto, CartesianTrajectory
+        from franka_forge_cartesian_impedance_msgs.msg import CartesianGoto, CartesianTrajectory
 
         return (self.create_publisher(CartesianGoto, self.controller_ns + '/goto', 1),
                 self.create_publisher(CartesianTrajectory, self.controller_ns + '/trajectory', 1))
@@ -110,7 +110,8 @@ class CartesianReplayClient(ReplayClient):
             'translational_stiffness', 'rotational_stiffness', 'nullspace_stiffness',
             'stiffness_scale', 'target_filter', 'nullspace_target', 'coriolis_compensation',
             'nullspace_damping_lambda', 'rotation_error',
-            'mass_weighted_nullspace', 'arm_armature',
+            'mass_weighted_nullspace', 'arm_armature', 'torque_limit',
+            'policy_clip_position_m', 'policy_clip_orientation_rad', 'policy_clip_frame_yaw',
             'torque_rate_limit', 'max_trajectory_start_error_m', 'max_trajectory_start_error_rad',
             'goto_max_velocity', 'goto_max_angular_velocity', 'pause_ramp_duration',
             'max_position_error', 'max_orientation_error', 'base_frame',

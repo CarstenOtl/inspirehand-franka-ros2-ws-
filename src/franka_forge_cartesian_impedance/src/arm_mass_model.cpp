@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 // See http://www.apache.org/licenses/LICENSE-2.0
 
-#include <franka_trajectory_replay/arm_mass_model.hpp>
+#include <franka_forge_cartesian_impedance/arm_mass_model.hpp>
 
 #include <algorithm>
 #include <array>
@@ -15,7 +15,7 @@
 #include <pinocchio/multibody/model.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 
-namespace franka_trajectory_replay {
+namespace franka_forge_cartesian_impedance {
 
 struct ArmMassModel::Impl {
   pinocchio::Model model;
@@ -120,4 +120,4 @@ bool ArmMassModel::compute(const Vector7d& q, const Vector7d& armature, Matrix7d
   return true;
 }
 
-}  // namespace franka_trajectory_replay
+}  // namespace franka_forge_cartesian_impedance

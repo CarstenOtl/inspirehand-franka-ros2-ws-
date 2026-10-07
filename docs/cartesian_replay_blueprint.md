@@ -82,10 +82,10 @@ The Franka submodule stays unchanged, exactly as it did for joint impedance.
  │ pose[0] ─> CartesianTrajectory ─> hand thread on the controller's        │
  │ trajectory clock ─> SPACE / q interactive pause (unchanged)              │
  └───────────┬──────────────────────────────────────────────────────────────┘
-             │ franka_trajectory_replay_msgs (CartesianGoto, CartesianTrajectory)
+             │ franka_forge_cartesian_impedance_msgs (CartesianGoto, CartesianTrajectory)
              │ std_msgs/Empty (pause, resume, abort)   diagnostic_msgs (status)
              ▼
- CartesianTrajectoryReplayController  (new plugin in franka_trajectory_replay)
+ CartesianImpedanceController  (plugin in franka_forge_cartesian_impedance)
    phases idle / goto / trajectory / stopping, clock-rate ramps for pause+abort
    reference sampler: Hermite on position, slerp on orientation, Hermite on q_null
    law: cartesian_impedance.hpp  ==  the example's update() equations
@@ -135,11 +135,11 @@ TCP tracking metrics are computed for, and it must equal the controller's
 `tool_offset_xyz` / `tool_offset_rpy`. Zeroing all three controls the flange
 again.
 
-## 4. The controller: `CartesianTrajectoryReplayController`
+## 4. The controller: `CartesianImpedanceController`
 
-New plugin `franka_trajectory_replay/CartesianTrajectoryReplayController` in
-`src/franka_trajectory_replay`, alongside the joint controller, not a mode of
-it. The two share the phase machine design and the status contract; the
+New plugin `franka_forge_cartesian_impedance/CartesianImpedanceController` in
+its own package `src/franka_forge_cartesian_impedance`, not a mode of the joint
+controller. The two share the phase machine design and the status contract; the
 reference type, guards and law are different enough that a second class is
 clearer than a third `command_interface` branch.
 
@@ -161,7 +161,7 @@ replay in Cartesian mode" a single session (section 7.2).
 
 ### 4.2 The law as a pure function
 
-`include/franka_trajectory_replay/cartesian_impedance.hpp`, header-only and
+`include/franka_forge_cartesian_impedance/cartesian_impedance.hpp`, header-only and
 unit-tested like `joint_impedance.hpp`:
 
 ```cpp
@@ -236,8 +236,8 @@ but slerp costs nothing and needs no argument.
 
 | topic / service | type | behaviour |
 |---|---|---|
-| `~/goto` | `franka_trajectory_replay_msgs/CartesianGoto` | pose + nullspace configuration + optional duration. Rejected while busy, outside the workspace box, further than `max_goto_step` (translation or rotation) from the current reference, or non-finite. Duration is at least `goto_min_duration` and stretched so the quintic peaks stay under `goto_max_velocity` (m/s) and `goto_max_angular_velocity` (rad/s). |
-| `~/trajectory` | `franka_trajectory_replay_msgs/CartesianTrajectory` | at least two points, strictly increasing times, finite, inside the workspace box, first pose within `max_trajectory_start_error` (`_m` and `_rad`) of the current reference, per-segment linear and angular velocity under `trajectory_velocity_scale` times libfranka's Cartesian limits. `header.frame_id` must equal `base_frame`. |
+| `~/goto` | `franka_forge_cartesian_impedance_msgs/CartesianGoto` | pose + nullspace configuration + optional duration. Rejected while busy, outside the workspace box, further than `max_goto_step` (translation or rotation) from the current reference, or non-finite. Duration is at least `goto_min_duration` and stretched so the quintic peaks stay under `goto_max_velocity` (m/s) and `goto_max_angular_velocity` (rad/s). |
+| `~/trajectory` | `franka_forge_cartesian_impedance_msgs/CartesianTrajectory` | at least two points, strictly increasing times, finite, inside the workspace box, first pose within `max_trajectory_start_error` (`_m` and `_rad`) of the current reference, per-segment linear and angular velocity under `trajectory_velocity_scale` times libfranka's Cartesian limits. `header.frame_id` must equal `base_frame`. |
 | `~/pause`, `~/resume`, `~/abort` | `std_msgs/Empty` | identical to the joint controller. |
 | `~/set_cartesian_stiffness` | `franka_msgs/srv/SetCartesianStiffness` | kept because the example has it: six diagonal stiffnesses, damping rebuilt as `2 sqrt(k)`. |
 | live parameters | `translational_stiffness`, `rotational_stiffness`, `nullspace_stiffness`, `stiffness_scale`, `target_filter` | validated (finite, non-negative), then take effect through the example's own 0.005 filter rather than the joint controller's quintic ramp; the ramp already exists in the law. `stiffness_scale` multiplies the translational and rotational stiffness, not the nullspace. |
@@ -256,7 +256,7 @@ but slerp costs nothing and needs no argument.
   cycle): feedback `q`, `dq`, `tau`; output effort; reference positions =
   nullspace target; the phase and clock in the same `time_from_start` slots
   the joint controller uses, so `dataset.extract_bag` keeps working unchanged.
-- `~/cartesian_state` (`franka_trajectory_replay_msgs/CartesianReplayState`,
+- `~/cartesian_state` (`franka_forge_cartesian_impedance_msgs/CartesianReplayState`,
   every cycle, realtime publisher): unfiltered target, filtered reference,
   measured pose, the six-vector error the law used, the nullspace reference,
   and `tau_task`, `tau_nullspace`, `tau_coriolis`, `tau_command` separately.
@@ -304,7 +304,7 @@ robot's own limit reflexes remain the hard stop.
 | `pause_ramp_duration`, `abort_stop_duration`, `status_rate` | 0.5, 0.5, 50 | as the joint controller |
 | `set_collision_behavior` + thresholds | false | as the validated joint profile (the upstream example launch would set them) |
 
-## 5. Messages: `franka_trajectory_replay_msgs`
+## 5. Messages: `franka_forge_cartesian_impedance_msgs`
 
 A small ament_cmake interface package. Standard messages were considered and
 rejected: `trajectory_msgs/MultiDOFJointTrajectory` carries transforms and
@@ -574,14 +574,14 @@ force; do not skip a rung.
 
 | path | change |
 |---|---|
-| `src/franka_trajectory_replay_msgs/` | new: `package.xml`, `CMakeLists.txt`, the four messages in section 5 |
-| `src/franka_trajectory_replay/include/franka_trajectory_replay/cartesian_impedance.hpp` | new: the law and filters, header-only |
-| `src/franka_trajectory_replay/include/franka_trajectory_replay/cartesian_trajectory_replay_controller.hpp` | new |
-| `src/franka_trajectory_replay/src/cartesian_trajectory_replay_controller.cpp` | new |
-| `src/franka_trajectory_replay/franka_trajectory_replay.xml` | add the plugin |
-| `src/franka_trajectory_replay/CMakeLists.txt`, `package.xml` | add sources, `franka_trajectory_replay_msgs`, `geometry_msgs`, tests |
-| `src/franka_trajectory_replay/test/test_cartesian_impedance.cpp` | new |
-| `src/franka_trajectory_replay/test/test_load_controller.cpp` | add a load case |
+| `src/franka_forge_cartesian_impedance_msgs/` | new: `package.xml`, `CMakeLists.txt`, the four messages in section 5 |
+| `src/franka_forge_cartesian_impedance/include/franka_forge_cartesian_impedance/cartesian_impedance.hpp` | new: the law and filters, header-only |
+| `src/franka_forge_cartesian_impedance/include/franka_forge_cartesian_impedance/cartesian_impedance_controller.hpp` | new |
+| `src/franka_forge_cartesian_impedance/src/cartesian_impedance_controller.cpp` | new |
+| `src/franka_forge_cartesian_impedance/franka_forge_cartesian_impedance.xml` | new: the plugin |
+| `src/franka_forge_cartesian_impedance/CMakeLists.txt`, `package.xml` | new: sources, `franka_forge_cartesian_impedance_msgs`, `geometry_msgs`, tests |
+| `src/franka_forge_cartesian_impedance/test/test_cartesian_impedance.cpp` | new |
+| `src/franka_forge_cartesian_impedance/test/test_load_controller.cpp` | new: the load case and the sampler math |
 | `src/franka_trajectory_replay/franka_trajectory_replay/cartesian.py` | new: `PreparedCartesian`, `from_joint_stream`, `check_cartesian_limits`, `to_message`, Cartesian limits |
 | `src/franka_trajectory_replay/franka_trajectory_replay/cartesian_replay_client.py` | new |
 | `src/franka_trajectory_replay/franka_trajectory_replay/runconfig.py` | `cartesian:` defaults |
@@ -619,7 +619,7 @@ launch/config and the live sequence, then the hardware ladder.
    the sampler produces is already smooth, the filter can later be bypassed
    by setting the live parameter `target_filter` to 1.0 and the same artifact
    replayed for comparison, without a relaunch.
-4. **Separate `franka_trajectory_replay_msgs` package.** Confirmed.
+4. **Separate `franka_forge_cartesian_impedance_msgs` package.** Confirmed.
 
 ## 14. Implementation notes (2026-09-11)
 

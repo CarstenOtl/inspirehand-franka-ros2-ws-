@@ -76,6 +76,17 @@ recordings with the simulated nut's own twist, and `report.json` carries `turn_s
 which is what would say *which* gate failed without the offline rebuild. On hardware the turn
 signal is still NaN, because there is nothing there to measure it with.
 
+2026-10-06, Layer A closed as far as the code can close it. A3 and A4 are done through a new
+controller interface (`~/policy_goal`, `PolicyGoal`): the runner sends the preclipped goal and
+the live grasp frame on the flange, the controller clips at 1 kHz against the measured grasp
+pose and runs the law there. The Coriolis term is off and the +-100 Nm clamp is in. What the
+controller still cannot copy from training is listed in
+[cartesian_impedance_nullspace_design.md](cartesian_impedance_nullspace_design.md) section 9:
+the arm armature (USD unreadable here), the finger-velocity part of the damping, the hand's
+mass (D1). **Verified in gtest and by driving the controller with scripted goals in ros-sim
+(no policy in the loop); no ros-sim or hardware policy rollout has run on this interface yet**,
+so the "done when" tests of A3 and A4 below are still owed.
+
 ---
 
 ## Status, 2026-10-01: three ros-sim runs with A1b
@@ -138,7 +149,7 @@ A1b's effect on the joint-5 excursion is NOT established; the spread is run-to-r
 Training executes Forge's operational-space controller
 (`forge_ultra/tasks/utils/control.py`, `compute_dof_torque`) at 120 Hz. The ROS stack executes
 the franka_ros2 example Cartesian impedance law
-(`src/franka_trajectory_replay/include/franka_trajectory_replay/cartesian_impedance.hpp`) at
+(`src/franka_forge_cartesian_impedance/include/franka_forge_cartesian_impedance/cartesian_impedance.hpp`) at
 1 kHz. The gains are the same numbers (565 / 28, damping 2*sqrt(K), nullspace 10); the law
 behind them is not.
 
@@ -274,7 +285,7 @@ Change.
   `controllers_sim_policy.yaml`, plus the `expected` dict in
   `apps/policy_rollout/policy_rollout/hardware.py` (`run_hardware_rollout`).
 
-Done when. `src/franka_trajectory_replay/test/test_cartesian_impedance.cpp` reproduces
+Done when. `src/franka_forge_cartesian_impedance/test/test_cartesian_impedance.cpp` reproduces
 `forge_osc.compute_dof_torque` for the same state and target to numerical precision, and the
 projected nullspace torque at a 1 rad wrist offset is below 0.1 Nm.
 
@@ -326,35 +337,49 @@ in `test_cartesian_impedance.cpp`.
 
 ### A3. Anchor the compliance at the live fingertip midpoint instead of a fixed tool offset  [should]
 
-- [ ] done
+- [x] ported 2026-10-06; the "done when" below needs a rollout
 
 Evidence. Training applies the wrench at the live thumb/index midpoint, which travels about
-20 mm over a threading cycle. The policy profile freezes it at the threading grip
-(`POLICY_TOOL_OFFSET_XYZ = (-0.059067, -0.028773, 0.173311)`); the commanded pose is
-retargeted, the spring anchor is not. Distance to the live midpoint over the reference
+20 mm over a threading cycle. The policy profile froze it at the threading grip
+(`POLICY_TOOL_OFFSET_XYZ = (-0.059067, -0.028773, 0.173311)`); the commanded pose was
+retargeted, the spring anchor was not. Distance to the live midpoint over the reference
 episode: mean 11.5 mm, range 3.2 to 23.0 mm.
 
-Change. Add a per-command flange-relative tool offset to `CartesianGoto` (or a
-`tool_offset` topic) and let `hardware.py` send the midpoint it already computes with
-`TrainingHandKinematics`; the controller shifts the Jacobian per tick with `shift_jacobian`.
-Then `retarget_grasp_pose_to_controlled_pose` becomes the identity.
+Done 2026-10-06. `PolicyGoal.tool_in_flange` carries the live grasp frame on the flange
+(`hardware.grasp_in_flange`: the training hand kinematics' tips and the reset z transport, so
+it depends on the hand joints only); the controller latches it before measuring, so the
+measured pose, the clip and the Jacobian all refer to the live midpoint from that cycle on
+(`rt_tool_translation_` / `rt_tool_rotation_`). The static `tool_offset_xyz` is now the
+activation hold only. `retarget_grasp_pose_to_controlled_pose` and the runner's
+`controller_target` are deleted; the goal IS the grasp goal. The latched frame survives a
+watchdog stop and an abort so the hold does not jump; deactivation resets it.
 
-Done when. `grasp_controlled_offset_m` in `report.json` stays under 1 mm through a full cycle.
+Done when. `grasp_controlled_offset_m` in `report.json` (now the largest distance between the
+controller's measured point and the live grasp over the run) stays within sampling skew, a few
+mm at most, through a full cycle.
 
 ### A4. Re-clip the 20 mm / 0.097 rad target step at the controller rate, from the live grasp pose  [minor]
 
-- [ ] done
+- [x] ported 2026-10-06; the "done when" below needs a rollout
 
 Evidence. Isaac decodes `bolt_tip + a * 0.05` and clips it against the current grasp pose at
 every 120 Hz substep, so the target keeps leading the hand by up to 20 mm as it moves. The ROS
-path clips once per policy tick and the controller holds that target for the whole period.
+path clipped once per policy tick and the controller held that target for the whole period.
 
-Change. Send the unclipped goal (already computed as `_policy_goal_base` in `hardware.py`)
-and do the component-wise clip against the measured tool pose inside the controller's 1 kHz
-loop. Keep `limit_cartesian_step` (36 mm / 0.18 rad) as the safety guard.
+Done 2026-10-06. The runner sends `_apply_action` steps (0)-(1) (`hardware.policy_goal_base`,
+the preclipped goal, constant over the tick); the controller runs step (2) every cycle:
+`forge_clip_target` in `cartesian_impedance.hpp`, a line-for-line port of the position clip
+and the Euler clip with Isaac's `get_euler_xyz` / `quat_from_euler_xyz` / `wrap_yaw`, in the
+training world frame (`policy_clip_frame_yaw: pi`; the Euler clip is not frame-invariant in
+general). Pinned against `forge_osc.decode_action_target` on six random cases near the reset
+to 1e-12. `limit_cartesian_step` and `max_policy_step_*` no longer apply to goals: the clip
+bounds the executed step from the measured pose every cycle, the workspace box bounds the goal,
+and `max_position_error` still faults. `report.json` counts `clipped_policy_ticks` from the
+controller's own `position_clipped` / `orientation_clipped` flags.
 
-Done when. Tool-to-target distance logged by the controller sits at the clip limit while the
-hand is moving, as it does in `mujoco_threading_env.ThreadingScene.control_tick`.
+Done when. `clipped_policy_ticks` is a large fraction of the steps while the hand is moving,
+as the clip is in `mujoco_threading_env.ThreadingScene.control_tick`, and the
+`cartesian_state` target sits at the clip limit from the measured pose during the descent.
 
 ---
 
@@ -719,7 +744,9 @@ tune around them.
 | Thread engagement | Coaxial slide with a 200 kN/m spring, 0.002 Nm Coulomb, releases after one turn | A real M24 binds, cross-threads, has backlash. |
 | Nut spawn | One pose, yaw 30 deg, 7.66 mm axial start, bit-exact in all 20 episodes | Operator-placed. |
 | D415 depth | Ideal pinhole depth | Holes, edge noise, 6 px principal-point offset, camera-pose calibration RMSE 27 mm / 3.5 deg. |
-| Coriolis and model mismatch | Isaac OSC has no coriolis term | Hardware compensates it from Franka's model; the DH sim has neither. Small at threading speeds. |
+| Coriolis and model mismatch | Isaac OSC has no coriolis term, PhysX's arm feels its own | Since 2026-10-06 the hardware profile compensates none either (`coriolis_compensation: false`); what differs is the real arm's Coriolis vs PhysX's, i.e. the mass model. |
+| Damping velocity | `0.5 (v_thumb_tip + v_index_tip)`, finger motion included | `J qdot` at the grasp point, arm only. Needs hand joint velocities (C1) to close. |
+| Arm armature in `M` | whatever `fr3_no_hand.usd` carries (lfs pointer here, not readable) | `arm_armature: 0`; MuJoCo's 0.195 / 0.074 are Menagerie's, not Franka's. Read the USD on the training machine. |
 
 ---
 

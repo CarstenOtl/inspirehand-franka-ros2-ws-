@@ -28,9 +28,10 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <franka_msgs/srv/set_cartesian_stiffness.hpp>
 #include <franka_msgs/srv/set_full_collision_behavior.hpp>
-#include <franka_trajectory_replay_msgs/msg/cartesian_goto.hpp>
-#include <franka_trajectory_replay_msgs/msg/cartesian_replay_state.hpp>
-#include <franka_trajectory_replay_msgs/msg/cartesian_trajectory.hpp>
+#include <franka_forge_cartesian_impedance_msgs/msg/cartesian_goto.hpp>
+#include <franka_forge_cartesian_impedance_msgs/msg/cartesian_replay_state.hpp>
+#include <franka_forge_cartesian_impedance_msgs/msg/cartesian_trajectory.hpp>
+#include <franka_forge_cartesian_impedance_msgs/msg/policy_goal.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <realtime_tools/realtime_buffer.hpp>
@@ -39,20 +40,24 @@
 
 #include "franka_semantic_components/franka_cartesian_pose_interface.hpp"
 #include "franka_semantic_components/franka_robot_model.hpp"
-#include "franka_trajectory_replay/arm_mass_model.hpp"
-#include "franka_trajectory_replay/cartesian_impedance.hpp"
-#include "franka_trajectory_replay/fr3_kinematics.hpp"
+#include "franka_forge_cartesian_impedance/arm_mass_model.hpp"
+#include "franka_forge_cartesian_impedance/cartesian_impedance.hpp"
+#include "franka_forge_cartesian_impedance/fr3_kinematics.hpp"
 
-namespace franka_trajectory_replay {
+namespace franka_forge_cartesian_impedance {
 
 /**
- * Plays back a Cartesian (6-DOF pose) trajectory on an FR3 with the torque law of
- * franka_example_controllers/CartesianImpedanceExampleController, and publishes, at the
- * controller rate, the reference it applied next to the measured pose.
+ * Holds or moves a controlled frame of an FR3 under a Cartesian impedance law, and publishes,
+ * at the controller rate, the reference it applied next to the measured pose.
  *
- * The law (cartesian_impedance.hpp) is the example's; what this controller adds is where its
- * reference comes from. The example's demo arc and activation-time nullspace pose are replaced
- * by a sampler over the same four phases as TrajectoryReplayController:
+ * Two laws live in cartesian_impedance.hpp and the parameters pick between them: Franka's
+ * franka_example_controllers/CartesianImpedanceExampleController, which is the default and the
+ * right one for replaying recorded waypoints, and the ForgeUltra operational-space law the
+ * Isaac Lab policies are trained against (mass-weighted dynamically consistent nullspace,
+ * axis-angle rotation error, no Coriolis term, a torque clamp). What this controller adds on
+ * top of either is where the reference comes from: the example's demo arc and activation-time
+ * nullspace pose are replaced by a sampler over the same four phases as
+ * TrajectoryReplayController:
  *
  *  - ``~/goto`` (CartesianGoto): quintic ramp of the pose target (slerp for the orientation)
  *    and of the nullspace configuration. Reports idle once the example's reference filter has
@@ -64,6 +69,15 @@ namespace franka_trajectory_replay {
  *  - ``~/policy_command`` (CartesianGoto): bounded live pose/nullspace targets for a
  *    non-realtime policy process. Each command is checked against the previous target and a
  *    watchdog returns the controller to an idle hold when the stream stops.
+ *  - ``~/policy_goal`` (PolicyGoal): ForgeUltra's decode done here instead. The message
+ *    carries the policy's preclipped goal and the live grasp frame on the flange; every cycle
+ *    the controller clips the goal against the measured grasp pose
+ *    (``policy_clip_position_m`` per axis, ``policy_clip_orientation_rad`` per Euler angle in
+ *    the ``policy_clip_frame_yaw`` frame) and runs the law at that grasp frame, which is what
+ *    ``_apply_action`` does at every physics substep in training. The clip bounds the executed
+ *    step from the MEASURED pose, so there is no previous-target step check; the same watchdog
+ *    applies. The controlled frame a goal sets stays until the next goal or deactivation, so
+ *    the hold after a watchdog stop does not jump.
  *  - ``~/pause`` / ``~/resume`` / ``~/abort`` (std_msgs/Empty): exactly the joint controller's
  *    clock-rate ramps. Abort ramps the phase clock to zero and holds.
  *  - live parameters ``translational_stiffness``, ``rotational_stiffness``,
@@ -88,7 +102,7 @@ namespace franka_trajectory_replay {
  * and ``~/cartesian_state`` (target, filtered reference, measured pose, the law's error and
  * its torque terms).
  */
-class CartesianTrajectoryReplayController : public controller_interface::ControllerInterface {
+class CartesianImpedanceController : public controller_interface::ControllerInterface {
  public:
   using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
   static constexpr int kNumJoints = 7;
@@ -137,16 +151,18 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
 
  private:
-  enum class CommandKind : int { kNone = 0, kGoto, kTrajectory, kAbort, kPolicy };
+  enum class CommandKind : int { kNone = 0, kGoto, kTrajectory, kAbort, kPolicy, kPolicyGoal };
   enum class Fault : int { kNone = 0, kPosition = 1, kOrientation = 2 };
 
   struct Command {
     CommandKind kind{CommandKind::kNone};
     uint64_t id{0};
-    std::array<double, 3> position{};
+    std::array<double, 3> position{};  ///< the target, or a policy goal's preclipped goal
     std::array<double, 4> orientation{0.0, 0.0, 0.0, 1.0};
     std::array<double, 7> nullspace{};
     bool has_nullspace{false};
+    std::array<double, 7> tool_in_flange{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};  ///< xyz, xyzw
+    bool has_tool{false};
     double duration{0.0};
     std::shared_ptr<const Trajectory> trajectory;
   };
@@ -174,11 +190,12 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   void begin_stopping();
   void advance_clock(double dt, double requested_rate);
 
-  void goto_callback(const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg);
+  void goto_callback(const franka_forge_cartesian_impedance_msgs::msg::CartesianGoto::SharedPtr msg);
   void trajectory_callback(
-      const franka_trajectory_replay_msgs::msg::CartesianTrajectory::SharedPtr msg);
+      const franka_forge_cartesian_impedance_msgs::msg::CartesianTrajectory::SharedPtr msg);
   void policy_command_callback(
-      const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg);
+      const franka_forge_cartesian_impedance_msgs::msg::CartesianGoto::SharedPtr msg);
+  void policy_goal_callback(const franka_forge_cartesian_impedance_msgs::msg::PolicyGoal::SharedPtr msg);
   void pause_callback(const std_msgs::msg::Empty::SharedPtr msg);
   void resume_callback(const std_msgs::msg::Empty::SharedPtr msg);
   void abort_callback(const std_msgs::msg::Empty::SharedPtr msg);
@@ -218,6 +235,15 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   Vector7d arm_armature_{Vector7d::Zero()};
   Matrix7d arm_mass_matrix_{Matrix7d::Identity()};
   bool coriolis_compensation_{true};
+  // ForgeUltra's +-100 Nm clamp on the summed torque (0 = none). Never binds on an FR3.
+  double torque_limit_{0.0};
+  // ForgeUltra's per-substep target clip, for ~/policy_goal. Both thresholds zero (the
+  // default) means the controller does not accept policy goals. The clip runs in the frame
+  // `policy_clip_frame_` names: training's world, which is the FR3 base yawed by this angle.
+  double policy_clip_position_m_{0.0};
+  double policy_clip_orientation_rad_{0.0};
+  double policy_clip_frame_yaw_{0.0};
+  Eigen::Quaterniond policy_clip_frame_{Eigen::Quaterniond::Identity()};
   double torque_rate_limit_{0.0};
   double goto_max_velocity_{0.10};
   double goto_max_angular_velocity_{0.50};
@@ -246,12 +272,14 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
 
   // --- ROS entities -----------------------------------------------------------------------
   rclcpp::Client<franka_msgs::srv::SetFullCollisionBehavior>::SharedPtr collision_client_;
-  rclcpp::Subscription<franka_trajectory_replay_msgs::msg::CartesianGoto>::SharedPtr
+  rclcpp::Subscription<franka_forge_cartesian_impedance_msgs::msg::CartesianGoto>::SharedPtr
       goto_subscriber_;
-  rclcpp::Subscription<franka_trajectory_replay_msgs::msg::CartesianTrajectory>::SharedPtr
+  rclcpp::Subscription<franka_forge_cartesian_impedance_msgs::msg::CartesianTrajectory>::SharedPtr
       trajectory_subscriber_;
-  rclcpp::Subscription<franka_trajectory_replay_msgs::msg::CartesianGoto>::SharedPtr
+  rclcpp::Subscription<franka_forge_cartesian_impedance_msgs::msg::CartesianGoto>::SharedPtr
       policy_command_subscriber_;
+  rclcpp::Subscription<franka_forge_cartesian_impedance_msgs::msg::PolicyGoal>::SharedPtr
+      policy_goal_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr pause_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr resume_subscriber_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr abort_subscriber_;
@@ -261,7 +289,7 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   std::unique_ptr<realtime_tools::RealtimePublisher<control_msgs::msg::JointTrajectoryControllerState>>
       state_publisher_;
   std::unique_ptr<realtime_tools::RealtimePublisher<
-      franka_trajectory_replay_msgs::msg::CartesianReplayState>>
+      franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState>>
       cartesian_state_publisher_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
 
@@ -287,7 +315,9 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   std::array<std::atomic<double>, 4> target_orientation_snapshot_;
   std::array<std::atomic<double>, 7> target_nullspace_snapshot_;
   std::array<std::atomic<double>, 7> reference_pose_snapshot_;  ///< filtered p_d, q_d (xyzw)
+  std::array<std::atomic<double>, 7> tool_in_flange_snapshot_;  ///< controlled frame, xyz xyzw
   std::array<std::atomic<double>, 3> gains_applied_snapshot_;   ///< translational, rotational, nullspace
+  std::atomic<bool> policy_goal_active_{false};
   std::atomic<double> position_error_{0.0};
   std::atomic<double> orientation_error_{0.0};
   std::atomic<double> joint_limit_margin_{0.0};
@@ -321,6 +351,18 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   Eigen::Vector3d position_target_;       ///< sampler output
   Eigen::Quaterniond orientation_target_;
   Vector7d nullspace_target_;
+  // The controlled frame on the flange: the static tool offset at activation, then whatever
+  // the last policy goal set. Only update() touches these.
+  Eigen::Vector3d rt_tool_translation_{Eigen::Vector3d::Zero()};
+  Eigen::Matrix3d rt_tool_rotation_{Eigen::Matrix3d::Identity()};
+  bool rt_tool_active_{false};
+  // The last policy goal (preclipped), re-clipped against the measured pose every cycle
+  // while rt_goal_active_.
+  Eigen::Vector3d rt_goal_position_{Eigen::Vector3d::Zero()};
+  Eigen::Quaterniond rt_goal_orientation_{Eigen::Quaterniond::Identity()};
+  bool rt_goal_active_{false};
+  bool rt_position_clipped_{false};
+  bool rt_orientation_clipped_{false};
   Eigen::Vector3d position_d_;            ///< after the example's filter
   Eigen::Quaterniond orientation_d_;
   Vector7d nullspace_d_;
@@ -340,4 +382,4 @@ class CartesianTrajectoryReplayController : public controller_interface::Control
   std::array<double, kNumJoints> joint_efforts_current_{};
 };
 
-}  // namespace franka_trajectory_replay
+}  // namespace franka_forge_cartesian_impedance

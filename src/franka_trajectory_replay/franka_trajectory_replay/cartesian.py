@@ -306,7 +306,7 @@ def _fill_pose(pose, position, quat):
 
 def trajectory_message(prepared, frame_id, send_rate=None, stamp=None):
     """Pack a pose stream into a CartesianTrajectory at ``send_rate`` (default: its own rate)."""
-    from franka_trajectory_replay_msgs.msg import CartesianTrajectory, CartesianWaypoint
+    from franka_forge_cartesian_impedance_msgs.msg import CartesianTrajectory, CartesianWaypoint
 
     send_rate = float(send_rate or prepared.rate)
     stride = max(1, int(round(prepared.rate / send_rate)))
@@ -334,7 +334,7 @@ def trajectory_message(prepared, frame_id, send_rate=None, stamp=None):
 
 
 def goto_message(position, quat, nullspace=None, duration=0.0):
-    from franka_trajectory_replay_msgs.msg import CartesianGoto
+    from franka_forge_cartesian_impedance_msgs.msg import CartesianGoto
 
     message = CartesianGoto()
     _fill_pose(message.pose, position, quat)

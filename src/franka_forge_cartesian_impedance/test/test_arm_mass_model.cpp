@@ -8,11 +8,11 @@
 #include <string>
 #include <vector>
 
-#include <franka_trajectory_replay/arm_mass_model.hpp>
+#include <franka_forge_cartesian_impedance/arm_mass_model.hpp>
 
-using franka_trajectory_replay::ArmMassModel;
-using franka_trajectory_replay::Matrix7d;
-using franka_trajectory_replay::Vector7d;
+using franka_forge_cartesian_impedance::ArmMassModel;
+using franka_forge_cartesian_impedance::Matrix7d;
+using franka_forge_cartesian_impedance::Vector7d;
 
 namespace {
 

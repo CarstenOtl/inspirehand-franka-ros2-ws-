@@ -1,7 +1,7 @@
 """Real FR3/Inspire/RealSense adapter for the distilled threading policy.
 
 The non-realtime policy process publishes bounded Cartesian setpoints. The
-``CartesianTrajectoryReplayController`` owns the FR3 effort interfaces and
+``CartesianImpedanceController`` owns the FR3 effort interfaces and
 executes those setpoints in its 1 kHz loop. The RH56 remains on the same
 independent ``/inspire_hand/command`` link used by trajectory replay.
 
@@ -134,6 +134,40 @@ def grasp_frame_from_tips(
     return position, fo.quat_from_matrix(rotation)
 
 
+def grasp_in_flange(
+    grasp_position, grasp_quaternion, flange_position, flange_quaternion
+) -> np.ndarray:
+    """The grasp frame expressed on the flange, as ``PolicyGoal.tool_in_flange`` carries it.
+
+    ``[x y z qx qy qz qw]``: the transform the controller composes onto its own
+    flange pose to measure, clip and differentiate its law at the live fingertip
+    midpoint, which is where training applied its wrench at every substep. The
+    grasp frame is built from the tips in the flange frame and a flange-frame
+    approach axis, so this depends on the hand joints only; the arm pose cancels.
+    """
+
+    positions = [np.asarray(v, dtype=float) for v in (grasp_position, flange_position)]
+    quaternions = [np.asarray(v, dtype=float).copy() for v in (grasp_quaternion, flange_quaternion)]
+    if any(v.shape != (3,) or not np.isfinite(v).all() for v in positions):
+        raise ValueError("grasp/flange positions must contain three finite values")
+    if any(
+        v.shape != (4,) or not np.isfinite(v).all() or np.linalg.norm(v) < 1.0e-8
+        for v in quaternions
+    ):
+        raise ValueError("grasp/flange quaternions must contain four finite values")
+    for v in quaternions:
+        v /= np.linalg.norm(v)
+    grasp_p, flange_p = positions
+    grasp_q, flange_q = quaternions
+    flange_inverse = fo.quat_conjugate(flange_q)
+    translation = fo.quat_rotate(flange_inverse, grasp_p - flange_p)
+    rotation = fo.quat_mul(flange_inverse, grasp_q)
+    rotation /= np.linalg.norm(rotation)
+    return np.array(
+        [*translation, rotation[1], rotation[2], rotation[3], rotation[0]], dtype=float
+    )
+
+
 TRAINING_INACTIVE_FINGERS = {
     "middle_joint_0": 1.333,
     "ring_joint_0": 1.333,
@@ -203,12 +237,14 @@ class TrainingHandKinematics:
         )
 
 
-# The Cartesian controller's compliance centre for a policy rollout.
+# The Cartesian controller's compliance centre until the first policy goal.
 #
 # Training applied its operational-space wrench at the *live* fingertip
-# midpoint, which travels about 20 mm over a threading cycle. The controller
-# needs a constant, so this is that midpoint frozen at the threading grip:
-# TrainingHandKinematics evaluated at forge_osc.THREADING_GRASP_POSTURE.
+# midpoint, which travels about 20 mm over a threading cycle, and every policy
+# goal now carries that live midpoint (``grasp_in_flange``) for the controller
+# to act about. This is the same midpoint frozen at the threading grip --
+# TrainingHandKinematics evaluated at forge_osc.THREADING_GRASP_POSTURE -- and
+# it is what the controller holds about between activation and the first goal.
 #
 # It deliberately differs from `tcp.offset_xyz` in replay.yaml
 # (-0.0874, -0.0327, 0.1453), which is the midpoint of a *closed* replay pinch
@@ -303,75 +339,6 @@ def policy_tool_transform(config) -> np.ndarray:
     )
 
 
-def limit_cartesian_step(
-    target_position,
-    target_quaternion,
-    reference_position,
-    reference_quaternion,
-    *,
-    max_position_step_m: float,
-    max_orientation_step_rad: float,
-    margin: float = 0.98,
-):
-    """Contract a target to the controller's norm-based policy-step guard."""
-
-    if not 0.0 < margin < 1.0:
-        raise ValueError("Cartesian step margin must be in (0, 1)")
-    if max_position_step_m <= 0.0 or max_orientation_step_rad <= 0.0:
-        raise ValueError("Cartesian step limits must be positive")
-    position = np.asarray(target_position, dtype=float).copy()
-    reference_p = np.asarray(reference_position, dtype=float)
-    if (
-        position.shape != (3,)
-        or reference_p.shape != (3,)
-        or not np.isfinite(position).all()
-        or not np.isfinite(reference_p).all()
-    ):
-        raise ValueError("Cartesian positions must contain three finite values")
-    delta = position - reference_p
-    distance = float(np.linalg.norm(delta))
-    position_limit = float(max_position_step_m) * margin
-    position_limited = distance > position_limit
-    if position_limited:
-        position = reference_p + delta * (position_limit / distance)
-
-    quaternion = np.asarray(target_quaternion, dtype=float).copy()
-    reference_q = np.asarray(reference_quaternion, dtype=float).copy()
-    quaternion_norm = float(np.linalg.norm(quaternion))
-    reference_norm = float(np.linalg.norm(reference_q))
-    if (
-        quaternion.shape != (4,)
-        or reference_q.shape != (4,)
-        or not np.isfinite(quaternion).all()
-        or not np.isfinite(reference_q).all()
-        or quaternion_norm < 1.0e-8
-        or reference_norm < 1.0e-8
-    ):
-        raise ValueError("Cartesian quaternions must contain four finite values")
-    quaternion /= quaternion_norm
-    reference_q /= reference_norm
-    dot = float(np.dot(reference_q, quaternion))
-    if dot < 0.0:
-        quaternion = -quaternion
-        dot = -dot
-    dot = float(np.clip(dot, -1.0, 1.0))
-    angle = 2.0 * math.acos(dot)
-    orientation_limit = float(max_orientation_step_rad) * margin
-    orientation_limited = angle > orientation_limit
-    if orientation_limited:
-        fraction = orientation_limit / angle
-        half_angle = math.acos(dot)
-        if half_angle < 1.0e-8:
-            quaternion = reference_q
-        else:
-            quaternion = (
-                math.sin((1.0 - fraction) * half_angle) * reference_q
-                + math.sin(fraction * half_angle) * quaternion
-            ) / math.sin(half_angle)
-            quaternion /= np.linalg.norm(quaternion)
-    return position, quaternion, position_limited, orientation_limited
-
-
 class RgbdFrameSynchronizer:
     """Keep recent camera messages and return the closest timestamped pair."""
 
@@ -411,9 +378,17 @@ class RgbdFrameSynchronizer:
 class TrainingFrameAdapter:
     """Convert between the policy's training world and the physical FR3 base."""
 
+    # The training world is fr3_link0 yawed by this angle (and shifted, which no
+    # rotation-only consumer cares about). The controller clips policy goals in
+    # that world (policy_clip_frame_yaw), because ForgeUltra's Euler clip and its
+    # yaw wrap are written in it.
+    world_from_base_yaw = math.pi
+
     def __init__(self) -> None:
         self.world_from_base_position = fo.ROBOT_BASE_POSITION.copy()
-        self.world_from_base_quaternion = fo.quat_from_euler_xyz(0.0, 0.0, math.pi)
+        self.world_from_base_quaternion = fo.quat_from_euler_xyz(
+            0.0, 0.0, self.world_from_base_yaw
+        )
 
     def pose_base_to_world(self, position, quaternion):
         q = self.world_from_base_quaternion
@@ -433,127 +408,28 @@ class TrainingFrameAdapter:
             fo.quat_mul(q_inv, np.asarray(quaternion, dtype=float)),
         )
 
-    def controller_target(
-        self,
-        filtered_action,
-        *,
-        grasp_position_base,
-        grasp_quaternion_base,
-        controlled_position_base,
-        controlled_quaternion_base,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Decode Forge's grasp target into the controller's fixed tool frame.
-
-        Forge controls the live midpoint between the thumb and index tips.  The
-        Cartesian controller instead differentiates its impedance law at a
-        fixed flange-relative tool transform.  Preserve the measured transform
-        from the grasp frame to that controlled frame when retargeting; sending
-        the grasp origin directly as the tool origin creates a centimetre-scale
-        translation error whenever those frames do not coincide.
-        """
-
-        grasp_world_position, grasp_world_quaternion = self.pose_base_to_world(
-            grasp_position_base, grasp_quaternion_base
-        )
-        grasp = fo.GraspFrameState(
-            pos=grasp_world_position,
-            quat=grasp_world_quaternion,
-            linvel=np.zeros(3),
-            angvel=np.zeros(3),
-            jacobian=np.zeros((6, 7)),
-        )
-        target = fo.decode_action_target(filtered_action, grasp)
-        target_position_base, target_grasp_quaternion_base = self.pose_world_to_base(
-            target.pos, target.quat
-        )
-        return retarget_grasp_pose_to_controlled_pose(
-            grasp_position_base=grasp_position_base,
-            grasp_quaternion_base=grasp_quaternion_base,
-            controlled_position_base=controlled_position_base,
-            controlled_quaternion_base=controlled_quaternion_base,
-            target_grasp_position_base=target_position_base,
-            target_grasp_quaternion_base=target_grasp_quaternion_base,
-        )
 
 
-def _policy_goal_base(frame, filtered_action, grasp_position_base, grasp_quaternion_base):
-    """The policy's unclipped goal (``bolt_tip + action``), in the base frame.
+def policy_goal_base(frame, filtered_action) -> tuple[np.ndarray, np.ndarray]:
+    """The policy's preclipped goal (``bolt_tip + action``) in the base frame.
 
-    ``decode_action_target`` anchors the position action at the bolt tip and
-    only then clips it to a 20 mm step from the current grasp frame. The
-    clipped step is what gets commanded; this is what the policy is aiming at.
+    This is ``_apply_action`` steps (0) and (1), the part that depends only on
+    the filtered action and is constant over a policy tick. Step (2), the clip
+    against the live grasp pose, is the controller's: it runs it at 1 kHz on
+    every ``PolicyGoal`` (policy_clip_position_m / policy_clip_orientation_rad
+    in the training world frame), as Isaac ran it at every 120 Hz substep.
     """
 
-    grasp_world_position, grasp_world_quaternion = frame.pose_base_to_world(
-        grasp_position_base, grasp_quaternion_base
-    )
-    grasp = fo.GraspFrameState(
-        pos=grasp_world_position,
-        quat=grasp_world_quaternion,
+    # decode_action_target with clip=False never reads the grasp state.
+    unused = fo.GraspFrameState(
+        pos=np.zeros(3),
+        quat=np.array([1.0, 0.0, 0.0, 0.0]),
         linvel=np.zeros(3),
         angvel=np.zeros(3),
         jacobian=np.zeros((6, 7)),
     )
-    goal = fo.decode_action_target(filtered_action, grasp, clip=False)
-    return frame.pose_world_to_base(goal.pos, goal.quat)[0]
-
-
-def retarget_grasp_pose_to_controlled_pose(
-    *,
-    grasp_position_base,
-    grasp_quaternion_base,
-    controlled_position_base,
-    controlled_quaternion_base,
-    target_grasp_position_base,
-    target_grasp_quaternion_base,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Preserve the live grasp-to-controlled transform at a new grasp pose."""
-
-    positions = tuple(
-        np.asarray(value, dtype=float)
-        for value in (
-            grasp_position_base,
-            controlled_position_base,
-            target_grasp_position_base,
-        )
-    )
-    quaternions = [
-        np.asarray(value, dtype=float).copy()
-        for value in (
-            grasp_quaternion_base,
-            controlled_quaternion_base,
-            target_grasp_quaternion_base,
-        )
-    ]
-    if any(value.shape != (3,) or not np.isfinite(value).all() for value in positions):
-        raise ValueError("grasp/control positions must contain three finite values")
-    if any(
-        value.shape != (4,)
-        or not np.isfinite(value).all()
-        or np.linalg.norm(value) < 1.0e-8
-        for value in quaternions
-    ):
-        raise ValueError("grasp/control quaternions must contain four finite values")
-    for value in quaternions:
-        value /= np.linalg.norm(value)
-
-    grasp_position, controlled_position, target_grasp_position = positions
-    grasp_quaternion, controlled_quaternion, target_grasp_quaternion = quaternions
-    base_to_grasp_quaternion = fo.quat_conjugate(grasp_quaternion)
-    controlled_in_grasp_position = fo.quat_rotate(
-        base_to_grasp_quaternion, controlled_position - grasp_position
-    )
-    controlled_in_grasp_quaternion = fo.quat_mul(
-        base_to_grasp_quaternion, controlled_quaternion
-    )
-    target_controlled_position = target_grasp_position + fo.quat_rotate(
-        target_grasp_quaternion, controlled_in_grasp_position
-    )
-    target_controlled_quaternion = fo.quat_mul(
-        target_grasp_quaternion, controlled_in_grasp_quaternion
-    )
-    target_controlled_quaternion /= np.linalg.norm(target_controlled_quaternion)
-    return target_controlled_position, target_controlled_quaternion
+    goal = fo.decode_action_target(filtered_action, unused, clip=False)
+    return frame.pose_world_to_base(goal.pos, goal.quat)
 
 
 class GripCycleCoordinator:
@@ -809,6 +685,10 @@ class LiveSample:
     controller_target_quaternion: np.ndarray
     controller_measured_position: np.ndarray
     controller_measured_quaternion: np.ndarray
+    # Whether the controller's per-cycle clip of the last policy goal bound, at
+    # its last state publish.
+    controller_position_clipped: bool
+    controller_orientation_clipped: bool
     sample_time_s: float
 
 
@@ -831,7 +711,7 @@ def _hardware_node_class():
         ):
             from control_msgs.msg import JointTrajectoryControllerState
             from diagnostic_msgs.msg import DiagnosticArray
-            from franka_trajectory_replay_msgs.msg import CartesianGoto, CartesianReplayState
+            from franka_forge_cartesian_impedance_msgs.msg import CartesianReplayState, PolicyGoal
             from realsense2_camera_msgs.msg import RGBD
             from rclpy.qos import qos_profile_sensor_data
             from sensor_msgs.msg import JointState
@@ -855,8 +735,10 @@ def _hardware_node_class():
             self._training_hand = TrainingHandKinematics()
             self._policy_hand_position = None
             controller = "/" + config["cartesian"]["controller_name"].strip("/")
+            # Preclipped goals plus the live grasp frame; the controller does
+            # ForgeUltra's clip and runs its law at that frame (A3, A4).
             self.policy_publisher = self.create_publisher(
-                CartesianGoto, controller + "/policy_command", 1
+                PolicyGoal, controller + "/policy_goal", 1
             )
             self.abort_publisher = self.create_publisher(
                 Empty, controller + "/abort", 1
@@ -1084,6 +966,10 @@ def _hardware_node_class():
                 controller_target_quaternion=controller_target_quaternion,
                 controller_measured_position=controller_measured_position,
                 controller_measured_quaternion=controller_measured_quaternion,
+                controller_position_clipped=bool(messages["cartesian"].position_clipped),
+                controller_orientation_clipped=bool(
+                    messages["cartesian"].orientation_clipped
+                ),
                 sample_time_s=now,
             )
             # The grasp frame is rebuilt from these logical hand joints rather
@@ -1194,6 +1080,25 @@ def _hardware_node_class():
             )
             return grasp_position, grasp_quaternion, flange_quaternion
 
+        def grasp_pose_and_tool(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            """The live grasp frame in the base frame, and the same frame on the flange.
+
+            The third value is what ``PolicyGoal.tool_in_flange`` carries, so the
+            controller measures, clips and differentiates its law at the live
+            fingertip midpoint. Both come from one hand-frame evaluation.
+            """
+
+            if self.grasp_z_transport is None:
+                raise RuntimeError("grasp frame used before its reset z transport was captured")
+            thumb, index, flange_position, flange_quaternion = self._hand_frames()
+            grasp_position, grasp_quaternion = grasp_frame_from_tips(
+                thumb, index, flange_quaternion, self.grasp_z_transport
+            )
+            tool_in_flange = grasp_in_flange(
+                grasp_position, grasp_quaternion, flange_position, flange_quaternion
+            )
+            return grasp_position, grasp_quaternion, tool_in_flange
+
         def _wait_for_tf(self, function, timeout_s: float):
             deadline = time.monotonic() + timeout_s
             last_error = None
@@ -1214,20 +1119,22 @@ def _hardware_node_class():
         def wait_for_grasp_pose(self, timeout_s: float):
             return self._wait_for_tf(self.grasp_pose, timeout_s)
 
-        def publish_policy_target(self, position, quaternion_wxyz, nullspace):
-            from franka_trajectory_replay_msgs.msg import CartesianGoto
+        def publish_policy_goal(
+            self, goal_position, goal_quaternion_wxyz, tool_in_flange, nullspace
+        ):
+            from franka_forge_cartesian_impedance_msgs.msg import PolicyGoal
 
-            message = CartesianGoto()
-            message.pose.position.x = float(position[0])
-            message.pose.position.y = float(position[1])
-            message.pose.position.z = float(position[2])
-            q = np.asarray(quaternion_wxyz, dtype=float)
-            message.pose.orientation.w = float(q[0])
-            message.pose.orientation.x = float(q[1])
-            message.pose.orientation.y = float(q[2])
-            message.pose.orientation.z = float(q[3])
+            message = PolicyGoal()
+            message.goal.position.x = float(goal_position[0])
+            message.goal.position.y = float(goal_position[1])
+            message.goal.position.z = float(goal_position[2])
+            q = np.asarray(goal_quaternion_wxyz, dtype=float)
+            message.goal.orientation.w = float(q[0])
+            message.goal.orientation.x = float(q[1])
+            message.goal.orientation.y = float(q[2])
+            message.goal.orientation.z = float(q[3])
+            message.tool_in_flange = [float(value) for value in tool_in_flange]
             message.nullspace_positions = [float(value) for value in nullspace]
-            message.duration = 0.0
             self.policy_publisher.publish(message)
 
         def publish_hand_target(self, pinch):
@@ -1349,7 +1256,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
     status = "error"
     steps = 0
     missed_deadlines = 0
-    limited_policy_targets = 0
+    clipped_policy_ticks = 0
     watchdog_stop = False
     live_preflight_s = []
     grasp_controlled_offset_m = None
@@ -1388,10 +1295,18 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             arm_client.preflight(home_client.current_joint_positions(), print)
         arm_client.ensure_active(print)
         parameters = arm_client.controller_parameters()
+        # ForgeUltra clips per axis with one threshold vector; the controller takes a
+        # scalar per kind, so the training thresholds have to be uniform for the two
+        # to be the same clip.
+        if not (
+            np.all(fo.POS_ACTION_THRESHOLD == fo.POS_ACTION_THRESHOLD[0])
+            and np.all(fo.ROT_ACTION_THRESHOLD == fo.ROT_ACTION_THRESHOLD[0])
+        ):
+            raise Rejected("training's action thresholds are not uniform per axis")
         expected = {
-            "translational_stiffness": 565.0,
-            "rotational_stiffness": 28.0,
-            "nullspace_stiffness": 10.0,
+            "translational_stiffness": float(fo.DEFAULT_TASK_PROP_GAINS[0]),
+            "rotational_stiffness": float(fo.DEFAULT_TASK_PROP_GAINS[3]),
+            "nullspace_stiffness": fo.KP_NULL,
             # The exact nullspace projector and ForgeUltra's rotation error; with the
             # example's lambda 0.2 the joint spring leaks more force onto the tool than the
             # policy itself commands, and the quaternion-vector error halves the rotational
@@ -1399,9 +1314,14 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "nullspace_damping_lambda": 0.0,
             "stiffness_scale": 1.0,
             "target_filter": 1.0,
+            # compute_dof_torque's clamp, and its per-substep target clip run in the
+            # controller at its rate (A4): the training thresholds, in the training world
+            # frame, which is the base yawed by pi.
+            "torque_limit": fo.ARM_TORQUE_LIMIT,
+            "policy_clip_position_m": float(fo.POS_ACTION_THRESHOLD[0]),
+            "policy_clip_orientation_rad": float(fo.ROT_ACTION_THRESHOLD[0]),
+            "policy_clip_frame_yaw": frame.world_from_base_yaw,
             "torque_rate_limit": 1.0,
-            "max_policy_step_m": 0.036,
-            "max_policy_step_rad": 0.18,
             "policy_command_timeout": 0.5,
             "state_publish_rate": 50.0,
         }
@@ -1423,12 +1343,18 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 f"mass_weighted_nullspace={parameters.get('mass_weighted_nullspace')!r} "
                 "(expected True)"
             )
+        # compute_dof_torque has no Coriolis term; the PhysX arm felt its own
+        # uncompensated, and so must this one. (Gravity is libfranka's, as it was
+        # Isaac's disable_gravity.)
+        if parameters.get("coriolis_compensation") is not False:
+            mismatches.append(
+                f"coriolis_compensation={parameters.get('coriolis_compensation')!r} "
+                "(expected False: training's law has no Coriolis term)"
+            )
         if mismatches:
             raise Rejected(
                 "controller is not using the policy profile: " + "; ".join(mismatches)
             )
-        if parameters.get("coriolis_compensation") is not True:
-            raise Rejected("policy controller must enable coriolis_compensation")
 
         # Homing and setup are complete. Keeping these helper nodes spinning
         # would continue deserializing joint/robot state that
@@ -1499,12 +1425,12 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         sample = node.wait_for_fresh_sample(args.input_timeout)
         grasp_position, grasp_quaternion, _ = node.wait_for_grasp_pose(args.input_timeout)
         q_policy_hand, _ = node.policy_hand_state(sample)
-        grasp_controlled_offset_m = float(
-            np.linalg.norm(sample.controller_measured_position - grasp_position)
-        )
+        # Before the first goal the controller still acts about the frozen grip
+        # midpoint; from the first goal on it acts about the live one, and the
+        # report carries how far the two measurements then stay apart.
         print(
-            "live grasp-to-controller offset: "
-            f"{1.0e3 * grasp_controlled_offset_m:.1f} mm (compensated)",
+            "live grasp to frozen controller point before the first goal: "
+            f"{1.0e3 * float(np.linalg.norm(sample.controller_measured_position - grasp_position)):.1f} mm",
             flush=True,
         )
         # Match the reset contract used by training and the MuJoCo rollout.
@@ -1561,7 +1487,20 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             sample = (
                 node.wait_for_fresh_sample(args.input_timeout) if sim else node.sample()
             )
-            grasp_position, grasp_quaternion, _flange_quaternion = node.grasp_pose()
+            grasp_position, grasp_quaternion, tool_in_flange = node.grasp_pose_and_tool()
+            if steps > 1:
+                # A3's measure: the controller now acts about the live grasp frame,
+                # so its measured pose and this one should agree up to sampling skew.
+                offset = float(
+                    np.linalg.norm(sample.controller_measured_position - grasp_position)
+                )
+                grasp_controlled_offset_m = (
+                    offset
+                    if grasp_controlled_offset_m is None
+                    else max(grasp_controlled_offset_m, offset)
+                )
+            if sample.controller_position_clipped or sample.controller_orientation_clipped:
+                clipped_policy_ticks += 1
             q_hand, dq_hand = node.policy_hand_state(sample)
             q10 = np.concatenate((sample.arm_position, q_hand))
             dq10 = np.concatenate((sample.arm_velocity, dq_hand))
@@ -1601,29 +1540,11 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 },
             )
             filtered = result.filtered_native_action.numpy()
-            target_position, target_quaternion = frame.controller_target(
-                filtered,
-                grasp_position_base=grasp_position,
-                grasp_quaternion_base=grasp_quaternion,
-                controlled_position_base=sample.controller_measured_position,
-                controlled_quaternion_base=sample.controller_measured_quaternion,
-            )
-            (
-                target_position,
-                target_quaternion,
-                position_limited,
-                orientation_limited,
-            ) = limit_cartesian_step(
-                target_position,
-                target_quaternion,
-                sample.controller_target_position,
-                sample.controller_target_quaternion,
-                max_position_step_m=expected["max_policy_step_m"],
-                max_orientation_step_rad=expected["max_policy_step_rad"],
-            )
-            if position_limited or orientation_limited:
-                limited_policy_targets += 1
-            node.publish_policy_target(target_position, target_quaternion, home_arm)
+            # Steps (0)-(1) of _apply_action here, once per tick; step (2), the clip
+            # against the live grasp pose, and the law at that pose, in the controller
+            # at 1 kHz with the grasp frame this tick measured.
+            goal_position, goal_quaternion = policy_goal_base(frame, filtered)
+            node.publish_policy_goal(goal_position, goal_quaternion, tool_in_flange, home_arm)
             node.publish_hand_target(fo.pinch_targets(filtered))
             if debug_viz is not None:
                 debug_viz.publish(
@@ -1632,14 +1553,12 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                     depth_units=sample.depth_units,
                     grasp_position=grasp_position,
                     grasp_quaternion=grasp_quaternion,
-                    controller_target_position=target_position,
+                    controller_target_position=sample.controller_target_position,
                     controller_measured_position=sample.controller_measured_position,
                     bolt_tip_base=frame.pose_world_to_base(
                         fo.BOLT_TIP_POSITION, np.array([1.0, 0.0, 0.0, 0.0])
                     )[0],
-                    policy_goal_position=_policy_goal_base(
-                        frame, filtered, grasp_position, grasp_quaternion
-                    ),
+                    policy_goal_position=goal_position,
                     step=steps,
                 )
             event, turn_progress = coordinator.update(
@@ -1732,7 +1651,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             coordinator=locals().get("coordinator"),
             thread_pair=locals().get("thread_pair"),
             missed_deadlines=missed_deadlines,
-            limited_policy_targets=limited_policy_targets,
+            clipped_policy_ticks=clipped_policy_ticks,
             watchdog_stop=watchdog_stop,
             live_preflight_s=live_preflight_s,
             grasp_controlled_offset_m=grasp_controlled_offset_m,
@@ -1751,7 +1670,7 @@ def _rollout_report(
     coordinator,
     thread_pair=None,
     missed_deadlines,
-    limited_policy_targets,
+    clipped_policy_ticks,
     watchdog_stop,
     live_preflight_s,
     grasp_controlled_offset_m,
@@ -1773,9 +1692,15 @@ def _rollout_report(
             else math.degrees(thread_pair.twist_rad)
         ),
         "missed_policy_deadlines": missed_deadlines,
-        "limited_policy_targets": limited_policy_targets,
+        # Ticks at which the controller's per-cycle clip of the goal was binding
+        # when it last published its state: the target leading the hand, as in
+        # training, rather than a step the runner had to shorten.
+        "clipped_policy_ticks": clipped_policy_ticks,
         "watchdog_stop": watchdog_stop,
         "live_preflight_s": live_preflight_s,
+        # Largest distance between the controller's measured controlled point and
+        # the live grasp frame over the run, after the first goal (A3: should be
+        # sampling skew only).
         "grasp_controlled_offset_m": grasp_controlled_offset_m,
         "recording": None if artifact is None else str(artifact.data_path),
     }
@@ -1790,14 +1715,14 @@ __all__ = [
     "hand_joint_state_to_arrays",
     "grasp_z_transport_at_reset",
     "assert_policy_camera_frames",
+    "grasp_in_flange",
     "image_message_to_numpy",
-    "limit_cartesian_step",
     "physical_hand_state_to_policy",
     "POLICY_TOOL_OFFSET_RPY",
     "POLICY_TOOL_OFFSET_XYZ",
     "TrainingHandKinematics",
+    "policy_goal_base",
     "policy_tool_offset_config",
     "policy_tool_transform",
-    "retarget_grasp_pose_to_controlled_pose",
     "run_hardware_rollout",
 ]

@@ -16,7 +16,7 @@
       trajectory_replay_controller:
         type: franka_trajectory_replay/TrajectoryReplayController
       cartesian_trajectory_replay_controller:
-        type: franka_trajectory_replay/CartesianTrajectoryReplayController
+        type: franka_forge_cartesian_impedance/CartesianImpedanceController
 
   franka_robot_state_broadcaster:
     ros__parameters:
@@ -53,12 +53,15 @@
       arm_prefix: ""
       base_frame: fr3_link0
       model_source: franka
-      # The compliance centre. Training applied its operational-space wrench at
-      # the live thumb/index fingertip midpoint; this is that midpoint frozen at
-      # the threading grip, in ForgeUltra's hand geometry. It is deliberately
-      # NOT replay.yaml's tcp (-0.0874, -0.0327, 0.1453), which is a closed
-      # replay pinch 40 mm away; trajectory replay keeps that one. Checked at
-      # startup against POLICY_TOOL_OFFSET_XYZ in policy_rollout/hardware.py.
+      # The compliance centre until the first policy goal arrives. Training applied
+      # its operational-space wrench at the live thumb/index fingertip midpoint, and
+      # every ~/policy_goal now carries that live midpoint (tool_in_flange), which
+      # the controller then uses instead of this. This is the same midpoint frozen
+      # at the threading grip, in ForgeUltra's hand geometry: the activation hold
+      # and activate_policy_controller.py run about it. It is deliberately NOT
+      # replay.yaml's tcp (-0.0874, -0.0327, 0.1453), which is a closed replay
+      # pinch 40 mm away; trajectory replay keeps that one. Checked at startup
+      # against POLICY_TOOL_OFFSET_XYZ in policy_rollout/hardware.py.
       tool_offset_xyz: [-0.059067, -0.028773, 0.173311]
       tool_offset_rpy: [0.0, 0.0, 0.0]
       # Forge threading task-space gains. The setpoint is already clipped and
@@ -86,7 +89,19 @@
       mass_weighted_nullspace: true
       arm_armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
       nullspace_target: trajectory
-      coriolis_compensation: true
+      # compute_dof_torque has no Coriolis term: the PhysX arm felt its own Coriolis
+      # forces uncompensated, and so must this one. libfranka still compensates
+      # gravity on its own, which Isaac matched with disable_gravity.
+      coriolis_compensation: false
+      # ForgeUltra's clamp on the summed torque. Never binds on an FR3.
+      torque_limit: 100.0
+      # ForgeUltra's per-substep target clip, run here at 1 kHz on ~/policy_goal:
+      # pos_action_threshold / rot_action_threshold from vanilla_threading.yaml, in
+      # the training world frame, which is fr3_link0 yawed by pi (TrainingFrameAdapter
+      # in policy_rollout/hardware.py). The runner's preflight checks all three.
+      policy_clip_position_m: 0.02
+      policy_clip_orientation_rad: 0.097
+      policy_clip_frame_yaw: 3.141592653589793
       torque_rate_limit: 1.0
       goto_max_velocity: 0.10
       goto_max_angular_velocity: 0.50

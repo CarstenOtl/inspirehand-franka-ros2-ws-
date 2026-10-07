@@ -27,7 +27,7 @@
       gravity_compensation_example_controller:
         type: franka_example_controllers/GravityCompensationExampleController
       cartesian_trajectory_replay_controller:
-        type: franka_trajectory_replay/CartesianTrajectoryReplayController
+        type: franka_forge_cartesian_impedance/CartesianImpedanceController
 
   franka_robot_state_broadcaster:
     ros__parameters:

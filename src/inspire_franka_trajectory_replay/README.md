@@ -589,7 +589,7 @@ law of Franka's `CartesianImpedanceExampleController` (franka_ros2 v3.5.3):
 task-space stiffness and damping through the Jacobian transpose, a
 damped-pseudo-inverse nullspace term, and coriolis compensation, with the
 example's own first-order target filter. The law is lifted verbatim into
-`franka_trajectory_replay/cartesian_impedance.hpp` and unit-tested against a
+`franka_forge_cartesian_impedance/cartesian_impedance.hpp` and unit-tested against a
 transcription of the upstream `update()`; the surrounding replay machinery
 (goto, trajectory, pause/resume/abort, status) is the joint controller's design
 in pose space. The full design, its settled decisions and the hardware

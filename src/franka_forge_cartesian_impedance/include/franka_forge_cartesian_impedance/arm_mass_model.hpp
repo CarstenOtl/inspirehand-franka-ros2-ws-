@@ -8,9 +8,9 @@
 #include <string>
 #include <vector>
 
-#include <franka_trajectory_replay/cartesian_impedance.hpp>
+#include <franka_forge_cartesian_impedance/cartesian_impedance.hpp>
 
-namespace franka_trajectory_replay {
+namespace franka_forge_cartesian_impedance {
 
 /// The arm block of the whole articulation's generalized mass matrix, for Forge's
 /// mass-weighted nullspace term (`forge_nullspace_torque`).
@@ -55,4 +55,4 @@ class ArmMassModel {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace franka_trajectory_replay
+}  // namespace franka_forge_cartesian_impedance

@@ -37,12 +37,15 @@ DEFAULT_CONFIG = (
 )
 
 # The policy profile's law, as controllers_policy.yaml sets it. These are the
-# two parameters that make the controller reproduce ForgeUltra's
-# compute_dof_torque rather than franka_example_controllers' variant of it. A
+# parameters that make the controller reproduce ForgeUltra's compute_dof_torque
+# rather than franka_example_controllers' variant of it: the full-angle rotation
+# error, the exact mass-weighted nullspace projection, and no Coriolis term. A
 # bench session that silently ran the example law would read as a test of this
 # one, so refuse unless the operator asks for that on purpose.
 FORGE_LAW_ROTATION_ERROR = "axis_angle"
 FORGE_LAW_NULLSPACE_LAMBDA = 0.0
+FORGE_LAW_MASS_WEIGHTED_NULLSPACE = True
+FORGE_LAW_CORIOLIS_COMPENSATION = False
 
 # Bounded so a typo cannot ask for a large unplanned move. The controller
 # clamps again on its own side (goto_max_velocity, max_goto_step).
@@ -171,14 +174,27 @@ def check_law(parameters, *, allow_example_law, log=print) -> None:
         )
     )
     log(
-        "  rotation_error=%r, nullspace_damping_lambda=%r, model_source=%r"
+        "  rotation_error=%r, nullspace_damping_lambda=%r, mass_weighted_nullspace=%r, "
+        "coriolis_compensation=%r, model_source=%r"
         % (
             parameters.get("rotation_error"),
             parameters.get("nullspace_damping_lambda"),
+            parameters.get("mass_weighted_nullspace"),
+            parameters.get("coriolis_compensation"),
             parameters.get("model_source"),
         )
     )
     wrong = []
+    if parameters.get("mass_weighted_nullspace") is not FORGE_LAW_MASS_WEIGHTED_NULLSPACE:
+        wrong.append(
+            "mass_weighted_nullspace=%r (ForgeUltra weights the nullspace joint PD by the "
+            "arm mass matrix)" % (parameters.get("mass_weighted_nullspace"),)
+        )
+    if parameters.get("coriolis_compensation") is not FORGE_LAW_CORIOLIS_COMPENSATION:
+        wrong.append(
+            "coriolis_compensation=%r (compute_dof_torque has no Coriolis term)"
+            % (parameters.get("coriolis_compensation"),)
+        )
     if str(parameters.get("rotation_error")) != FORGE_LAW_ROTATION_ERROR:
         wrong.append(
             "rotation_error=%r (ForgeUltra uses %r; the quaternion-vector form "

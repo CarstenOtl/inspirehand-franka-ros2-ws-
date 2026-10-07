@@ -4,9 +4,9 @@
 # The FR3 blocks are controllers_policy.yaml's, so the runner's policy-profile
 # parameter check passes unchanged. Differences, all forced by the simulator:
 # the Cartesian controller takes its pose and Jacobian from the built-in DH
-# model (model_source: dh, which never applies a coriolis term), there is no
-# franka_robot_state_broadcaster, and gravity is off in the scene in place of
-# libfranka's compensation. The hand controllers are controllers_sim_impedance.yaml's.
+# model (model_source: dh), there is no franka_robot_state_broadcaster, and
+# gravity is off in the scene in place of libfranka's compensation. The hand
+# controllers are controllers_sim_impedance.yaml's.
 
 # The threaded nut in inspire_franka_policy_scene.xml is not part of the robot,
 # so no ros2_control interface reaches it. inspire_franka_sim's thread pair
@@ -31,7 +31,7 @@ controller_manager:
     trajectory_replay_controller:
       type: franka_trajectory_replay/TrajectoryReplayController
     cartesian_trajectory_replay_controller:
-      type: franka_trajectory_replay/CartesianTrajectoryReplayController
+      type: franka_forge_cartesian_impedance/CartesianImpedanceController
 
     hand_joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
@@ -68,8 +68,9 @@ cartesian_trajectory_replay_controller:
     arm_prefix: ""
     base_frame: fr3_link0
     model_source: dh
-    # The training grasp midpoint at the threading grip; see
-    # controllers_policy.yaml. Keep the two equal.
+    # The training grasp midpoint at the threading grip, used until the first
+    # policy goal brings the live one; see controllers_policy.yaml. Keep the two
+    # equal.
     tool_offset_xyz: [-0.059067, -0.028773, 0.173311]
     tool_offset_rpy: [0.0, 0.0, 0.0]
     translational_stiffness: 565.0
@@ -100,7 +101,15 @@ cartesian_trajectory_replay_controller:
     # this to [0.195 x4, 0.074 x3] once the USD confirms it.
     arm_armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     nullspace_target: trajectory
-    coriolis_compensation: true
+    # compute_dof_torque has no Coriolis term (the 'dh' path never applied one
+    # anyway; the hardware profile now agrees).
+    coriolis_compensation: false
+    # ForgeUltra's +-100 Nm clamp and its per-substep target clip, as in
+    # controllers_policy.yaml. Keep the two equal; the runner checks them.
+    torque_limit: 100.0
+    policy_clip_position_m: 0.02
+    policy_clip_orientation_rad: 0.097
+    policy_clip_frame_yaw: 3.141592653589793
     torque_rate_limit: 1.0
     goto_max_velocity: 0.10
     goto_max_angular_velocity: 0.50

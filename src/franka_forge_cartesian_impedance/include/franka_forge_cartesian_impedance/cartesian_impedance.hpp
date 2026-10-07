@@ -12,7 +12,7 @@
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 
-namespace franka_trajectory_replay {
+namespace franka_forge_cartesian_impedance {
 
 // franka_example_controllers/CartesianImpedanceExampleController (franka_ros2 v3.5.3),
 // with its reference (p_d, q_d, q_null) supplied by the caller instead of the demo arc
@@ -241,4 +241,136 @@ inline double quaternion_angle(const Eigen::Quaterniond& a, const Eigen::Quatern
   return 2.0 * std::acos(dot);
 }
 
-}  // namespace franka_trajectory_replay
+/// ForgeUltra's `arm_torque = clamp(arm_torque, -100, 100)` at the end of compute_dof_torque.
+/// A non-positive limit disables the clamp. It never binds on an FR3 (87 / 12 Nm joints); it is
+/// here so the law is the training one line for line.
+inline Vector7d clamp_torque(const Vector7d& tau, double limit) {
+  if (!(limit > 0.0)) {
+    return tau;
+  }
+  return tau.cwiseMax(-limit).cwiseMin(limit);
+}
+
+// --- ForgeUltra's target decode ------------------------------------------------------------
+//
+// `_apply_action` (forge_ultra/tasks/mdp/robot_control.py) runs at every 120 Hz physics
+// substep, not once per policy step: it decodes `bolt_tip + action` and then clips that goal
+// against the LIVE grasp pose, 20 mm per axis and 0.097 rad per Euler angle. The clipped
+// target therefore keeps leading the hand by up to one clip as it moves, instead of arriving
+// at once and being held for the tick. These helpers let the controller do the same clip at
+// its own rate, from the goal the policy process sends.
+
+/// isaacsim.core.utils.torch.get_euler_xyz: (roll, pitch, yaw) of Rz(yaw) Ry(pitch) Rx(roll),
+/// each wrapped to [0, 2 pi) exactly as the torch version does with `% (2 pi)`.
+inline Eigen::Vector3d isaac_euler_xyz(const Eigen::Quaterniond& q) {
+  const double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
+  const double sinr_cosp = 2.0 * (qw * qx + qy * qz);
+  const double cosr_cosp = qw * qw - qx * qx - qy * qy + qz * qz;
+  const double roll = std::atan2(sinr_cosp, cosr_cosp);
+  const double sinp = 2.0 * (qw * qy - qz * qx);
+  const double pitch =
+      std::abs(sinp) >= 1.0 ? std::copysign(M_PI / 2.0, sinp) : std::asin(sinp);
+  const double siny_cosp = 2.0 * (qw * qz + qx * qy);
+  const double cosy_cosp = qw * qw + qx * qx - qy * qy - qz * qz;
+  const double yaw = std::atan2(siny_cosp, cosy_cosp);
+  const auto wrap = [](double angle) {
+    const double two_pi = 2.0 * M_PI;
+    double r = std::fmod(angle, two_pi);
+    if (r < 0.0) {
+      r += two_pi;
+    }
+    return r;
+  };
+  return Eigen::Vector3d(wrap(roll), wrap(pitch), wrap(yaw));
+}
+
+/// isaacsim.core.utils.torch.quat_from_euler_xyz: the quaternion of Rz(yaw) Ry(pitch) Rx(roll).
+inline Eigen::Quaterniond isaac_quat_from_euler_xyz(double roll, double pitch, double yaw) {
+  const double cy = std::cos(yaw * 0.5), sy = std::sin(yaw * 0.5);
+  const double cr = std::cos(roll * 0.5), sr = std::sin(roll * 0.5);
+  const double cp = std::cos(pitch * 0.5), sp = std::sin(pitch * 0.5);
+  return Eigen::Quaterniond(cy * cr * cp + sy * sr * sp, cy * sr * cp - sy * cr * sp,
+                            cy * cr * sp + sy * sr * cp, sy * cr * cp - cy * sr * sp);
+}
+
+/// forge_tg2_utils.wrap_yaw: map [0, 2 pi) onto (-125, 235] degrees so the FR3's joint-7 limit
+/// does not split the yaw range the policy works in.
+inline double forge_wrap_yaw(double yaw) {
+  return yaw > 235.0 * M_PI / 180.0 ? yaw - 2.0 * M_PI : yaw;
+}
+
+struct ForgeClippedTarget {
+  Eigen::Vector3d position{Eigen::Vector3d::Zero()};
+  Eigen::Quaterniond orientation{Eigen::Quaterniond::Identity()};
+  bool position_clipped{false};
+  bool orientation_clipped{false};
+};
+
+/// `_apply_action` step (2): clip a preclipped goal against the measured grasp pose. The
+/// position clip is component-wise, the orientation clip is per Euler angle with the yaw
+/// wrapped first, both in the frame `clip_frame` names (training's world frame, which is the
+/// FR3 base yawed by pi: `clip_frame` rotates base-frame vectors into it). Inputs and the
+/// result are in the base frame; the result's orientation is on the measured quaternion's
+/// hemisphere so a caller can difference the two directly.
+inline ForgeClippedTarget forge_clip_target(const Eigen::Vector3d& goal_position,
+                                            const Eigen::Quaterniond& goal_orientation,
+                                            const Eigen::Vector3d& measured_position,
+                                            const Eigen::Quaterniond& measured_orientation,
+                                            const Eigen::Quaterniond& clip_frame,
+                                            double position_threshold,
+                                            double rotation_threshold) {
+  ForgeClippedTarget out;
+  const Eigen::Quaterniond clip_frame_inverse = clip_frame.conjugate();
+
+  // (2.a) position, per axis
+  const Eigen::Vector3d delta = clip_frame * (goal_position - measured_position);
+  Eigen::Vector3d clipped;
+  for (int i = 0; i < 3; ++i) {
+    clipped(i) = std::clamp(delta(i), -position_threshold, position_threshold);
+    out.position_clipped = out.position_clipped || std::abs(delta(i)) > position_threshold;
+  }
+  out.position = measured_position + clip_frame_inverse * clipped;
+
+  // (2.b) orientation, per Euler angle
+  const Eigen::Vector3d current = isaac_euler_xyz(clip_frame * measured_orientation);
+  const Eigen::Vector3d desired = isaac_euler_xyz(clip_frame * goal_orientation);
+  double curr_roll = current.x(), curr_pitch = current.y(), curr_yaw = current.z();
+  double desired_roll = desired.x(), desired_pitch = desired.y(), desired_yaw = desired.z();
+
+  curr_yaw = forge_wrap_yaw(curr_yaw);
+  desired_yaw = forge_wrap_yaw(desired_yaw);
+  const double delta_yaw = desired_yaw - curr_yaw;
+  const double yaw = curr_yaw + std::clamp(delta_yaw, -rotation_threshold, rotation_threshold);
+
+  // get_euler_xyz already returns [0, 2 pi), so these two never fire; kept as written.
+  if (desired_roll < 0.0) {
+    desired_roll += 2.0 * M_PI;
+  }
+  if (desired_pitch < 0.0) {
+    desired_pitch += 2.0 * M_PI;
+  }
+  const double delta_roll = desired_roll - curr_roll;
+  const double roll = curr_roll + std::clamp(delta_roll, -rotation_threshold, rotation_threshold);
+
+  if (curr_pitch > M_PI) {
+    curr_pitch -= 2.0 * M_PI;
+  }
+  if (desired_pitch > M_PI) {
+    desired_pitch -= 2.0 * M_PI;
+  }
+  const double delta_pitch = desired_pitch - curr_pitch;
+  const double pitch =
+      curr_pitch + std::clamp(delta_pitch, -rotation_threshold, rotation_threshold);
+
+  out.orientation_clipped = std::abs(delta_yaw) > rotation_threshold ||
+                            std::abs(delta_roll) > rotation_threshold ||
+                            std::abs(delta_pitch) > rotation_threshold;
+  out.orientation = clip_frame_inverse * isaac_quat_from_euler_xyz(roll, pitch, yaw);
+  out.orientation.normalize();
+  if (out.orientation.coeffs().dot(measured_orientation.coeffs()) < 0.0) {
+    out.orientation.coeffs() = -out.orientation.coeffs();
+  }
+  return out;
+}
+
+}  // namespace franka_forge_cartesian_impedance

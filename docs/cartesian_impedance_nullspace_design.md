@@ -1,7 +1,7 @@
 # The nullspace term: why the example impedance law fails the distilled policy
 
 Companion to [cartesian_replay_blueprint.md](cartesian_replay_blueprint.md), which designed
-`CartesianTrajectoryReplayController` around Franka's
+`CartesianImpedanceController` around Franka's
 `CartesianImpedanceExampleController` law lifted verbatim. That was the right call for replaying
 recorded waypoints. It is the wrong law for running a policy distilled in Isaac Lab, and this
 document explains why, in enough detail to argue with.
@@ -12,20 +12,34 @@ Fixed and committed (branch `controller/forge-osc-law`):
 
 - the nullspace projector is now exact rather than damped (`nullspace_damping_lambda: 0.0`);
 - the rotation error carries the full angle rather than its half-angle sine
-  (`rotation_error: axis_angle`).
+  (`rotation_error: axis_angle`);
+- the nullspace term is mass-weighted and dynamically consistent (`mass_weighted_nullspace:
+  true`, A1b, 2026-10-01);
+- 2026-10-06: the Coriolis term is off (`coriolis_compensation: false`), the summed torque is
+  clamped at Forge's +-100 Nm (`torque_limit: 100.0`), and the policy interface changed so the
+  controller does what `_apply_action` does at every physics substep: it takes the **preclipped
+  goal** and the **live grasp frame on the flange** (`~/policy_goal`, `PolicyGoal`), re-clips
+  the goal against the measured grasp pose every 1 kHz cycle (`policy_clip_position_m`,
+  `policy_clip_orientation_rad`, in the training world frame `policy_clip_frame_yaw`), and runs
+  the law at that live frame instead of the frozen midpoint (sections 9.1 to 9.4 below, items
+  A3 and A4 in the todo).
 
-Both are controller parameters that **default to the example's behaviour**, so trajectory replay
-and every non-policy profile are untouched. Only the two policy profiles opt in.
+All are controller parameters that **default to the example's behaviour**, so trajectory replay
+and every non-policy profile are untouched. Only the two policy profiles opt in, and
+`run_hardware_rollout` refuses a controller that does not.
 
-Not yet done, and worth being precise about: the committed projector is the **exact orthogonal**
-one, not ForgeUltra's **mass-weighted dynamically consistent** one. Those are different (section
-4.2), and the gap between them is 0.40 N at the descent posture. That is item A1b in
-[policy_rollout_training_gap_todo.md](policy_rollout_training_gap_todo.md).
+What the controller still cannot match, stated in section 9: the arm armature (unreadable
+here), the hand's mass and geometry (one RH56, two derivations; a bench question), the
+finger-velocity part of the damping term, and the 1 kHz vs 120 Hz discretisation.
 
-And the task is not solved. The change moved the ros-sim rollout from "never leaves the `policy`
-phase" to "reaches `release_started` at a 63.3 deg turn, then fails `return_to_reset`". That is
-the same phase the MuJoCo-only loop fails in on the training plant, so the controller is no
-longer the thing in the way — but nothing here makes a nut get threaded ten times.
+And the task is not solved. The nullspace and rotation fixes moved the ros-sim rollout from
+"never leaves the `policy` phase" to "reaches `release_started`, then fails `return_to_reset`".
+That is the same phase the MuJoCo-only loop fails in on the training plant, so the controller is
+no longer the thing in the way — but nothing here makes a nut get threaded ten times. The
+2026-10-06 changes are verified in unit tests and by driving the rebuilt controller with
+hand-made goals in ros-sim (tool latched, target leading by exactly one clip, 66 mm closed to
+within 2 mm, hold after the stream stopped, bad goals rejected); no policy rollout has run on
+them yet.
 
 ## 1. The two laws
 
@@ -43,7 +57,7 @@ tau_null = (I - J^T Jbar) M u_null                       # M-weighted, dynamical
 tau      = clamp(tau_task + tau_null, +-100)
 ```
 
-The example law, [cartesian_impedance.hpp:126](../src/franka_trajectory_replay/include/franka_trajectory_replay/cartesian_impedance.hpp#L126):
+The example law, [cartesian_impedance.hpp:126](../src/franka_forge_cartesian_impedance/include/franka_forge_cartesian_impedance/cartesian_impedance.hpp#L126):
 
 ```text
 e        = [ p - p_d ; -R vec(q^-1 q_d) ]                # sin(theta/2) * axis
@@ -52,8 +66,11 @@ tau_null = (I - J^T pinv_lambda(J^T)) (k_n (q_0 - q) - 2 sqrt(k_n) qdot)
 tau      = tau_task + tau_null + tau_coriolis
 ```
 
-with `pinv_lambda` the SVD pseudo-inverse regularised by `lambda = 0.2`, no mass weighting, and
-no clamp (a torque **rate** limit instead).
+with `pinv_lambda` the SVD pseudo-inverse regularised by `lambda = 0.2`, no mass weighting, a
+Coriolis term training never had, and no clamp (a torque **rate** limit instead). Upstream of
+the law, training also re-decodes and re-clips the target every substep at the live grasp frame
+(section 9); the ROS stack used to clip once per tick in Python and anchor the law at a frozen
+midpoint.
 
 Gains, nullspace target and nullspace gains were already identical: 565 N/m, 28 Nm/rad,
 `D = 2 sqrt(K)`, `k_n = 10`, `kd_null = 2 sqrt(10) = 6.3246`, target = the M24 reset joints
@@ -177,7 +194,7 @@ the reset pose, where the nullspace error is zero by construction and the rotati
 *entire* 2.87 Nm discrepancy.
 
 `RotationErrorForm::kAxisAngle`
-([cartesian_impedance.hpp:71](../src/franka_trajectory_replay/include/franka_trajectory_replay/cartesian_impedance.hpp#L71))
+([cartesian_impedance.hpp:71](../src/franka_forge_cartesian_impedance/include/franka_forge_cartesian_impedance/cartesian_impedance.hpp#L71))
 builds the rotation block from `Eigen::AngleAxisd(q^-1 q_d)` instead, matching
 `forge_osc.get_pose_error(rot_error_type="axis_angle")`.
 
@@ -218,38 +235,60 @@ In the loop (`ros_sim-20260930-143512-493634`): `release_started` at a 63.3 deg 
 fix was needed in the same breath: with the proxy inverted the cycle could never advance, so no
 controller change could have produced a readable result.
 
-## 9. Still different from training
+## 9. What was still different, and what remains
 
-In the order worth doing them:
+Done since the first version of this document:
 
-1. **A1b, the mass weighting.** On hardware the matrix already exists:
-   `franka_semantic_components::FrankaRobotModel::getMassMatrix()`. For the `dh` path that
-   ros-sim uses there is no mass model; pinocchio is available in the container (C++ config under
-   `/opt/ros/jazzy`) and `get_robot_description()` hands the controller the URDF at configure
-   time, so a `pinocchio::Model` built once plus `crba` per cycle is allocation-free and
-   realtime-safe. Use the **full tree**, not a KDL chain: Isaac's `arm_mass_matrix` is the arm
-   block of the whole articulation and so carries the hand's inertia through the finger joints.
-   Open question, recorded rather than guessed: whether the arm armature belongs on the diagonal.
-   `assets/fr3_inspirehand/robot.py` sets `armature` for hand joints only, so the arm keeps
-   whatever the USD carries, and the USD is a git-lfs pointer in this checkout. MuJoCo uses 0.195
-   (joints 1-4) and 0.074 (joints 5-7).
-2. **Coriolis.** `control.py` has no Coriolis term; the hardware policy profile sets
-   `coriolis_compensation: true`, adding one training never had. Measured on the training scene:
-   0.08 Nm mean / 0.21 Nm peak at training's 0.17 rad/s, but 0.69 / 1.9 Nm at 0.5 rad/s, which is
-   the release and return phases. One line.
-3. **The compliance centre.** Training applies the wrench at the live thumb/index midpoint;
-   hardware uses that midpoint frozen at the threading grip, 3-23 mm off. The cheap fix is to
-   send the live midpoint — `hardware.py` already computes it — in the policy command and let the
-   controller shift the Jacobian to it instead of using the static `tool_offset_xyz`.
-4. **The decode rate.** Python decodes `bolt_tip + a*0.05` and clips once per 15 Hz tick; Isaac
-   re-decodes and re-clips against the *live* grasp frame every 120 Hz substep, 20 mm / 0.097 rad
-   each, so the target creeps across the tick instead of arriving at once. Matching this means
-   sending the 9-D action and the z-transport instead of a pose, and giving the controller the
-   bolt tip and the grasp-frame construction. It is the only item here that changes the interface
-   between the policy runtime and the controller.
-5. **`torque_rate_limit: 1.0`** (1 Nm per 1 ms cycle) is a ROS-side safety the training plant
-   never had. Keep it, but log when it binds — with an exact OSC it is the most likely thing left
-   to distort a step response.
+1. **A1b, the mass weighting** (2026-10-01). `forge_nullspace_torque` projects with
+   `I - J^T Jbar^T` and weights the joint PD by `M`. On hardware `M` is
+   `FrankaRobotModel::getMassMatrix()`; on the `dh` path it is a pinocchio `crba` over the robot
+   description with the hand locked (`arm_mass_model.hpp`), which matched MuJoCo's arm block to
+   8e-04 kg m^2. The **arm armature** is still open: `robot.py` sets `armature` for the hand
+   joints only, the arm keeps whatever `fr3_no_hand.usd` carries, and that file is a git-lfs
+   pointer in both checkouts on this machine (no `git-lfs` installed to pull it). Both profiles
+   run `arm_armature: [0 x7]`; MuJoCo uses 0.195 (joints 1-4) and 0.074 (joints 5-7). Read it on
+   the training machine.
+2. **Coriolis** (2026-10-06). `control.py` has no Coriolis term; the hardware profile used to add
+   one (0.08 Nm mean at training's 0.17 rad/s, 0.69 / 1.9 Nm at the 0.5 rad/s of release and
+   return). Both profiles now set `coriolis_compensation: false`, the runner refuses `true`, and
+   `activate_policy_controller.py` reports it. Gravity stays libfranka's, as it was Isaac's
+   `disable_gravity`.
+3. **The compliance centre** (2026-10-06, A3). Every `PolicyGoal` carries `tool_in_flange`, the
+   live grasp frame on the flange (`hardware.grasp_in_flange`, from the training hand
+   kinematics and the reset z transport), and the controller measures its pose, clips and
+   differentiates the law at that frame. The static `tool_offset_xyz` is now only the
+   activation hold. `retarget_grasp_pose_to_controlled_pose` is gone; the goal is the grasp
+   goal. `report.json`'s `grasp_controlled_offset_m` is the largest distance between the
+   controller's measured point and the live grasp over the run, which should be sampling skew.
+4. **The decode rate** (2026-10-06, A4). The runner sends `_apply_action` steps (0) and (1), the
+   preclipped `bolt_tip + a*0.05` goal (`hardware.policy_goal_base`); the controller runs step
+   (2), the component-wise 20 mm position clip and the per-Euler-angle 0.097 rad clip with
+   Isaac's yaw wrap (`forge_clip_target`, `isaac_euler_xyz`, `isaac_quat_from_euler_xyz`),
+   against the measured grasp pose on every cycle, in the training world frame
+   (`policy_clip_frame_yaw: pi`, since the Euler clip is not frame-invariant in general). The
+   port is pinned against `forge_osc.decode_action_target` on six random cases to 1e-12
+   (`ForgeDecode.clip_matches_decode_action_target`). The `max_policy_step` guard does not
+   apply to goals: the clip bounds the executed step from the *measured* pose every cycle,
+   which is the stronger property; the workspace box bounds the goal.
+5. **The +-100 Nm clamp** (2026-10-06). `torque_limit: 100.0`, `clamp_torque`, before the rate
+   limiter. It never binds on an FR3; it is there so the law reads line for line.
+
+Still different, and why each is left:
+
+- **`torque_rate_limit: 1.0`** (1 Nm per 1 ms cycle) is libfranka's own `kMaxTorqueRate`
+  (1000 Nm/s), which `franka_hardware` enforces on the commanded torque anyway. The training
+  plant had no such bound. Keep it; with an exact OSC it is the most likely thing left to
+  distort a step response, so look at `tau_command` against `tau_task + tau_nullspace` in
+  `cartesian_state` when a step looks slow.
+- **The damping velocity.** Training damps `0.5 (v_thumb_tip + v_index_tip)`, PhysX body
+  velocities that include the finger joints' own motion; the controller damps `J qdot` at the
+  grasp point, the arm-only part. The difference is the finger contribution, up to
+  `2 sqrt(565) = 47.5 Ns/m` times the midpoint's finger-driven speed. Matching it needs hand
+  joint velocities (C1), which the driver does not publish.
+- **The rate.** Training re-decodes at 120 Hz in lockstep with the 15 Hz policy; the controller
+  re-clips at 1 kHz against commands that arrive asynchronously. Not a law difference.
+- **The hand's mass and geometry** (D1) and **the end-effector load in Desk** (section 10):
+  bench questions, not code.
 
 ## 10. Hardware notes
 
@@ -262,7 +301,12 @@ In the order worth doing them:
   is now genuinely free; that is the change working, not a fault.
 - `apps/operations/activate_policy_controller.py` puts the arm under this controller with no
   policy in the loop, refuses to run unless the law is the ForgeUltra one, holds the activation
-  pose, and hands the arm back on exit. Use it before trusting the student with the arm.
+  pose, and hands the arm back on exit. Use it before trusting the student with the arm. It
+  holds about the static `tool_offset_xyz`; the live grasp frame only arrives with policy goals.
+- After a policy goal the controlled frame stays where that goal put it, through a watchdog
+  stop, an abort and the idle hold, until deactivation. That is deliberate: switching back to
+  the static tool at the moment the stream stops would move the measured point and make the
+  hold jump.
 
 ## 11. Reproducing every number here
 
@@ -275,10 +319,10 @@ each is a few dozen lines and rebuilding one from the formulas above is faster t
 Unit tests pin the two behaviours:
 
 - `ForgeCartesianImpedance.axis_angle_error_carries_the_full_angle`
-  ([test_cartesian_impedance.cpp:301](../src/franka_trajectory_replay/test/test_cartesian_impedance.cpp#L301))
+  ([test_cartesian_impedance.cpp:301](../src/franka_forge_cartesian_impedance/test/test_cartesian_impedance.cpp#L301))
   checks `|rot| == theta` against the example's `sin(theta/2)` at five angles;
 - `ForgeCartesianImpedance.lambda_zero_keeps_the_nullspace_torque_out_of_the_task_space`
-  ([test_cartesian_impedance.cpp:319](../src/franka_trajectory_replay/test/test_cartesian_impedance.cpp#L319))
+  ([test_cartesian_impedance.cpp:319](../src/franka_forge_cartesian_impedance/test/test_cartesian_impedance.cpp#L319))
   checks the static leak is below 1e-9 at `lambda = 0` and at least 20x larger at 0.2;
 - `ExampleCartesianImpedance.matches_upstream_update_over_a_moving_sequence` still passes, which
   is what guarantees the defaults are byte-identical to upstream.
@@ -287,9 +331,10 @@ Unit tests pin the two behaviours:
 
 | what | where |
 |---|---|
-| the law, both variants | [cartesian_impedance.hpp](../src/franka_trajectory_replay/include/franka_trajectory_replay/cartesian_impedance.hpp) — rotation error L71, nullspace L113-130 |
-| parameter declaration | [cartesian_trajectory_replay_controller.cpp:1064](../src/franka_trajectory_replay/src/cartesian_trajectory_replay_controller.cpp#L1064) |
-| status fields | same file, L680 (`nullspace_damping_lambda`, `rotation_error`) |
+| the law, both variants | [cartesian_impedance.hpp](../src/franka_forge_cartesian_impedance/include/franka_forge_cartesian_impedance/cartesian_impedance.hpp) — rotation error, `forge_nullspace_torque`, `clamp_torque`, and the decode (`forge_clip_target` and the Isaac Euler helpers) |
+| the policy goal interface | `PolicyGoal.msg` in `franka_forge_cartesian_impedance_msgs`; `policy_goal_callback` and the `kPolicy` sampler branch in [cartesian_impedance_controller.cpp](../src/franka_forge_cartesian_impedance/src/cartesian_impedance_controller.cpp) |
+| parameter declaration | `on_init` in the same file |
+| status fields | `publish_status` in the same file (`nullspace_damping_lambda`, `rotation_error`, `coriolis_compensation`, `torque_limit`, `policy_clip_*`, `tool_in_flange`, `policy_goal_active`) |
 | hardware profile | [controllers_policy.yaml](../src/inspire_franka_trajectory_replay/config/controllers_policy.yaml) |
 | ros-sim profile | [controllers_sim_policy.yaml](../src/inspire_franka_trajectory_replay/config/controllers_sim_policy.yaml) |
 | the rollout's parameter check | `run_hardware_rollout` in [hardware.py](../apps/policy_rollout/policy_rollout/hardware.py) |

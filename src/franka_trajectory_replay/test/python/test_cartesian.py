@@ -103,7 +103,7 @@ def test_transform_error():
 
 
 def test_trajectory_message_packs_the_stream():
-    pytest.importorskip('franka_trajectory_replay_msgs.msg')
+    pytest.importorskip('franka_forge_cartesian_impedance_msgs.msg')
     stream = cartesian.from_joint_stream(prepare(synthetic(amplitude=0.2), rate=1000))
     message = cartesian.trajectory_message(stream, 'fr3_link0', send_rate=100)
     assert message.header.frame_id == 'fr3_link0'
