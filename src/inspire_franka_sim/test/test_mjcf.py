@@ -213,3 +213,102 @@ def test_every_actuator_is_a_plain_torque_source():
     for i in range(model.nu):
         assert model.actuator_gaintype[i] == mujoco.mjtGain.mjGAIN_FIXED
         assert model.actuator_biastype[i] == mujoco.mjtBias.mjBIAS_NONE
+
+
+# -- the second hand description ---------------------------------------------
+#
+# The workspace carries two independent derivations of the same Inspire RH56.
+# `inspire_hand_right.xml` is dex-urdf's, from Inspire's published STEP files;
+# `inspire_hand_right_training.xml` is ForgeUltra's, from the official Tiangong
+# 2.0 Pro URDF, which is the geometry the student policy was distilled on.
+# They are dimensionally the same hand but place the thumb's follower joints'
+# zero at different flexions, so the training hand pinches to 12 mm where the
+# dex-urdf one leaves 55 mm at the same command.
+#
+# What these tests pin is the contract that lets the plant be swapped without
+# touching anything else: identical joint names, identical actuators, and the
+# training asset's own couplings rather than the driver's.
+
+TRAINING_COUPLINGS = {
+    "index_intermediate_joint": ("index_proximal_joint", 1.1169, 0.0),
+    "middle_intermediate_joint": ("middle_proximal_joint", 1.1169, 0.0),
+    "ring_intermediate_joint": ("ring_proximal_joint", 1.1169, 0.0),
+    "pinky_intermediate_joint": ("pinky_proximal_joint", 1.1169, 0.0),
+    "thumb_intermediate_joint": ("thumb_proximal_pitch_joint", 1.1425, 0.0),
+    # Chained off the intermediate, where dex-urdf drives it straight off the
+    # pitch. This is upstream's own graph, not a re-derivation.
+    "thumb_distal_joint": ("thumb_intermediate_joint", 0.7508, 0.0),
+}
+
+TRAINING_SCENES = (
+    "inspire_hand_on_flange_training.xml",
+    "inspire_franka_policy_training_scene.xml",
+)
+
+
+@pytest.mark.parametrize("scene", TRAINING_SCENES)
+def test_the_training_hand_scenes_compile(scene):
+    load(scene)
+
+
+def test_the_training_hand_asset_has_no_pending_keyframe():
+    # Same rule as the dex-urdf hand: keyframes stay pending through <attach>,
+    # and the flange model nests this file two levels deep.
+    root = ET.parse(MJCF_DIR / "inspire_hand_right_training.xml").getroot()
+    assert root.find("keyframe") is None
+
+
+def test_the_two_hand_models_are_interchangeable():
+    # config/pids.yaml, the forward command controller, the sim bridge and
+    # inspire_hand_driver.kinematics all address the hand by joint name. The
+    # geometry may differ between the two descriptions; the names may not.
+    workspace = joint_names(load("inspire_hand_on_flange.xml"))
+    training = joint_names(load("inspire_hand_on_flange_training.xml"))
+    assert training == workspace
+
+
+def test_the_training_hand_actuates_only_the_driven_joints():
+    model = load("inspire_hand_on_flange_training.xml")
+    actuated = {
+        joint_names(model)[model.actuator_trnid[i, 0]] for i in range(model.nu)
+    }
+    assert actuated == set(HAND_DRIVEN)
+
+
+def test_the_training_hand_keeps_the_training_couplings():
+    # These are deliberately NOT the driver's ratios. The driver converts open
+    # ratios to radians and the rollout converts them straight back, so the
+    # plant is commanded in the policy's own joint angles whatever coupling it
+    # carries -- and the coupling that belongs with this geometry is the one
+    # ForgeUltra trained against.
+    model = load("inspire_hand_right_training.xml")
+    names = joint_names(model)
+    found = {}
+    for i in range(model.neq):
+        assert model.eq_type[i] == mujoco.mjtEq.mjEQ_JOINT
+        assert model.eq_data[i][2:5] == pytest.approx([0, 0, 0]), "coupling is not affine"
+        found[names[model.eq_obj1id[i]]] = (
+            names[model.eq_obj2id[i]], model.eq_data[i][1], model.eq_data[i][0]
+        )
+    assert found == pytest.approx(TRAINING_COUPLINGS)
+    assert found != pytest.approx(COUPLINGS), "the two descriptions must differ"
+
+
+def test_the_training_hand_sits_on_the_flange_where_training_put_it():
+    # Anchors measured on assets/fr3_inspirehand/fr3_inspirehand_replay.xml,
+    # the scene policy_rollout.mujoco_scene builds the policy's grasp frame
+    # from. If the vendored copy drifts, the plant and the policy's own
+    # kinematics stop agreeing about where the fingers are.
+    model = load("inspire_hand_on_flange_training.xml")
+    data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+    flange = model.body("fr3_link8").id
+    rotation = data.xmat[flange].reshape(3, 3)
+    origin = data.xpos[flange]
+    expected = {
+        "thumb_proximal_yaw_joint": (-0.01696, -0.02045, 0.07635),
+        "index_proximal_joint": (0.000285, -0.020275, 0.146946),
+    }
+    for name, reference in expected.items():
+        anchor = rotation.T @ (data.xanchor[model.joint(name).id] - origin)
+        assert anchor == pytest.approx(reference, abs=1.0e-5)

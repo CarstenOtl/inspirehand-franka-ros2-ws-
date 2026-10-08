@@ -52,6 +52,7 @@ install(
 install(
   PROGRAMS
     scripts/make_hand_mjcf.py
+    scripts/make_training_hand_mjcf.py
     scripts/inspire_hand_sim_bridge.py
     scripts/mujoco_vis_node.py
     scripts/policy_camera_relay.py
