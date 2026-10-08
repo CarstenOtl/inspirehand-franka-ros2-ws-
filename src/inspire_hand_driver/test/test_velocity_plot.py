@@ -153,3 +153,33 @@ def test_one_phase_alone_still_plots(tmp_path, log):
     out = str(tmp_path / "one.png")
     plot(one, out, "one")
     assert Path(out).exists()
+
+
+def test_the_counts_per_second_label_ignores_the_still_tail(tmp_path, log):
+    """A rate averaged over a long still tail is one the finger never travelled at.
+
+    It is also the number held against Inspire's 800 ms specification, so
+    diluting it turns a hand that is faster than spec into one that looks
+    slower.
+    """
+    pytest.importorskip("matplotlib")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    closing = [s for s in read_log(log) if s.phase == "closing"]
+    out = str(tmp_path / "titled.png")
+    plot(closing, out, "titles")
+    import matplotlib.pyplot as plt
+
+    # Re-derive what the label should say, from the series itself.
+    series = closing[0]
+    seconds = series.seconds
+    moving = [
+        i for i in range(1, len(series.count)) if series.count[i] != series.count[i - 1]
+    ]
+    elapsed = seconds[moving[-1]] - seconds[moving[0] - 1]
+    span = max(series.count) - min(series.count)
+    whole = seconds[-1]
+    assert elapsed < whole, "the recording has a still tail to be excluded"
+    assert span / elapsed > span / whole, "excluding it gives the higher, true rate"
+    plt.close("all")

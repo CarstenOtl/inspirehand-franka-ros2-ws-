@@ -153,8 +153,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-image-transport \
         ros-${ROS_DISTRO}-rqt-gui-py \
         ros-${ROS_DISTRO}-rqt-image-view \
-        ros-${ROS_DISTRO}-rqt-plot \
-        python3-pyqtgraph \
         ros-${ROS_DISTRO}-apriltag \
         python3-matplotlib \
         python3-opencv \

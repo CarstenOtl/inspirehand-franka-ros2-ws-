@@ -165,11 +165,23 @@ def plot(series_list: Sequence[Series], out: str, title: str) -> str:
         counts.set_ylabel("ANGLE count")
         counts.grid(alpha=0.25)
         span = max(series.count) - min(series.count)
+        # Over the part that moved, not the whole recording: a leg with a long
+        # still tail would otherwise report a rate the finger never travelled
+        # at, and that rate is exactly what gets held against the manual.
+        moving = [
+            index
+            for index in range(1, len(series.count))
+            if series.count[index] != series.count[index - 1]
+        ]
+        elapsed = (
+            seconds[moving[-1]] - seconds[moving[0] - 1] if len(moving) > 1 else 0.0
+        )
         counts.set_title(
             f"{span} counts of travel"
             + (
-                f", {span / max(1e-9, seconds[-1]):.0f} counts/s"
-                if seconds and seconds[-1] > 0
+                f", {span / elapsed:.0f} counts/s while moving"
+                f" ({1000.0 / (span / elapsed):.2f} s for full travel)"
+                if elapsed > 0
                 else ""
             ),
             fontsize=9,

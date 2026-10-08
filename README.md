@@ -1030,10 +1030,11 @@ So the velocity is a backward difference of the ANGLE readings, and its quality
 follows from that:
 
 - **One ANGLE count is the floor.** The registers hold 0..1000 across the whole
-  range, so one count is 1.5 mrad on a finger, and at 50 Hz one count per
-  sample is **0.073 rad/s**. Nothing finer than that exists to report. A finger
-  creeping below that rate flips a count only every few samples, so the raw
-  difference arrives as bursts of one count separated by exact zeros.
+  range, so one count is 1.5 mrad on a finger, and at the ~41 Hz this actually
+  publishes at on hardware, one count per sample is **0.062 rad/s**. Nothing
+  finer than that exists to report. A finger creeping below that rate flips a
+  count only every few samples, so the raw difference arrives as bursts of one
+  count separated by exact zeros.
 - **So it is filtered**, one pole at `velocity_filter_hz` (10 Hz by default),
   which fills those gaps in and costs 16 ms. `velocity_filter_hz:=0` gives the
   raw difference; both the filter and `publish_velocity` retune live with
@@ -1041,12 +1042,14 @@ follows from that:
   move with and without it, and relaunching in between loses the speed
   registers and the force tare.
 - **It is clamped** to the rate `SPEED_SET` allows, so a dropped or repeated
-  sample cannot surface as a non-physical spike. The clamp is deliberately
-  loose where the speed is unknown: it can miss a spike, never erase real
-  motion. The driver logs the ceiling it is using at startup, and
-  `inspire_hand_probe` now reads `SPEED_SET` and `DEFAULT_SPEED_SET` — worth
-  knowing, because with `startup_speed:=0` nothing in this stack writes a speed
-  and the hand runs on whatever is in its own flash.
+  sample cannot surface as a non-physical spike. The intent was a clamp that
+  can miss a spike but never erase real motion; **on hardware it erases real
+  motion**, because the bound it is computed from is wrong — see the measured
+  figures below before trusting a fast move. The driver logs the ceiling it is
+  using at startup, and `inspire_hand_probe` now reads `SPEED_SET` and
+  `DEFAULT_SPEED_SET` — worth knowing, because with `startup_speed:=0` nothing
+  in this stack writes a speed and the hand runs on whatever is in its own
+  flash.
 
 ```bash
 # Live: every DOF's position and speed, bars either side of zero. Compliant by
@@ -1126,46 +1129,13 @@ matplotlib's Agg backend; this image has no X). matplotlib is already in the
 image and is declared as an exec_depend, but the tool degrades to printing its
 figures if it is ever missing.
 
-**A live plot**, for watching rather than measuring:
-
-```bash
-ros2 run rqt_plot rqt_plot /inspire_hand/joint_states/velocity[3]
-```
-
-`rqt_plot` and `python3-pyqtgraph` were installed into the running container on
-2026-10-08 and added to `docker/Dockerfile`, so a rebuild keeps them. Two
-things about it are worth knowing before you conclude it is broken:
-
-- **A newly installed rqt plugin needs one `--force-discover` run** to reach
-  the plugin cache, or it fails with `found no plugin matching
-  "rqt_plot.plot.Plot"`. Already done; only needed again after installing
-  another rqt plugin.
-- **rqt_plot remembers its axis limits in `~/.config/ros.org/rqt_gui.ini`**,
-  and it plots against ROS time, so the x axis sits around 1.8e9. A run that
-  saved `x_limits=0, 1` therefore leaves every later run showing an empty
-  window with no error at all — the data is off screen by a billion. If a plot
-  ever comes up blank, that file is the first place to look; the keys are
-  `…plugin\x_limits` and `…plugin\y_limits` under the `rqt_plot__Plot`
-  perspective. Deleting those two lines fixes it and keeps the other
-  perspectives, which `--clear-config` would wipe.
-
-These two warnings are normal and appear on every launch: `QStandardPaths:
-XDG_RUNTIME_DIR not set` (no systemd user session in the container) and
-`QLayout::removeWidget: Cannot remove a null widget` (rqt_plot swapping in its
-plot widget at startup).
-
-`[3]` is the index finger: `joint_states` is ordered as
-`kinematics.ALL_JOINTS`, six driven DOF first in register order (pinky, ring,
-middle, index, thumb bend, thumb rotation), then the six followers. PlotJuggler
-(`ros-jazzy-plotjuggler-ros`) is the better tool of the two for this — it takes
-the whole `JointState` at once and can plot position against velocity — at a
-larger install.
-
 The sweep is the honest answer to "how accurate is it", because a derived rate
 cannot be compared against a measurement of the same quantity — there is none.
 What it compares against instead: a **centred** difference of the same
-positions (strictly better — no half-sample lag, and it averages two intervals
-of quantisation noise), the **travel** the positions record over the move
+positions (better in principle — no half-sample lag, and it averages two
+intervals of quantisation noise — though see the caveat below about what
+uneven register updates do to it on real hardware), the **travel** the
+positions record over the move
 (the integral of a correct rate is the distance, so an integral that comes up
 short is a filter or a clamp eating real motion), **Inspire's own
 specification** (manual 2.4.8: full travel in 800 ms at `SPEED_SET` 1000, which
@@ -1183,11 +1153,34 @@ The clamp itself is published, per channel, as `speed_ceiling` and
 moves it, so the startup log stops being the answer the moment anything writes
 a speed, and from outside a clamped reading and a slow finger look identical.
 
-**Not verified on hardware yet.** Against the mock at 50 Hz the reading tracks
-the positions to 0.08–0.09 rad/s once the lag is out — about one ANGLE count
-per sample, i.e. as well as the register allows — keeps the travel to within
-0.3 %, and lags 24.0 ms, against 26 ms predicted (half a sample plus the 10 Hz
-pole).
+**Measured on hardware, 2026-10-08** (index finger, `--sweep --channel 4`,
+`startup_speed` 0 so the hand ran on its own flash default):
+
+| | measured | note |
+|---|---|---|
+| standstill | 0.000 rad/s on all four fingers; 0.017 and 0.034 on thumb bend and thumb rotation | The thumb channels jitter by a count at rest. Treat anything under 0.034 rad/s as no motion. |
+| sample interval | 23.5–24.3 ms, ±1.9, max 31 | **Not the 20 ms `publish_rate_hz:=50` asks for** — about 41 Hz. The RS485 round trip with `state_extras_divisor:=1` does not keep up. |
+| resolution | 0.060–0.062 rad/s per ANGLE count | One count per 24 ms sample. |
+| lag | 17 ms closing, 26 ms opening | Against ~28 ms predicted at this rate (half a sample plus the 10 Hz pole). |
+| full travel | **0.61 s**, both directions, 1637 and 1651 counts/s | Inspire's manual 2.4.8 says 800 ms at `SPEED_SET` 1000. This hand is ~30 % faster than its own specification. |
+
+**The speed clamp is wrong, and it is eating real motion.** That last row is
+not a curiosity. `FULL_TRAVEL_TIME_S = 0.8` makes the clamp 1.837 rad/s on a
+finger, and this hand sustains about 2.3 rad/s, so a third of every fast move
+is clipped off: the sweep reports 35 % of each leg held at the ceiling and the
+integral of the reported rate comes up **34–38 % short of the distance the
+positions record**. Until that constant is corrected, `JointState.velocity` is
+trustworthy for slow motion and wrong at speed — in the direction of reporting
+too little. The sweep's own verdict fails on exactly this, with the evidence.
+
+**One caveat about the reference.** The ANGLE registers do not update evenly
+against a 24 ms sample: the per-sample step is a median of 40 counts but ranges
+1 to 91, with periodic double steps where one update was effectively missed.
+That makes the centred difference spiky — it reads a peak of 4.0 rad/s where
+the sustained rate is 2.3 — so on hardware the reference is a good measure of
+*average* rate and a poor one of instantaneous rate. The driver's filtered
+output is the smoother of the two. This is the one failure mode the sweep
+cannot see directly, since rate and reference come from the same registers.
 A mock has no sensor noise and a perfectly regular bus, so the two figures that
 can only come from the real hand are the **standstill floor** (zero on the
 mock; on hardware it is whatever the ANGLE registers jitter by, and it is the
