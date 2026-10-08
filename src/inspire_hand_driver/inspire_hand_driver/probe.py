@@ -13,9 +13,11 @@ import sys
 
 from .protocol import (
     REG_ANGLE_ACT,
+    REG_DEFAULT_SPEED_SET,
     REG_ERROR,
     REG_FORCE_ACT,
     REG_HAND_ID,
+    REG_SPEED_SET,
     REG_STATUS,
     REG_TEMP,
     HandCommunicationError,
@@ -91,6 +93,14 @@ def main(argv=None) -> int:
         ("ERROR", REG_ERROR, 3),
         ("STATUS", REG_STATUS, 3),
         ("TEMP", REG_TEMP, 3),
+        # The speed the hand is actually running at. Nothing in this stack
+        # writes SPEED_SET unless asked to, so DEFAULT_SPEED_SET out of flash
+        # is usually what governs finger rate -- and it is the only place that
+        # value can be read. Manual 2.4.8: 1000 means full travel in 800 ms
+        # unloaded. These are SET registers, write-only on some firmware, so
+        # an ERROR line here is a firmware trait rather than a fault.
+        ("SPEED_SET", REG_SPEED_SET, 6),
+        ("DEF_SPEED", REG_DEFAULT_SPEED_SET, 6),
     ):
         try:
             print(f"  {label:10s} = {transport.read_registers(addr, count)}")

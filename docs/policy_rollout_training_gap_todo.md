@@ -87,6 +87,107 @@ mass (D1). **Verified in gtest and by driving the controller with scripted goals
 (no policy in the loop); no ros-sim or hardware policy rollout has run on this interface yet**,
 so the "done when" tests of A3 and A4 below are still owed.
 
+2026-10-08, that rollout happened, and the descent is solved. `ros_sim-20261008-080700-477622`
+is the first policy rollout on `~/policy_goal` (both 10-07 attempts predate ac1db2b): 1500
+steps, 100.2 s of simulated time at 15 Hz, median period 66 ms, 24 missed deadlines, live
+preflight 20 ms against the 60 ms budget, no controller fault and no watchdog. A3 and A4 are
+ticked on its evidence; the paragraph above is superseded on that point.
+
+**The arm now reaches the nut and holds the policy's goal.** The grasp descends from z 0.264 m
+to 0.110 m within 8.3 s (bolt tip 0.102 m) and stays there, `|goal - grasp|` falls from 36 mm
+to 5-9 mm against the README's "about 1 cm in a healthy stack", and the wrist turns to 47.7 deg
+by 8.3 s. The 09-14 descent stall is closed, and so is the suspicion over the controller law.
+
+**The nut still does not turn, and the hand geometry is why.** Measured nut twist over the whole
+run is 0.016 deg, in the loosening direction, so the 55 deg release gate never fires: the run
+stays in `policy` for all 1500 steps and completes 0 cycles. At the hand postures this run
+actually commanded, the thumb-to-index tip separation is
+
+| model | min | median | max | sampled ticks <= 41.6 mm |
+|---|---|---|---|---|
+| training asset (what the student was distilled on) | 18.4 mm | 38.3 mm | 71.0 mm | 124 of 150 |
+| workspace URDF (what ros-sim simulates), 2.36x | 60.4 mm | 90.3 mm | 123.3 mm | 0 of 150 |
+
+An M24 nut is 36 mm across flats and 41.6 mm across corners. The training hand would be closed
+on it in 83 % of the sampled ticks; the workspace hand never comes within 19 mm of touching it,
+at any tick of the run. The index joint reached E1's measured contact threshold of 0.565 rad in
+3 of 1500 ticks (0.2 %). So D1 is no longer a fidelity item to schedule behind the others -- it
+is the binding constraint on ros-sim completing a cycle, and it needs the ruler.
+
+One caveat when reading this recording: `trajectory_progress` saturates at 1.0 at t 64.6 s
+(step 966) and no completed cycle ever rebased it, so the last 35 s are outside the trained
+horizon and are not policy behaviour.
+
+**2026-10-08, later: the paragraph above is wrong about the cause, and C1 is done.** Fingertip
+separation was the wrong test. The pads that reach the nut are the finger *segments*, not the tip
+frames -- E1's own contact measurement says so (14.6 N across `thumb_distal` and
+`index_intermediate`), and this morning's reasoning ignored it. Two rollouts after C1 turned the
+nut, which a hand that cannot touch it could not do:
+
+| run | hand velocities | nut turn over the run |
+|---|---|---|
+| `20261008-080700` | zeros | +0.016 deg |
+| `20261008-125849` | published | -37.8 deg |
+| `20261008-130221` | published | -43.6 to -61.4 deg |
+
+So the hand geometry is not what stops a cycle, and D1 goes back to being a fidelity item
+rather than the blocker. Three things that are now the open questions instead.
+
+- **The policy unscrews the nut in ros-sim.** `turn_progress_rad` is negative throughout, and
+  the axial coordinate rises from 7.66 to 8.02 mm, which is the loosening direction on E1's own
+  convention (it measured a tightening turn as negative twist, nut descending). The release gate
+  wants +55 deg, so it can never fire while the nut backs out. The sign handling in the code is
+  self-consistent -- `THREADING_DIRECTION_SIGN` is applied in `ThreadPairClient` -- so this is
+  the motion, not a bookkeeping error.
+- **Do not attribute the turn to C1 yet.** The commanded hand postures of the 08:07 and 12:58
+  runs are nearly identical (index mean 0.404 vs 0.396 rad, thumb yaw 1.213 vs 1.207), so the
+  velocity signal did not visibly change what the hand was told to do. With one run on each side
+  and a plant the status section above already calls non-reproducible, contact luck is not ruled
+  out.
+- **`/reset_thread` does not actually reset the nut between runs.** The service answers success
+  and the plugin's `reset_thread` writes both qpos values, but `20261008-130221` began at -43.6
+  deg, exactly where its predecessor stopped. Most likely the hand is still gripping the nut when
+  the reset lands, so contact drags it straight back. Until that is settled, any ros-sim
+  comparison needs a fresh `sim_policy.launch.py`, not a second `run_policy_rollout.py`.
+
+### C1. Publish hand joint velocities from the Inspire driver  [should]
+
+Done 2026-10-08, in `inspire_hand_driver`. The hand has no speed sensor -- its register map
+exposes POS_ACT, ANGLE_ACT, FORCE_ACT, CURRENT, ERROR, STATUS and TEMP, and SPEED_SET is a
+commanded limit -- so the driver differences the ANGLE readings it already takes at 50 Hz and
+fills `JointState.velocity` for all twelve joints, followers at their coupling ratio and zero
+wherever a coupling clamps. Nothing downstream changed: `hand_joint_state_to_arrays` already
+read the field with a zero fallback.
+
+Why a backward difference. Checked against the reference episode's own recorded PhysX
+velocities: differencing the positions recovers them at r 0.96 (thumb yaw) and 0.97 (index)
+with a central difference, and essentially all of the backward difference's apparent error is
+its half-sample lag -- correcting for that lag lifts it to 0.978 and 0.975. That lag is 10 ms at
+50 Hz, so the causal form costs little and avoids holding a sample back. Thumb pitch recovers
+poorly (r 0.48) because its true velocity is mostly contact chatter that no position difference
+can see; it also carries the least signal.
+
+Two guards, both from measurement rather than taste. The rate is clamped to what the hand was
+told it may travel, via the manual's own calibration (2.4.8: speed 1000 crosses the full range
+in 800 ms unloaded), which bounds the non-physical spikes a raw difference throws at slew steps.
+And a one-pole 10 Hz filter is on by default, not for the size of the quantisation error but its
+shape: one count is 1.5e-3 rad on a finger, so a slow creep flips a count only every few samples
+and the raw difference comes out as bursts separated by exact zeros. At 0.05 rad/s that is zero
+in a third of samples with a 0.034 spread; filtered it is a steady 0.050 with 0.010, unbiased at
+every rate tested, for 16 ms of lag.
+
+Done when, met. `joint_velocity[:, 7:10]` in `20261008-125849` is non-zero with mean magnitudes
+0.074 / 0.041 / 0.037 rad/s against training's 0.126 / 0.040 / 0.317. Thumb pitch matches;
+thumb yaw and index read low because that run moved the fingers less than the training episode
+did, not because the estimate is attenuated.
+
+Also added, for the bench: the driver reads SPEED_SET and DEFAULT_SPEED_SET at startup and logs
+both with the resulting clamp, and `inspire_hand_probe` dumps them too. That is how to find the
+speed the hand is really running at -- nothing in this stack writes SPEED_SET unless asked
+(`startup_speed` defaults to 0), so the flash DEFAULT_SPEED_SET at register 1032 is what governs
+finger rate, and it was previously unknown. Both are SET registers and write-only on some
+firmware, so a zero or an error there is a firmware trait; a zero is never used as a clamp.
+
 ---
 
 ## Status, 2026-10-01: three ros-sim runs with A1b
@@ -337,7 +438,7 @@ in `test_cartesian_impedance.cpp`.
 
 ### A3. Anchor the compliance at the live fingertip midpoint instead of a fixed tool offset  [should]
 
-- [x] ported 2026-10-06; the "done when" below needs a rollout
+- [x] done 2026-10-08
 
 Evidence. Training applies the wrench at the live thumb/index midpoint, which travels about
 20 mm over a threading cycle. The policy profile froze it at the threading grip
@@ -358,9 +459,16 @@ Done when. `grasp_controlled_offset_m` in `report.json` (now the largest distanc
 controller's measured point and the live grasp over the run) stays within sampling skew, a few
 mm at most, through a full cycle.
 
+2026-10-08, passed. `ros_sim-20261008-080700-477622` reports `grasp_controlled_offset_m`
+9.4 mm. That is one tick of hand motion, not a tracking error: the grasp midpoint in the flange
+frame (a function of the three hand joints alone) moves up to 8.05 mm per 67 ms tick during the
+initial pinch closure (step 19, t 1.27 s), median 0.63 mm, p90 1.62 mm, and at most 4.18 mm
+after step 150. The controller latches the frame once per goal, so the offset is bounded by that
+per-tick travel plus sample skew, and steady-state agreement is sub-millimetre.
+
 ### A4. Re-clip the 20 mm / 0.097 rad target step at the controller rate, from the live grasp pose  [minor]
 
-- [x] ported 2026-10-06; the "done when" below needs a rollout
+- [x] done 2026-10-08
 
 Evidence. Isaac decodes `bolt_tip + a * 0.05` and clips it against the current grasp pose at
 every 120 Hz substep, so the target keeps leading the hand by up to 20 mm as it moves. The ROS
@@ -380,6 +488,10 @@ controller's own `position_clipped` / `orientation_clipped` flags.
 Done when. `clipped_policy_ticks` is a large fraction of the steps while the hand is moving,
 as the clip is in `mujoco_threading_env.ThreadingScene.control_tick`, and the
 `cartesian_state` target sits at the clip limit from the measured pose during the descent.
+
+2026-10-08, passed. `ros_sim-20261008-080700-477622`: `clipped_policy_ticks` 1499 of 1500, i.e.
+the controller's own clip is active on essentially every tick, as it is in
+`ThreadingScene.control_tick`.
 
 ---
 
@@ -480,7 +592,7 @@ contract are verified identical to training. Three inputs still differ.
 
 ### C1. Publish hand joint velocities from the Inspire driver  [should]
 
-- [ ] done
+- [x] done 2026-10-08; see the status section above for the evidence
 
 Evidence. `src/inspire_hand_driver/inspire_hand_driver/driver_node.py` (around line 701)
 fills `JointState.position` only, so the three hand-velocity slots of the proprio vector are

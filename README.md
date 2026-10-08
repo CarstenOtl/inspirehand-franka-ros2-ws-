@@ -1017,6 +1017,183 @@ ros2 action send_goal /hand_joint_trajectory_controller/follow_joint_trajectory 
 The full interface reference, the unit conversion and the per-DOF radian limits
 are in [`docs/hand.md`](docs/hand.md).
 
+### Finger speed: a derived reading, and what it is worth
+
+`/inspire_hand/joint_states` now carries `velocity` alongside `position`, for
+all twelve joints — the six followers at their coupling ratio, since a
+four-bar's follower turns at a fixed multiple of its driver.
+
+**It is differenced, not measured.** The RH56 has no speed sensor: its register
+map has `POS_ACT`, `ANGLE_ACT`, `FORCE_ACT`, `CURRENT`, `ERROR`, `STATUS` and
+`TEMP`, and `SPEED_SET` is a limit the hand is *told*, not a rate it reports.
+So the velocity is a backward difference of the ANGLE readings, and its quality
+follows from that:
+
+- **One ANGLE count is the floor.** The registers hold 0..1000 across the whole
+  range, so one count is 1.5 mrad on a finger, and at 50 Hz one count per
+  sample is **0.073 rad/s**. Nothing finer than that exists to report. A finger
+  creeping below that rate flips a count only every few samples, so the raw
+  difference arrives as bursts of one count separated by exact zeros.
+- **So it is filtered**, one pole at `velocity_filter_hz` (10 Hz by default),
+  which fills those gaps in and costs 16 ms. `velocity_filter_hz:=0` gives the
+  raw difference; both the filter and `publish_velocity` retune live with
+  `ros2 param set`, which is the point — the way to judge a filter is the same
+  move with and without it, and relaunching in between loses the speed
+  registers and the force tare.
+- **It is clamped** to the rate `SPEED_SET` allows, so a dropped or repeated
+  sample cannot surface as a non-physical spike. The clamp is deliberately
+  loose where the speed is unknown: it can miss a spike, never erase real
+  motion. The driver logs the ceiling it is using at startup, and
+  `inspire_hand_probe` now reads `SPEED_SET` and `DEFAULT_SPEED_SET` — worth
+  knowing, because with `startup_speed:=0` nothing in this stack writes a speed
+  and the hand runs on whatever is in its own flash.
+
+```bash
+# Live: every DOF's position and speed, bars either side of zero. Compliant by
+# default, so you can push a fingertip and watch the reading follow.
+ros2 run inspire_hand_driver inspire_hand_velocity_check
+
+# One finger alone, with a trace of its rate over the last few seconds.
+ros2 run inspire_hand_driver inspire_hand_velocity_check --only 4
+
+# Measure it: one DOF across its range, both directions, with a verdict.
+ros2 run inspire_hand_driver inspire_hand_velocity_check --sweep --channel 4
+
+# The raw difference, with no pole in the way, at a known speed setting.
+ros2 run inspire_hand_driver inspire_hand_velocity_check --sweep \
+    --channel 4 --speed 400 --filter 0
+```
+
+**Driving the fingers from the live view.** Checking a position reading means
+putting the finger somewhere known and seeing what comes back, so the live view
+commands as well as watches. `--pose` sets a pose on the way in (`--pose 0.3`
+for every DOF, `--pose 4:0.3,6:0.8` per channel, open ratios as on
+`~/command`), and in a terminal the keys drive it from there:
+
+| key | what it does |
+|---|---|
+| `1`–`6` | Select a DOF. `a` selects all six. |
+| `+` / `-` | Nudge the selection by the step, which starts at 0.05 (50 ANGLE counts). |
+| `o` / `c` / `h` | Open, closed, half. |
+| `[` / `]` | Step size down/up, through 0.01 / 0.02 / 0.05 / 0.10 / 0.25. 0.01 is ten counts. |
+| `t` | Toggle compliant mode, which also re-tares the fingertips. |
+| `r` | Reset the peak marks. `q` quits. |
+
+The columns are `cmd` (what was commanded), `pos` and `count` (what the hand
+reports, as a ratio and as the ANGLE register value the speed is differenced
+from), and `err`, the counts between them. `err` is taken against the command
+*after* the thumb-abduction overlay in `command_overlays.py`, so channel 6 does
+not show a standing 250-count error for sitting exactly where it was told: a
+command of 0.0 there is a physical 0.25 by calibration.
+
+A commanded position means something different in each mode, which is worth
+keeping in mind while reading `err`: stiff, it is a target held against
+whatever pushes back; compliant, it is a *rest* position that a fingertip push
+displaces and release returns to.
+
+In `--only`, the `#` row is the rate the driver reports and `+` the same
+positions centred-differenced. Watching `+` lead `#` through a direction change
+is the filter's lag, which is the thing a single number cannot show you. The
+trace sizes itself to the window every frame, and one column is one sample, so
+a wider terminal is literally more resolution — at 150x40 it resolves a
+deceleration ramp that is three characters wide in an 80-column window.
+
+**Looking closer than a terminal can.** One column is one sample and one row is
+a fortieth of the scale, which is the ceiling on reading this by eye. `--log`
+writes every sample out instead — phase, stamp, channel, joint, ANGLE count,
+radians, the reported rate, and this tool's centred difference of the same
+positions — so the reading and what it is judged against can be plotted
+properly:
+
+```bash
+ros2 run inspire_hand_driver inspire_hand_velocity_check --sweep --channel 4 \
+    --log ~/velocity_index.csv
+ros2 run inspire_hand_driver inspire_hand_velocity_check --only 4 \
+    --log ~/velocity_live.csv
+```
+
+Then plot it. `inspire_hand_velocity_plot` reads that CSV and draws three
+panels per phase — the reported rate against the centred difference, the ANGLE
+count as the staircase it actually is, and the residual both raw and with the
+measured lag taken out — and prints the same figures the sweep does:
+
+```bash
+ros2 run inspire_hand_driver inspire_hand_velocity_plot ~/velocity_index.csv
+```
+
+It reads a file, so it needs no hand, no ROS graph and no display (it forces
+matplotlib's Agg backend; this image has no X). matplotlib is already in the
+image and is declared as an exec_depend, but the tool degrades to printing its
+figures if it is ever missing.
+
+**A live plot**, for watching rather than measuring:
+
+```bash
+ros2 run rqt_plot rqt_plot /inspire_hand/joint_states/velocity[3]
+```
+
+`rqt_plot` and `python3-pyqtgraph` were installed into the running container on
+2026-10-08 and added to `docker/Dockerfile`, so a rebuild keeps them. Two
+things about it are worth knowing before you conclude it is broken:
+
+- **A newly installed rqt plugin needs one `--force-discover` run** to reach
+  the plugin cache, or it fails with `found no plugin matching
+  "rqt_plot.plot.Plot"`. Already done; only needed again after installing
+  another rqt plugin.
+- **rqt_plot remembers its axis limits in `~/.config/ros.org/rqt_gui.ini`**,
+  and it plots against ROS time, so the x axis sits around 1.8e9. A run that
+  saved `x_limits=0, 1` therefore leaves every later run showing an empty
+  window with no error at all — the data is off screen by a billion. If a plot
+  ever comes up blank, that file is the first place to look; the keys are
+  `…plugin\x_limits` and `…plugin\y_limits` under the `rqt_plot__Plot`
+  perspective. Deleting those two lines fixes it and keeps the other
+  perspectives, which `--clear-config` would wipe.
+
+These two warnings are normal and appear on every launch: `QStandardPaths:
+XDG_RUNTIME_DIR not set` (no systemd user session in the container) and
+`QLayout::removeWidget: Cannot remove a null widget` (rqt_plot swapping in its
+plot widget at startup).
+
+`[3]` is the index finger: `joint_states` is ordered as
+`kinematics.ALL_JOINTS`, six driven DOF first in register order (pinky, ring,
+middle, index, thumb bend, thumb rotation), then the six followers. PlotJuggler
+(`ros-jazzy-plotjuggler-ros`) is the better tool of the two for this — it takes
+the whole `JointState` at once and can plot position against velocity — at a
+larger install.
+
+The sweep is the honest answer to "how accurate is it", because a derived rate
+cannot be compared against a measurement of the same quantity — there is none.
+What it compares against instead: a **centred** difference of the same
+positions (strictly better — no half-sample lag, and it averages two intervals
+of quantisation noise), the **travel** the positions record over the move
+(the integral of a correct rate is the distance, so an integral that comes up
+short is a filter or a clamp eating real motion), **Inspire's own
+specification** (manual 2.4.8: full travel in 800 ms at `SPEED_SET` 1000, which
+is the only check on the one number in `kinematics.py` that was assumed rather
+than measured), and **standstill**, where every honest rate is zero and what it
+actually reports is the noise floor.
+
+It separates lag from noise rather than conflating them: the residual is
+reported both raw and with the measured lag slid out, because 23 ms of delay
+across a ramp is a quarter of a rad/s of error that says nothing about how
+noisy the reading is.
+
+The clamp itself is published, per channel, as `speed_ceiling` and
+`speed_ceiling_rad_s` in `/inspire_hand/diagnostics` — because `~/set_speed`
+moves it, so the startup log stops being the answer the moment anything writes
+a speed, and from outside a clamped reading and a slow finger look identical.
+
+**Not verified on hardware yet.** Against the mock at 50 Hz the reading tracks
+the positions to 0.08–0.09 rad/s once the lag is out — about one ANGLE count
+per sample, i.e. as well as the register allows — keeps the travel to within
+0.3 %, and lags 24.0 ms, against 26 ms predicted (half a sample plus the 10 Hz
+pole).
+A mock has no sensor noise and a perfectly regular bus, so the two figures that
+can only come from the real hand are the **standstill floor** (zero on the
+mock; on hardware it is whatever the ANGLE registers jitter by, and it is the
+threshold below which the reading means nothing) and the **interval jitter**,
+which multiplies straight onto any single-sample rate.
+
 ## Six actuators, twelve joints
 
 The RH56 has six motors. Each finger's `*_intermediate` joint follows its

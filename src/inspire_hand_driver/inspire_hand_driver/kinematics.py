@@ -190,6 +190,63 @@ def follower_angle(coupling: Coupling, driver_radians: float) -> float:
     return max(coupling.lower, min(coupling.upper, value))
 
 
+#: Seconds for one DOF to cross its whole range at ``SPEED_SET`` 1000, with no
+#: load. Inspire's register manual, 2.4.8: "Speed = 1000: this means that it
+#: will take 800ms for the fingers in the no-load state to move from a large
+#: angle to the minimum angle. If there is a heavy load, the actual speed will
+#: be somewhat lower than this value." So this converts a speed setting into an
+#: upper bound on joint rate, never into an estimate of the rate itself.
+FULL_TRAVEL_TIME_S = 0.8
+
+
+def speed_counts_to_rad_per_s(index: int, speed_counts: float) -> float:
+    """Upper bound on one DOF's joint rate at a given ``SPEED_SET`` value.
+
+    The manual only pins the top of the scale (1000 = full travel in 800 ms),
+    so the rest is assumed proportional. Loaded fingers move slower than this,
+    which is the right direction for a clamp: it never hides real motion.
+    """
+    dof = DOFS[index]
+    counts = max(0.0, min(1000.0, float(speed_counts)))
+    return (dof.upper - dof.lower) / FULL_TRAVEL_TIME_S * (counts / 1000.0)
+
+
+def follower_velocity(
+    coupling: Coupling, driver_radians: float, driver_velocity: float
+) -> float:
+    """Derivative of :func:`follower_angle`, which is zero where it clamps."""
+    value = coupling.multiplier * float(driver_radians) + coupling.offset
+    if value <= coupling.lower or value >= coupling.upper:
+        return 0.0
+    return coupling.multiplier * float(driver_velocity)
+
+
+def joint_velocities(
+    open_ratios: Sequence[float], driven_velocities: Sequence[float]
+) -> List[float]:
+    """Expand six driven joint rates into twelve, ordered as :data:`ALL_JOINTS`.
+
+    Same shape and order as :func:`joint_positions`, so the two line up
+    column for column in a ``JointState``. The open ratios are needed because a
+    follower sitting on its own limit has zero rate however fast its driver
+    turns.
+    """
+    if len(open_ratios) != len(DOFS):
+        raise ValueError(f"expected {len(DOFS)} open ratios, got {len(open_ratios)}")
+    if len(driven_velocities) != len(DOFS):
+        raise ValueError(
+            f"expected {len(DOFS)} driven velocities, got {len(driven_velocities)}"
+        )
+    driven = [open_ratio_to_rad(i, r) for i, r in enumerate(open_ratios)]
+    rates = [float(v) for v in driven_velocities]
+    passive = [
+        follower_velocity(c, driven[i], rates[i])
+        for i, dof in enumerate(DOFS)
+        for c in dof.couplings
+    ]
+    return rates + passive
+
+
 def joint_positions(open_ratios: Sequence[float]) -> List[float]:
     """Expand six open ratios into twelve joint angles, ordered as :data:`ALL_JOINTS`.
 

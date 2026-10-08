@@ -358,6 +358,23 @@ class InspireHandNode(Node):
         # lost them; the hand keeps these in volatile registers. 0 = leave the
         # hand's own power-on value alone.
         self.declare_parameter("startup_speed", 0)
+        # JointState.velocity for the driven joints, differenced from the ANGLE
+        # readings. The hand has no speed sensor -- its register map exposes
+        # POS/ANGLE/FORCE/CURRENT but nothing for rate -- so differencing the
+        # position it does report is the only measurement available. Checked
+        # against ForgeUltra's recorded joint velocities: a backward difference
+        # correlates 0.98 with the truth once its half-sample lag is accounted
+        # for, and that lag is 10 ms at the default 50 Hz.
+        self.declare_parameter("publish_velocity", True)
+        # First-order low-pass on that difference, in Hz; 0 disables it.
+        # Not about the size of the quantisation error but its shape: a finger
+        # creeping slowly flips a register count only every few samples, so the
+        # raw difference comes out as bursts of one count per period separated
+        # by exact zeros. At 0.05 rad/s that is zero in a third of samples with
+        # a 0.034 spread; at 10 Hz it is a continuous 0.050 with 0.010. One
+        # pole at 10 Hz costs 16 ms of lag, well inside the 66 ms a 15 Hz
+        # consumer has, and leaves the mean unbiased at every rate tested.
+        self.declare_parameter("velocity_filter_hz", 10.0)
         # The grip-force threshold, in the hand's 0..1000 (gram) units. A DOF
         # stops closing when its fingertip force reaches this, instead of
         # pushing until the actuator's protection latches an error. 500 is
@@ -434,6 +451,17 @@ class InspireHandNode(Node):
         force = int(self.get_parameter("startup_force").value)
         self._speed_cache: Optional[List[int]] = [speed] * 6 if speed > 0 else None
         self._force_cache: Optional[List[int]] = [force] * 6 if force > 0 else None
+        # Differencing state. ``_speed_observed`` is what the hand itself says
+        # its limit is, read once at startup, and is only a fallback: when this
+        # node has commanded a speed, the commanded value is the honest ceiling.
+        self._publish_velocity = bool(self.get_parameter("publish_velocity").value)
+        self._velocity_filter_hz = max(
+            0.0, float(self.get_parameter("velocity_filter_hz").value)
+        )
+        self._velocity_prev_rad: List[Optional[float]] = [None] * len(kin.DOFS)
+        self._velocity_prev_s: Optional[float] = None
+        self._velocity_filtered: List[float] = [0.0] * len(kin.DOFS)
+        self._speed_observed: Optional[List[int]] = None
         self._limits_check_interval = float(
             self.get_parameter("limits_check_interval_sec").value
         )
@@ -573,6 +601,121 @@ class InspireHandNode(Node):
         if not self._mock:
             self.get_logger().info(f"hand answered, reports ID {hand_id}")
         self._apply_limits("startup")
+        self._report_speed_configuration()
+
+    def _report_speed_configuration(self) -> None:
+        """Log the speed limit the hand is actually running at, and cache it.
+
+        Worth logging rather than assuming: with ``startup_speed`` at 0 this
+        node never writes SPEED_SET, so the hand runs on DEFAULT_SPEED_SET out
+        of its own flash and nothing in the stack knows that value. It also
+        sets the ceiling the published velocities are clamped to. Both reads
+        are best-effort -- the SET registers are write-only on some firmware.
+        """
+        live = self._read_speed_registers(self._transport.read_speeds, "SPEED_SET")
+        flash = self._read_speed_registers(
+            self._transport.read_default_speeds, "DEFAULT_SPEED_SET"
+        )
+        if live is not None:
+            self._speed_observed = live
+        elif flash is not None:
+            self._speed_observed = flash
+        ceiling = self._speed_ceiling_counts()
+        rates = [
+            kin.speed_counts_to_rad_per_s(i, counts)
+            for i, counts in enumerate(ceiling)
+        ]
+        self.get_logger().info(
+            "speed: commanded "
+            + ("none" if self._speed_cache is None else str(self._speed_cache))
+            + f", hand reports SPEED_SET {live}, DEFAULT_SPEED_SET {flash}; "
+            + "velocity clamp "
+            + ", ".join(f"{r:.2f}" for r in rates)
+            + " rad/s"
+        )
+
+    def _read_speed_registers(self, reader, label: str) -> Optional[List[int]]:
+        try:
+            values = [int(v) for v in reader()]
+        except (HandCommunicationError, HandProtocolError) as exc:
+            self.get_logger().info(f"{label} is not readable on this hand: {exc}")
+            return None
+        if len(values) != len(kin.DOFS) or any(
+            v < 0 or v > 1000 for v in values
+        ):
+            self.get_logger().warn(f"{label} readback is out of range: {values}")
+            return None
+        if not any(values):
+            # All zero is how a hand that was never told a speed answers, and
+            # on write-only firmware it is also how it answers when it simply
+            # cannot. Either way it is not a speed, and believing it would
+            # clamp every reported velocity to zero.
+            return None
+        return values
+
+    def _speed_ceiling_counts(self) -> List[int]:
+        """Per-DOF speed limit, in register counts, for clamping velocities.
+
+        What this node commanded wins, because that is what the hand was told.
+        Otherwise whatever the hand reported at startup, and failing that the
+        top of the scale -- the loosest clamp, which can only fail to catch a
+        spike, never invent or suppress real motion.
+        """
+        source = self._speed_cache or self._speed_observed or []
+        # A non-positive entry is an unknown, not a standstill. Falling back to
+        # the top of the scale keeps the failure one-sided: the clamp can miss
+        # a spike, but it can never erase motion the hand really made.
+        return [
+            counts if 0 < counts <= 1000 else 1000
+            for counts in list(source) + [0] * (len(kin.DOFS) - len(source))
+        ]
+
+    def _driven_velocities(
+        self, driven_rad: Sequence[float], angles: Sequence[int], now_s: float
+    ) -> List[float]:
+        """Backward-difference the measured joint angles, clamped and filtered.
+
+        Backward rather than central because central needs the next sample,
+        and one sample of added latency is worse here than the half-sample lag
+        it would remove. A DOF reporting the invalid sentinel is rebased rather
+        than differenced, so a dropped reading does not surface as a spike.
+        """
+        rates = [0.0] * len(kin.DOFS)
+        measured = [False] * len(kin.DOFS)
+        previous_s = self._velocity_prev_s
+        dt = None if previous_s is None else now_s - previous_s
+        # Only differentiate across a plausible gap. A resumed timer, a
+        # simulated-clock jump or a repeated stamp would otherwise read as an
+        # enormous rate.
+        usable = dt is not None and self._period * 0.2 <= dt <= self._period * 5.0
+        ceiling = self._speed_ceiling_counts()
+        for index in range(len(kin.DOFS)):
+            valid = angles[index] != ANGLE_INVALID
+            previous = self._velocity_prev_rad[index]
+            if valid and usable and previous is not None:
+                limit = kin.speed_counts_to_rad_per_s(index, ceiling[index])
+                rate = (driven_rad[index] - previous) / dt
+                rates[index] = max(-limit, min(limit, rate))
+                measured[index] = True
+            self._velocity_prev_rad[index] = driven_rad[index] if valid else None
+        self._velocity_prev_s = now_s
+        if self._velocity_filter_hz <= 0.0:
+            self._velocity_filtered = list(rates)
+            return rates
+        tau = 1.0 / (2.0 * math.pi * self._velocity_filter_hz)
+        for index, rate in enumerate(rates):
+            if not measured[index]:
+                # Nothing was measured for this DOF, so there is no rate to
+                # carry: letting the filter coast would report motion the hand
+                # never reported, which is the one thing a dropped sample must
+                # not turn into.
+                self._velocity_filtered[index] = 0.0
+                continue
+            alpha = dt / (dt + tau)
+            self._velocity_filtered[index] += alpha * (
+                rate - self._velocity_filtered[index]
+            )
+        return list(self._velocity_filtered)
 
     def _apply_limits(self, reason: str) -> bool:
         """(Re)write the cached speed and force limits to the hand.
@@ -701,7 +844,16 @@ class InspireHandNode(Node):
         joint_state = JointState()
         joint_state.header.stamp = stamp
         joint_state.name = list(self._joint_names)
-        joint_state.position = kin.joint_positions(ratios)
+        positions = kin.joint_positions(ratios)
+        joint_state.position = positions
+        if self._publish_velocity:
+            # Same clock as the stamp, so the sample interval the rate is
+            # divided by is the one consumers see between messages.
+            now_s = stamp.sec + stamp.nanosec * 1.0e-9
+            joint_state.velocity = kin.joint_velocities(
+                ratios,
+                self._driven_velocities(positions[: len(kin.DOFS)], angles, now_s),
+            )
         # Current is only measured on the driven DOF; the followers have no motor.
         joint_state.effort = [float(c) for c in currents] + [0.0] * len(kin.PASSIVE_JOINTS)
         self._joint_state_pub.publish(joint_state)
@@ -933,13 +1085,47 @@ class InspireHandNode(Node):
         return response
 
     def _on_set_parameters(self, params) -> SetParametersResult:
-        """Retune the spring live; refuse values the law will not take.
+        """Retune the spring and the velocity filter live; refuse what will not take.
 
         Tuning a spring you test by pushing on it means changing a gain and
         pushing again, so this has to work on a running hand. Rejecting rather
         than clamping matters more here than elsewhere: a silently clamped gain
         is indistinguishable, by feel, from one that did nothing.
         """
+        velocity = {
+            p.name: p.value
+            for p in params
+            if p.name in ("publish_velocity", "velocity_filter_hz")
+        }
+        if velocity:
+            # Same reason the spring is retunable: the way to judge a filter is
+            # to make the same move with and without it, and relaunching the
+            # driver in between loses the speed registers and the tare. The
+            # filter state is deliberately not reset -- one pole settles within
+            # a few samples, and zeroing it would put a step in the output at
+            # the moment of the change.
+            if "velocity_filter_hz" in velocity:
+                try:
+                    hz = float(velocity["velocity_filter_hz"])
+                except (TypeError, ValueError) as exc:
+                    return SetParametersResult(successful=False, reason=str(exc))
+                if hz < 0.0 or not math.isfinite(hz):
+                    return SetParametersResult(
+                        successful=False,
+                        reason=f"velocity_filter_hz must be finite and >= 0, got {hz}",
+                    )
+                self._velocity_filter_hz = hz
+            if "publish_velocity" in velocity:
+                self._publish_velocity = bool(velocity["publish_velocity"])
+            self.get_logger().info(
+                f"velocity: publish={self._publish_velocity} "
+                + (
+                    "filter off"
+                    if self._velocity_filter_hz <= 0.0
+                    else f"filter {self._velocity_filter_hz:.1f} Hz"
+                )
+            )
+
         pending = {p.name: p.value for p in params if p.name.startswith("compliance")}
         if not pending:
             return SetParametersResult(successful=True)
@@ -1238,6 +1424,7 @@ class InspireHandNode(Node):
         hardware = f"{self._transport.port}#{self._transport.hand_id}"
         targets = self._last_command
         thresholds = self._force_cache
+        ceiling = self._speed_ceiling_counts()
         array = DiagnosticArray()
         array.header.stamp = stamp
         stalled = set(health.stalled())
@@ -1286,6 +1473,17 @@ class InspireHandNode(Node):
                 # What this channel currently calls "nothing touching me". It
                 # is not 0, and it moves: see "Compliant mode" above.
                 KeyValue(key="force_zero", value=f"{self._spring.zeros[index]:.0f}"),
+                # The speed limit the published velocity is clamped to, as both
+                # the register value and the rate it works out to. Published
+                # because it changes under ~/set_speed, so the startup log is
+                # not the answer for long: anything judging the velocities has
+                # to be able to tell a clamp from a slow finger, and without
+                # this the two are indistinguishable from outside.
+                KeyValue(key="speed_ceiling", value=str(ceiling[index])),
+                KeyValue(
+                    key="speed_ceiling_rad_s",
+                    value=f"{kin.speed_counts_to_rad_per_s(index, ceiling[index]):.4f}",
+                ),
             ]
             array.status.append(status)
 
