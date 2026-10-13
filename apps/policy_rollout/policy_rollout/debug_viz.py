@@ -8,7 +8,12 @@ actually used rather than a reconstruction:
                    static ``fr3_link0`` -> camera transform RViz needs);
 ``~/scene_points`` those points above the table, in the base frame;
 ``~/markers``      the controller's controlled point, the controller target,
-                   the policy grasp frame, and the nut estimated from the cloud.
+                   the policy grasp frame, and the nut estimated from the cloud;
+``~/dp3_overlay``  the same sampled points projected back into the policy camera
+                   view, as an Image, because rqt_image_view cannot render a
+                   PointCloud2. The points that feed the nut centroid are drawn
+                   in red, so it is visible at a glance whether the encoder is
+                   sampling the nut at all.
 """
 
 from __future__ import annotations
@@ -28,13 +33,19 @@ _PAPER = (0.97, 0.97, 0.96)
 TABLE_CLEARANCE_M = 0.02      # above the bench top, in base z
 NUT_SEARCH_RADIUS_M = 0.05    # around the bolt axis, for the nut centroid
 NUT_MAX_HEIGHT_M = 0.20
+# Publish the overlay at the policy's own 320x180 rather than upscaled: at 3x
+# it is 1.5 MB a message, and the serialise/transport cost the moment a viewer
+# subscribes was enough to delay the rollout's own camera callbacks past their
+# freshness limit on a loaded box. rqt_image_view scales for display anyway.
+OVERLAY_ZOOM = 1
+OVERLAY_BACKDROP = 0.40       # dim the frame so the sampled points read against it
 
 
 class PolicyDebugPublisher:
     """Publish the policy's live point cloud and control frames for RViz."""
 
     def __init__(self, node, calibration, encoder, *, publish_every=2):
-        from sensor_msgs.msg import PointCloud2
+        from sensor_msgs.msg import Image, PointCloud2
         from visualization_msgs.msg import MarkerArray
 
         self.node = node
@@ -56,6 +67,15 @@ class PolicyDebugPublisher:
         self.points_publisher = node.create_publisher(PointCloud2, "~/dp3_points", 1)
         self.scene_publisher = node.create_publisher(PointCloud2, "~/scene_points", 1)
         self.marker_publisher = node.create_publisher(MarkerArray, "~/markers", 1)
+        self.overlay_publisher = node.create_publisher(Image, "~/dp3_overlay", 1)
+
+        intrinsics = np.asarray(
+            calibration.policy_intrinsics.camera_matrix, dtype=float
+        ).reshape(3, 3)
+        self.overlay_fx = float(intrinsics[0, 0])
+        self.overlay_fy = float(intrinsics[1, 1])
+        self.overlay_cx = float(intrinsics[0, 2])
+        self.overlay_cy = float(intrinsics[1, 2])
 
     # --- helpers ---------------------------------------------------------------
     def _cloud(self, xyz, rgb01, frame_id, stamp):
@@ -84,6 +104,51 @@ class PolicyDebugPublisher:
         message.row_step = 16 * len(xyz)
         message.is_dense = True
         message.data = data.tobytes()
+        return message
+
+    def _overlay(self, policy_rgb, xyz_cam, rgb01, nut_mask, stamp):
+        """Project the sampled points back into the policy view as an Image.
+
+        The same points RViz draws, seen from the camera they were measured
+        with, so the overlay lines up with the colour stream rqt is showing.
+        """
+
+        from sensor_msgs.msg import Image
+
+        frame = np.clip(np.asarray(policy_rgb, dtype=np.float64), 0.0, 1.0)
+        canvas = (frame.transpose(1, 2, 0) * 255.0 * OVERLAY_BACKDROP).astype(np.uint8)
+        height, width = canvas.shape[:2]
+
+        depth = xyz_cam[:, 2]
+        visible = depth > 1.0e-6
+        u = np.rint(self.overlay_fx * xyz_cam[visible, 0] / depth[visible] + self.overlay_cx)
+        v = np.rint(self.overlay_fy * xyz_cam[visible, 1] / depth[visible] + self.overlay_cy)
+        u, v = u.astype(np.int64), v.astype(np.int64)
+        inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+        colour = (np.clip(rgb01[visible], 0.0, 1.0) * 255.0).astype(np.uint8)
+        is_nut = np.asarray(nut_mask, dtype=bool)[visible]
+
+        # Nut points last, so they win where a pixel carries both.
+        for selection, fixed in ((~is_nut & inside, None), (is_nut & inside, _RED)):
+            if not selection.any():
+                continue
+            rows, columns = v[selection], u[selection]
+            if fixed is None:
+                canvas[rows, columns] = colour[selection]
+            else:
+                canvas[rows, columns] = np.asarray(
+                    [int(c * 255) for c in fixed], dtype=np.uint8
+                )
+
+        canvas = np.repeat(np.repeat(canvas, OVERLAY_ZOOM, axis=0), OVERLAY_ZOOM, axis=1)
+        message = Image()
+        message.header.frame_id = self.calibration.frame_id
+        message.header.stamp = stamp
+        message.height, message.width = canvas.shape[:2]
+        message.encoding = "rgb8"
+        message.is_bigendian = 0
+        message.step = 3 * message.width
+        message.data = np.ascontiguousarray(canvas).tobytes()
         return message
 
     def _marker(self, marker_id, kind, stamp, *, colour, scale, namespace="policy"):
@@ -162,6 +227,10 @@ class PolicyDebugPublisher:
         bolt = np.asarray(bolt_tip_base, dtype=float)
         near = above & (np.linalg.norm(points_base[:, :2] - bolt[:2], axis=1) <= NUT_SEARCH_RADIUS_M)
         nut = points_base[near].mean(axis=0) if int(near.sum()) >= 3 else None
+
+        self.overlay_publisher.publish(
+            self._overlay(prepared.rgb, xyz_cam, rgb01, near, stamp)
+        )
 
         grasp = np.asarray(grasp_position, dtype=float)
         target = np.asarray(controller_target_position, dtype=float)

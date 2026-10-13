@@ -1236,7 +1236,10 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             publish_every=getattr(args, "debug_viz_every", 2),
         )
         print(
-            "debug viz on: /fr3_policy_rollout/{dp3_points,scene_points,markers}",
+            "debug viz on: /fr3_policy_rollout/"
+            "{dp3_points,scene_points,markers,dp3_overlay}\n"
+            "  rqt_image_view /fr3_policy_rollout/dp3_overlay  "
+            "(the sampled points in the camera view; nut candidates in red)",
             flush=True,
         )
 
