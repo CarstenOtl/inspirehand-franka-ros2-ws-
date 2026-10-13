@@ -1,0 +1,13 @@
+# D415 parameters the policy rollout needs that rs_launch.py does not declare
+# as launch arguments. It forwards only its own declared set -- anything else
+# draws a warning and is dropped -- but it merges this file straight into the
+# node's parameters, so options that are not launch arguments travel here.
+#
+# auto_exposure_priority lets auto-exposure drop the colour frame rate to reach
+# its brightness target. On by default, and in this workcell's light it does
+# exactly that: /camera/camera/rgbd measured 12.5-12.9 Hz with frames clumped
+# 8 ms apart and gaps up to 0.466 s, against a 15 Hz request. The rollout drops
+# inputs older than 0.5 s, so those gaps aborted five hardware runs with
+# "stale live inputs: rgb, depth". Off, the same measurement is 14.1 Hz with a
+# 0.063 s minimum and 0.202 s maximum gap. See launch_files/policy_camera.py.
+rgb_camera.auto_exposure_priority: false
