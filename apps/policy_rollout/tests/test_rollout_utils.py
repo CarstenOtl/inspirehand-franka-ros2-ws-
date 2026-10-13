@@ -115,6 +115,42 @@ def test_collector_rejects_proprio_that_contradicts_the_measured_velocity(tmp_pa
         )
 
 
+def test_absent_turn_signal_records_nan_without_aborting_the_run(tmp_path):
+    """Hardware has no nut-angle topic, so this signal arrives as None.
+
+    The recorder stores NaN for an absent signal but refuses a non-finite one
+    passed in, and the hardware path used to hand it a NaN -- which aborted the
+    rollout on its first policy step.
+    """
+
+    collector = RolloutDataCollector(tmp_path / "run")
+    position = np.zeros(10)
+    collector.record(
+        sample_time_s=1.0,
+        joint_position=position,
+        joint_velocity=position,
+        proprio=np.zeros(26),
+        policy_action=np.zeros(9),
+        filtered_native_action=np.zeros(9),
+        clipped_elements=0,
+        task_signals={"threading_turn_progress_rad": None, "completed_cycles": 0},
+    )
+    loaded = load_rollout(collector.close().run_dir)
+    assert np.isnan(loaded.arrays["threading_turn_progress_rad"][0])
+
+    with pytest.raises(ValueError, match="must be finite"):
+        RolloutDataCollector(tmp_path / "run2").record(
+            sample_time_s=1.0,
+            joint_position=position,
+            joint_velocity=position,
+            proprio=np.zeros(26),
+            policy_action=np.zeros(9),
+            filtered_native_action=np.zeros(9),
+            clipped_elements=0,
+            task_signals={"threading_turn_progress_rad": float("nan")},
+        )
+
+
 def test_collector_rejects_non_monotonic_time_and_unknown_task_signal(tmp_path):
     collector = RolloutDataCollector(tmp_path / "run")
     values = {

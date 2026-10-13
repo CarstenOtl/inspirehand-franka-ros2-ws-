@@ -1529,12 +1529,15 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 task_signals={
                     "completed_cycles": coordinator.completed_cycles,
                     "watchdog_stop": False,
-                    # The turn the release actually gates on. NaN on hardware,
-                    # which has no nut-angle topic; every ros-sim and hardware
-                    # recording before this left it NaN, so the return failures
-                    # had to be reconstructed offline from the joints.
+                    # The turn the release actually gates on. Unmeasurable on
+                    # hardware, which has no nut-angle topic; every ros-sim and
+                    # hardware recording before this left it NaN, so the return
+                    # failures had to be reconstructed offline from the joints.
+                    # None rather than a NaN: the recorder stores NaN for an
+                    # absent signal but rejects a non-finite one passed in, so
+                    # handing it a NaN aborts the run on its first policy step.
                     "threading_turn_progress_rad": (
-                        math.nan
+                        None
                         if thread_pair is None or thread_pair.turn_progress_rad() is None
                         else thread_pair.turn_progress_rad()
                     ),
