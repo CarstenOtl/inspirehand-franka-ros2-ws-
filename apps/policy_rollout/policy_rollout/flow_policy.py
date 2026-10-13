@@ -13,6 +13,10 @@ from torch import nn
 
 from .dp3 import build_dp3_encoder
 from .flow_matching import sample_local_ode
+from .observation import (
+    HAND_VELOCITY_OBSERVATION_MODES,
+    native_osc_proprio_dim,
+)
 
 
 @dataclass(frozen=True)
@@ -22,6 +26,7 @@ class FlowPolicyConfig:
     osc_action_representation: str = "native"
     osc_native_action_scale: tuple[float, ...] = ()
     proprio_dim: int = 0
+    hand_velocity_observation: str = "included"
     action_horizon: int = 1
     visual_dim: int = 64
     condition_dim: int = 256
@@ -68,6 +73,8 @@ class FlowPolicyConfig:
                 value <= 0 for value in self.osc_native_action_scale
             ):
                 raise ValueError("unified OSC requires one positive scale per action")
+        if self.hand_velocity_observation not in HAND_VELOCITY_OBSERVATION_MODES:
+            raise ValueError("unsupported hand-velocity observation convention")
         if self.observation_mode not in {"vision", "nut_pose_3d", "nut_pose_6d"}:
             raise ValueError("unsupported student observation mode")
         if self.backbone_type not in {"mlp", "trajectory_transformer"}:
@@ -105,6 +112,10 @@ class FlowPolicyConfig:
         values.setdefault("backbone_type", "mlp")
         values.setdefault("osc_action_representation", "native")
         values.setdefault("osc_native_action_scale", ())
+        # Checkpoints trained before the convention was recorded were all shown
+        # the hand velocities, and some write the key out as a null.
+        if values.get("hand_velocity_observation") is None:
+            values["hand_velocity_observation"] = "included"
         values.setdefault("trajectory_progress_conditioning", False)
         values.setdefault("trajectory_progress_duration_s", 0.0)
         values.setdefault("trajectory_progress_horizon_steps", 0)
@@ -476,8 +487,17 @@ class FlowPolicyRunner:
         errors = []
         if self.config.control_domain != "osc" or self.config.joint_dim != 9:
             errors.append("student must use the 9-D OSC control domain")
-        if self.config.observation_mode != "vision" or self.config.proprio_dim != 29:
-            errors.append("student must use vision with 29-D native-OSC proprioception")
+        expected_proprio_dim = native_osc_proprio_dim(
+            self.config.hand_velocity_observation
+        )
+        if (
+            self.config.observation_mode != "vision"
+            or self.config.proprio_dim != expected_proprio_dim
+        ):
+            errors.append(
+                "student must use vision with "
+                f"{expected_proprio_dim}-D native-OSC proprioception"
+            )
         if vision_type != "rgb_pointcloud_dp3_encoder":
             errors.append("student must use the RGB point-cloud DP3 vision head")
         if errors:

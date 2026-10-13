@@ -8,8 +8,12 @@ backends:
 - `mujoco`: the closed-loop MuJoCo threading scene.
 
 The policy runtime is independent of Isaac Lab. It implements the checkpoint's
-RGB point-cloud DP3 encoder, 29-D native-OSC proprioception, conditional-flow
-action sampling, action filtering, and cyclic process-phase conditioning. The
+RGB point-cloud DP3 encoder, native-OSC proprioception, conditional-flow
+action sampling, action filtering, and cyclic process-phase conditioning.
+Proprioception is `q10 + dq + the previous action`, so it is 29 values wide for
+a checkpoint shown the three hand velocities and 26 for one trained without
+them; the checkpoint's own `hand_velocity_observation` picks the layout and the
+runner refuses a checkpoint whose width disagrees with it. The
 Flow Matching runtime is vendored under `third_party/flow_matching`.
 
 ## Run on hardware

@@ -18,6 +18,13 @@ SCHEMA_VERSION = 1
 DATA_FILENAME = "rollout_data.npz"
 METADATA_FILENAME = "metadata.json"
 
+# q10 + dq + the previous nine-value action.  dq is the full ten joints for a
+# checkpoint shown the hand velocities and the seven arm joints for one trained
+# without them, so proprioception is 29 or 26 values wide and nothing else.
+PROPRIO_POSITION_DIM = 10
+PROPRIO_PREVIOUS_ACTION_DIM = 9
+SUPPORTED_PROPRIO_WIDTHS = (26, 29)
+
 REQUIRED_FIELDS = (
     "sample_time_s",
     "joint_position",
@@ -213,13 +220,23 @@ class RolloutDataCollector:
         if "\x00" in phase:
             raise ValueError("process_phase cannot contain a NUL byte")
 
+        proprio_width = int(_numpy(proprio).reshape(-1).shape[0])
+        if proprio_width not in SUPPORTED_PROPRIO_WIDTHS:
+            raise ValueError(
+                "proprio must be 29 values with the hand velocities or 26 "
+                f"without them, got {proprio_width}"
+            )
+        velocity_width = (
+            proprio_width - PROPRIO_POSITION_DIM - PROPRIO_PREVIOUS_ACTION_DIM
+        )
+
         values = {
             "sample_time_s": np.asarray(
                 source_time - self._clock_origin_s, dtype=np.float64
             ),
             "joint_position": _finite_vector(joint_position, 10, "joint_position"),
             "joint_velocity": _finite_vector(joint_velocity, 10, "joint_velocity"),
-            "proprio": _finite_vector(proprio, 29, "proprio"),
+            "proprio": _finite_vector(proprio, proprio_width, "proprio"),
             "policy_action": _finite_vector(policy_action, 9, "policy_action"),
             "filtered_native_action": _finite_vector(
                 filtered_native_action, 9, "filtered_native_action"
@@ -232,7 +249,12 @@ class RolloutDataCollector:
         }
         if not np.allclose(values["proprio"][:10], values["joint_position"]):
             raise ValueError("proprio position prefix does not match joint_position")
-        if not np.allclose(values["proprio"][10:20], values["joint_velocity"]):
+        # The hand velocities are still measured and still recorded in full when
+        # the policy is not shown them, so only the part it saw is compared.
+        if not np.allclose(
+            values["proprio"][10 : 10 + velocity_width],
+            values["joint_velocity"][:velocity_width],
+        ):
             raise ValueError("proprio velocity prefix does not match joint_velocity")
         if np.any(np.abs(values["policy_action"]) > 1.0 + 1.0e-6):
             raise ValueError("policy_action must contain the bounded [-1, 1] action")
@@ -375,10 +397,16 @@ def load_rollout(path: str | Path) -> LoadedRollout:
         arrays = {name: np.asarray(archive[name]).copy() for name in archive.files}
 
     sample_count = arrays["sample_time_s"].shape[0]
+    proprio_width = arrays["proprio"].shape[-1] if arrays["proprio"].ndim == 2 else -1
+    if proprio_width not in SUPPORTED_PROPRIO_WIDTHS:
+        raise ValueError(
+            "proprio must be 29 values wide with the hand velocities or 26 "
+            f"without them, got {proprio_width}"
+        )
     expected_widths = {
         "joint_position": 10,
         "joint_velocity": 10,
-        "proprio": 29,
+        "proprio": proprio_width,
         "policy_action": 9,
         "filtered_native_action": 9,
     }

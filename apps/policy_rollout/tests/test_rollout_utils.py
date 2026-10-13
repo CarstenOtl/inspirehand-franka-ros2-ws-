@@ -66,6 +66,55 @@ def test_collector_writes_safe_aligned_npz_and_metadata(tmp_path):
     assert metadata["checkpoint_sha256"] == "abc123"
 
 
+def test_collector_round_trips_proprio_without_the_hand_velocities(tmp_path):
+    collector = RolloutDataCollector(tmp_path / "run")
+    position = np.arange(10, dtype=np.float32)
+    velocity = np.arange(10, dtype=np.float32) * 0.3
+    collector.record(
+        sample_time_s=1.0,
+        joint_position=position,
+        joint_velocity=velocity,
+        # Only the seven arm velocities reach a checkpoint trained without the
+        # finger rates, while all ten stay in joint_velocity for diagnostics.
+        proprio=np.concatenate((position, velocity[:7], np.zeros(9))),
+        policy_action=np.zeros(9),
+        filtered_native_action=np.zeros(9),
+        clipped_elements=0,
+    )
+    loaded = load_rollout(collector.close().run_dir)
+    assert loaded.arrays["proprio"].shape == (1, 26)
+    assert loaded.arrays["joint_velocity"].shape == (1, 10)
+    assert loaded.arrays["joint_velocity"][0].tolist() == pytest.approx(
+        velocity.tolist()
+    )
+
+
+def test_collector_rejects_proprio_that_contradicts_the_measured_velocity(tmp_path):
+    collector = RolloutDataCollector(tmp_path / "run")
+    position = np.arange(10, dtype=np.float32)
+    velocity = np.arange(10, dtype=np.float32) * 0.3
+    with pytest.raises(ValueError, match="velocity prefix"):
+        collector.record(
+            sample_time_s=1.0,
+            joint_position=position,
+            joint_velocity=velocity,
+            proprio=np.concatenate((position, velocity[1:8], np.zeros(9))),
+            policy_action=np.zeros(9),
+            filtered_native_action=np.zeros(9),
+            clipped_elements=0,
+        )
+    with pytest.raises(ValueError, match="26"):
+        collector.record(
+            sample_time_s=1.0,
+            joint_position=position,
+            joint_velocity=velocity,
+            proprio=np.concatenate((position, velocity[:8], np.zeros(9))),
+            policy_action=np.zeros(9),
+            filtered_native_action=np.zeros(9),
+            clipped_elements=0,
+        )
+
+
 def test_collector_rejects_non_monotonic_time_and_unknown_task_signal(tmp_path):
     collector = RolloutDataCollector(tmp_path / "run")
     values = {

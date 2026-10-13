@@ -101,7 +101,12 @@ class PolicyRolloutSession:
         previous = self.action_filter.previous_filtered
         if previous is None:
             raise RuntimeError("session must be reset before its first policy step")
-        proprio = build_native_osc_proprio(joint_position, joint_velocity, previous)
+        proprio = build_native_osc_proprio(
+            joint_position,
+            joint_velocity,
+            previous,
+            hand_velocity_observation=self.runner.config.hand_velocity_observation,
+        )
         prepared = prepare_rgbd(rgb, depth, self.calibration, depth_units=depth_units)
         phase = None
         if self.runner.config.cyclic_process_phase_conditioning:

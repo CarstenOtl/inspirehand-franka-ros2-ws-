@@ -5,6 +5,7 @@ torch = pytest.importorskip("torch")
 from policy_rollout.observation import (
     FR3_POLICY_JOINT_NAMES,
     build_native_osc_proprio,
+    native_osc_proprio_dim,
     one_hot_process_phase,
 )
 from policy_rollout.session import OscActionFilter
@@ -14,6 +15,29 @@ def test_native_osc_proprio_has_exact_29_value_order():
     value = build_native_osc_proprio(range(10), range(10, 20), range(20, 29))
     assert value.tolist() == pytest.approx(list(range(29)))
     assert len(FR3_POLICY_JOINT_NAMES) == 10
+
+
+def test_omitted_hand_velocity_drops_only_the_three_finger_rates():
+    value = build_native_osc_proprio(
+        range(10),
+        range(10, 20),
+        range(20, 29),
+        hand_velocity_observation="omitted",
+    )
+    # q10, then the seven arm velocities only, then the previous action: the
+    # three hand velocities 17, 18, 19 are the whole difference.
+    assert value.tolist() == pytest.approx(
+        list(range(10)) + list(range(10, 17)) + list(range(20, 29))
+    )
+    assert native_osc_proprio_dim("omitted") == 26
+    assert native_osc_proprio_dim("included") == 29
+
+
+def test_unknown_hand_velocity_convention_is_refused():
+    with pytest.raises(ValueError, match="hand_velocity_observation"):
+        build_native_osc_proprio(
+            range(10), range(10, 20), range(20, 29), hand_velocity_observation="zeroed"
+        )
 
 
 def test_process_phase_uses_checkpoint_order_and_aliases():

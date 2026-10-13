@@ -1200,6 +1200,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "checkpoint_weight_source": metadata["weight_source"],
             "flow_integration_steps": metadata["integration_steps"],
             "camera_profile": str(calibration.source_path),
+            "hand_velocity_observation": runner.config.hand_velocity_observation,
             "collection_mode": (
                 "ros_sim_closed_loop_student" if sim else "physical_closed_loop_student"
             ),

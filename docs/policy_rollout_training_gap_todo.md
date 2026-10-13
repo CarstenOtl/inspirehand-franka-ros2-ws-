@@ -17,8 +17,10 @@ Priority tags: **blocking** = the stack cannot reproduce training without it;
 
 Working rules for agents:
 
-- Do not change the checkpoint, the DP3 camera contract, or the 29-D proprio layout. Those are
-  verified identical (last section).
+- Do not change the checkpoint, the DP3 camera contract, or the proprio layout. Those are
+  verified identical (last section). The layout is now read from the checkpoint rather than
+  fixed at 29: `hand_velocity_observation: omitted` makes it 26 by dropping the three hand
+  velocities from dq. Nothing else about it moves.
 - One item per commit where possible. Cite the "done when" evidence in the commit message.
 - Runs happen in the `inspire_franka` container (`/root/develop_ws` is this workspace) with
   `MUJOCO_GL=egl`. Check `ros2 node list` before starting anything; the graph is shared.
@@ -587,8 +589,8 @@ Done when. Documented.
 
 ## Layer C: what the policy sees
 
-The 29-D proprioception, the previous-action semantics, the phase one-hot and the DP3 camera
-contract are verified identical to training. Three inputs still differ.
+The native-OSC proprioception, the previous-action semantics, the phase one-hot and the DP3
+camera contract are verified identical to training. Three inputs still differ.
 
 ### C1. Publish hand joint velocities from the Inspire driver  [should]
 
