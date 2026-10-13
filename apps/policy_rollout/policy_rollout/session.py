@@ -19,6 +19,9 @@ class PolicyStep:
     filtered_native_action: torch.Tensor
     clipped_elements: int
     proprio: torch.Tensor
+    #: The RGB-D the policy was actually given. Carried so a debug view can
+    #: draw this step's input without preparing the same frame a second time.
+    prepared: object = None
 
 
 class OscActionFilter:
@@ -129,6 +132,7 @@ class PolicyRolloutSession:
             filtered_native_action=filtered,
             clipped_elements=clipped,
             proprio=proprio,
+            prepared=prepared,
         )
         if self.collector is not None:
             self.collector.record(

@@ -1385,7 +1385,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 previous_filtered_native_action=np.zeros(9), seed=args.seed
             )
             preflight_started = node.now_s() if sim else time.perf_counter()
-            preflight_session.step(
+            preflight_result = preflight_session.step(
                 joint_position=np.concatenate((sample.arm_position, q_policy_hand)),
                 joint_velocity=np.concatenate((sample.arm_velocity, dq_policy_hand)),
                 rgb=sample.rgb,
@@ -1398,6 +1398,22 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                     "policy" if runner.config.cyclic_process_phase_conditioning else None
                 ),
             )
+            # The gate has to measure the tick the loop will actually run, not a
+            # cheaper one: --debug-viz renders and publishes inside the loop, so
+            # it is timed here too. force=True because the gate wants the worst
+            # tick, not the publish_every duty cycle.
+            if debug_viz is not None:
+                debug_viz.publish(
+                    prepared=preflight_result.prepared,
+                    grasp_position=grasp_position,
+                    grasp_quaternion=grasp_quaternion,
+                    controller_target_position=sample.controller_target_position,
+                    controller_measured_position=sample.controller_measured_position,
+                    bolt_tip_base=frame.pose_world_to_base(
+                        fo.BOLT_TIP_POSITION, np.array([1.0, 0.0, 0.0, 0.0])
+                    )[0],
+                    force=True,
+                )
             live_preflight_s.append(
                 (node.now_s() if sim else time.perf_counter()) - preflight_started
             )
@@ -1408,7 +1424,9 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         print(
             f"live policy preflight: first {live_preflight_s[0]:.3f} s, "
             f"steady max {steady_preflight_max:.3f} s "
-            f"(required < {steady_budget:.3f} s)",
+            f"(required < {steady_budget:.3f} s"
+            + (", debug viz included" if debug_viz is not None else "")
+            + ")",
             flush=True,
         )
         if steady_preflight_max >= steady_budget:
@@ -1555,9 +1573,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             node.publish_hand_target(fo.pinch_targets(filtered))
             if debug_viz is not None:
                 debug_viz.publish(
-                    rgb=sample.rgb,
-                    depth=sample.depth,
-                    depth_units=sample.depth_units,
+                    prepared=result.prepared,
                     grasp_position=grasp_position,
                     grasp_quaternion=grasp_quaternion,
                     controller_target_position=sample.controller_target_position,

@@ -68,3 +68,39 @@ def test_sample_local_ode_drives_the_vendored_euler_solver_with_the_condition():
     assert all(call == ((2, 3), (2,)) for call in model.calls)
     with pytest.raises(ValueError, match="positive"):
         sample_local_ode(model, x_init, condition, steps=0)
+
+
+def test_the_encoder_keeps_the_cloud_it_sampled_for_the_debug_view():
+    """The debug view draws these rather than sampling the same frame again.
+
+    It has to be what the policy was actually given: a second pass is both
+    duplicated work inside the policy loop and, in principle, a different
+    answer.
+    """
+
+    encoder = _encoder()
+    assert encoder.last_sampled_points is None
+    assert encoder.last_sampled_valid is None
+
+    encoder.eval()
+    rgb = torch.rand(1, 3, 2, 4)
+    depth = torch.full((1, 1, 2, 4), 0.5)
+    with torch.inference_mode():
+        encoder(rgb, depth)
+
+    points, valid = encoder.last_sampled_points, encoder.last_sampled_valid
+    assert points.shape == (1, 6, 6)
+    assert valid.shape == (1, 6)
+    with torch.inference_mode():
+        expected, expected_valid = encoder._sample_points(rgb, depth, None)
+    torch.testing.assert_close(points, expected)
+    torch.testing.assert_close(valid, expected_valid)
+
+
+def test_the_sampled_cloud_is_not_part_of_the_state_dict():
+    """Otherwise every checkpoint load would fail its strict key check."""
+
+    encoder = _encoder()
+    with torch.inference_mode():
+        encoder(torch.rand(1, 3, 2, 4), torch.full((1, 1, 2, 4), 0.5))
+    assert not [key for key in encoder.state_dict() if "last_sampled" in key]

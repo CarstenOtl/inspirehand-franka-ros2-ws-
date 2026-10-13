@@ -97,7 +97,11 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug-viz",
         action="store_true",
-        help="publish the DP3 cloud and control frames for RViz",
+        help=(
+            "publish the DP3 cloud, control frames and camera-view overlay "
+            "(/fr3_policy_rollout/dp3_overlay, for rqt_image_view). Its cost is "
+            "inside the policy period, so the preflight gate measures it too."
+        ),
     )
     parser.add_argument(
         "--debug-viz-every",

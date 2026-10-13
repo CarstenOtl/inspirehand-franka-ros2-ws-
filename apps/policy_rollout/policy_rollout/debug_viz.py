@@ -177,9 +177,7 @@ class PolicyDebugPublisher:
     def publish(
         self,
         *,
-        rgb,
-        depth,
-        depth_units,
+        prepared,
         grasp_position,
         grasp_quaternion,
         controller_target_position,
@@ -187,26 +185,32 @@ class PolicyDebugPublisher:
         bolt_tip_base,
         policy_goal_position=None,
         step=None,
+        force=False,
     ):
+        """Draw this step's own input. ``prepared`` is what the policy was given.
+
+        Nothing here re-prepares the frame or re-samples the cloud: both come
+        from the step that just ran, so the view is what the policy saw rather
+        than a reconstruction of it, and the loop pays for them once.
+        """
+
         self._tick += 1
-        if self._tick % self.publish_every:
+        if not force and self._tick % self.publish_every:
             return
-        import torch
         from visualization_msgs.msg import Marker, MarkerArray
 
-        from utils.camera_calibration import prepare_rgbd
         from .forge_osc import matrix_from_quat
 
         stamp = self.node.get_clock().now().to_msg()
-        prepared = prepare_rgbd(rgb, depth, self.calibration, depth_units=depth_units)
-        with torch.inference_mode():
-            sampled, valid = self.encoder._sample_points(
-                torch.from_numpy(prepared.rgb)[None],
-                torch.from_numpy(prepared.depth)[None],
-                torch.from_numpy(prepared.valid_mask)[None],
+        points = self.encoder.last_sampled_points
+        valid_points = self.encoder.last_sampled_valid
+        if points is None or valid_points is None:
+            raise RuntimeError(
+                "debug viz needs a policy step to have run: the encoder has "
+                "sampled no cloud to draw"
             )
-        sampled = sampled[0].numpy().astype(np.float64)
-        valid = valid[0].numpy().astype(bool)
+        sampled = points[0].cpu().numpy().astype(np.float64)
+        valid = valid_points[0].cpu().numpy().astype(bool)
         centre = self.encoder.xyz_center_m.numpy().reshape(3)
         scale = self.encoder.xyz_scale_m.numpy().reshape(3)
         xyz_cam = sampled[:, :3] * scale + centre
