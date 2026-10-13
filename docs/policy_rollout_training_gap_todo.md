@@ -152,6 +152,117 @@ rather than the blocker. Three things that are now the open questions instead.
   the reset lands, so contact drags it straight back. Until that is settled, any ros-sim
   comparison needs a fresh `sim_policy.launch.py`, not a second `run_policy_rollout.py`.
 
+**2026-10-13, a new checkpoint without the finger velocities, and the turn direction flips.**
+`m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013-135143-648368` (300 epochs, EMA,
+dataset `sequential-threading-dual-supervision-20261013-132348`) is trained with
+`hand_velocity_observation: omitted`, so its proprioception is 26 values: `q10 + dq_arm7 +
+prev9`. The stack now reads the layout off the checkpoint instead of asserting 29. Which three
+values are dropped was settled two ways, because 26 is also what `q7 + dq7 + q_hand3 + prev9`
+would give: the reference-episode teacher-forced score prefers `q10 + dq_arm7 + prev9` (MAE
+0.0397 against 0.0433), and -- independently of behaviour -- the first-layer column norms put
+the step up to the velocity weight scale at column 10, not column 7 (cols 0:7 1.245, cols 7:10
+1.212, cols 10:17 1.500, against the old checkpoint's q 1.206 and arm-dq 1.738). Columns 7-9
+hold hand angles. The DP3 camera contract is byte-identical to the old checkpoint's.
+
+Two runs on the fresh training-hand plant, `ros_sim-20261013-150141-268016` and
+`-151404-197815`, 1500 steps each, no fault and no watchdog:
+
+| run | index mean | index max | ticks >= 0.565 | turn max | turn final |
+|---|---|---|---|---|---|
+| `20261008-130221` (old, 29-D) | 0.385 | 0.716 | 13 of 692 | -43.59 | -61.42 deg |
+| `20261013-150141` (new, 26-D) | 0.169 | 0.215 | 0 of 692 | +15.60 | +15.60 deg |
+| `20261013-151404` (new, 26-D) | 0.169 | 0.216 | 0 of 692 | +1.65 | +1.65 deg |
+
+**The nut now turns the tightening way.** Both runs are positive turn progress where every
+10-08 run unscrewed, and the axial coordinate agrees: 7.66 -> 7.53 mm, descending, against
+10-08's 7.66 -> 8.02 mm. So "the policy unscrews the nut" is answered for this checkpoint. The
+magnitude is not reproducible -- 15.60 deg against 1.65 deg from an identical seed and a
+verified-fresh nut -- so that part is still contact luck, as the status section warns. Neither
+reaches the 55 deg release gate and both complete 0 cycles.
+
+Incidentally this confirms the `/reset_thread` item above from the other side: run 2 started
+from a fresh `sim_policy.launch.py` and `/thread_state` read exactly 0.0 twist and 7.66 mm
+axial before it, so a relaunch does reset the nut even though the service does not.
+
+**What blocks a cycle now is that the hand never pinches, and that part is deterministic.**
+Index holds at 0.169 rad mean and 0.215 max in both runs -- and 0.2147 is
+`THREADING_GRASP_POSTURE`'s own `index_joint_0`, so the policy never closes past its reset
+grasp at all, spending most of the run commanding slightly open (mean action -0.074). Contact
+needs 0.565 rad (E1), reached in 0 of 692 ticks against the old checkpoint's 13. This is the
+command and not a tracking fault: `pinch_targets` with the recorded actions reproduces the
+measured angles to 3 mrad (0.2147 + (-0.074 x 0.6665) = 0.166 against 0.169 measured), and
+`grasp_controlled_offset_m` is 5.8-7.1 mm. In both runs the nut stops moving at step ~53
+(t 3.5 s) and is flat for the remaining ~1445 steps, which reads as the descent brushing it
+and nothing gripping afterwards.
+
+Ruled out, so it is not re-measured: the appearance gap is not newly decisive. Holding proprio,
+progress and phase fixed and changing only the frame moves this checkpoint's action *less* than
+the old one's (mean action spread 0.079 against 0.128 over five episode frames; blank-frame
+delta 0.041 against 0.018). It does not attend to vision more than its predecessor, so why it
+declines to close the hand in ros-sim is open. Worth noting that on the reference episode's own
+observations its three hand channels still correlate +0.85 with the teacher, so the hand head
+works on in-distribution input.
+
+Also now moot for this checkpoint: the "hand dq zeros" gap. The policy is not shown hand
+velocities at all, so C1's signal no longer reaches it. C1 still matters for the 29-D
+checkpoint and for anything reading `joint_velocity`, which the recordings still carry in full
+at ten joints.
+
+**2026-10-13, the first hardware rollouts, and what stopped five of them was the camera.**
+`hardware-20261013-164510-941496` is the first hardware run ever to pass its first policy step.
+Getting there needed one latent fix: hardware has no `/thread_state`, and the runner handed the
+recorder an explicit NaN for `threading_turn_progress_rad`, which `_task_signal` accepts only as
+`None`. No simulated run could hit it, because ros-sim always has a real float to pass.
+
+Five runs then aborted with `stale live inputs: rgb, depth` between steps 6 and 43. Two
+hypotheses were wrong and should not be re-chased.
+
+- **Not bandwidth.** The D415 really was on a USB 2.0 link (480 Mbps, `version 2.10`) and was
+  moved to USB 3 (5000 Mbps, port `4-1`, librealsense `usb descr 3.2`). Worth keeping -- it is a
+  USB 3.1 Gen 1 device so 5000 is its ceiling, never 10000 -- but the aborts continued.
+- **Not CPU contention.** A run with a 0.027 s live preflight against the 0.060 s budget aborted
+  anyway, and `hardware-20261013-164510-941496` held a metronomic 66.7 ms period, max 68.6 ms,
+  **zero** periods over 100 ms and `missed_policy_deadlines: 0` right up to the abort. The loop
+  never faltered; the vision feeding it did.
+
+**It was `rgb_camera.auto_exposure_priority`.** On by default, it lets auto-exposure drop the
+colour frame rate to reach its brightness target, and in this workcell's light it does.
+`/camera/camera/rgbd` publishes only on a colour-depth pair, so it inherits colour's gaps while
+depth runs on at 14.9 Hz. Measured over 400-sample windows:
+
+| | average | min gap | max gap | std |
+|---|---|---|---|---|
+| priority on (default) | 12.5-12.9 Hz | **0.008 s** | **0.466 s** | 0.045 |
+| priority off, live `param set` | 14.1 Hz | 0.063 s | 0.202 s | 0.017 |
+| priority off, via the new launch | 14.3 Hz | 0.064 s | **0.137 s** | 0.013 |
+
+The **minimum** is the diagnostic, not the average: 8 ms means frames clump and then starve, and
+an average of 14 Hz hides all of it. The rollout's own subscriber is slower than a bare `ros2
+topic hz`, so a 0.466 s gap at an independent monitor became over the 0.5 s `--max-state-age` at
+the policy. A monitor run in parallel with the rollout is what settled it -- the camera publishing
+steadily *while* showing 0.466 s gaps is the signature of frame pacing rather than load or
+transport. `policy_camera.launch.py` now carries the setting.
+
+**The first hardware rollout reproduces ros-sim.** Over its 43 steps:
+
+| | ros-sim | hardware |
+|---|---|---|
+| index joint max | 0.215 rad | 0.229 rad |
+| ticks at contact (>= 0.565) | 0 | 0 |
+| `\|grasp-nut\|` | ~45 mm | ~45-47 mm |
+
+So the ~45 mm standoff with an open hand is not a sim artefact, and this failure can be chased
+in ros-sim rather than on the robot. Also confirmed on hardware: proprio records at width 26
+with `hand_velocity_observation: omitted`, the loop holds 15 Hz exactly, and
+`grasp_controlled_offset_m` is 4.7 mm, so the controller tracks what it is told.
+
+**The grasp-yaw proxy fired spuriously on hardware, as predicted.** A later run reported
+`release_started` at a **147.3 deg** proxy, which is not a nut turn -- it is the degenerate grasp
+frame described further down this file, where the pinch closes, the thumb-to-index direction
+loses meaning and the frame tips over. Hardware has no nut-angle topic, so `turn_source` is
+`grasp_yaw_proxy` and this hazard is live on every hardware run. Any hardware release event needs
+corroboration before it is believed.
+
 ### C1. Publish hand joint velocities from the Inspire driver  [should]
 
 Done 2026-10-08, in `inspire_hand_driver`. The hand has no speed sensor -- its register map
