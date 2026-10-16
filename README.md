@@ -50,7 +50,9 @@ for both.
 - **GPU setup only:**
   - An NVIDIA GPU with driver 580 or newer; `nvidia-smi` on the host shows the
     version.
-  - Compose 2.30 or newer.
+  - A Docker Engine with CDI (the Container Device Interface) enabled. It is
+    on by default in current releases, and then `docker info` lists `CDI spec
+    directories`.
   - The NVIDIA Container Toolkit (installed in step 1 below).
 
 The real-time limits for the Franka's 1 kHz control loop are already set in
@@ -109,8 +111,13 @@ docker exec -it inspire_franka bash
    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
    sudo nvidia-ctk runtime configure --runtime=docker   # writes /etc/docker/daemon.json
    sudo systemctl restart docker                        # stops running containers
-   docker info | grep -i runtimes                       # must now list "nvidia"
+   nvidia-ctk cdi list                                  # must list nvidia.com/gpu=all
    ```
+
+   The compose file requests the GPU as the CDI device `nvidia.com/gpu=all`.
+   Toolkit 1.18 and newer generate that spec themselves, in
+   `/var/run/cdi/nvidia.yaml`. If `cdi list` shows nothing, generate it once
+   with `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
 
 2. Select the GPU variant for this machine, then build and start it.
    `docker/.env` is git-ignored, so this choice stays on this machine and
@@ -146,12 +153,23 @@ docker exec -it inspire_franka bash
   hand inside the container does not.
 - **CPU inside the GPU container.** Pass `--device cpu`; the step default
   then drops to 2.
-- **"could not select device driver nvidia"** from `up`: step 1 is incomplete.
-  `docker info` lists no `nvidia` runtime, or Docker was not restarted.
-- **`torch.cuda.is_available()` is False in the GPU container:** the host
-  driver is older than 580, or the container was started without the GPU file.
-  `docker inspect inspire_franka --format '{{.Config.Image}}'` should print
-  `docker-inspire_franka:gpu`.
+- **`up` fails with an error naming `nvidia.com/gpu=all` or the `cdi`
+  driver:** there is no CDI spec on the host. Run `nvidia-ctk cdi list`, and
+  if it lists nothing, generate the spec as in step 1.
+- **`torch.cuda.is_available()` is False in the GPU container:**
+  - The host driver is older than 580.
+  - Or the container was started without the GPU file:
+    `docker inspect inspire_franka --format '{{.Config.Image}}'` should print
+    `docker-inspire_franka:gpu`.
+
+  The rollout does not stop in this case. It runs on the CPU with 2 steps, so
+  check the warm-up line: it should end `16 flow steps on cuda`.
+- **`nvidia-smi` in a long-running container fails with "Failed to initialize
+  NVML: Unknown Error":** the container was started with `gpus: all` (an
+  older version of the compose file) and then lost the GPU. A `systemctl
+  daemon-reload` triggers this, and any package install or snap refresh runs
+  one. Pull the current `docker-compose.gpu.yml`, which uses CDI, and run
+  `docker compose up -d`.
 
 ### Without Docker
 

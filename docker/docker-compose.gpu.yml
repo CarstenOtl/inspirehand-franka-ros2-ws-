@@ -6,10 +6,9 @@
 # or put `COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml` in a local,
 # untracked docker/.env so plain `docker compose` picks it up on this host.
 #
-# Needs the NVIDIA Container Toolkit on the host (`nvidia-ctk runtime configure
-# --runtime=docker`, then restart dockerd); without it `up` fails with "could
-# not select device driver nvidia". The image is built with the cu130 torch
-# wheel, which wants a driver >= 580.
+# Needs the NVIDIA Container Toolkit on the host, which also writes the CDI
+# spec this file asks for (`nvidia-ctk cdi list` shows nvidia.com/gpu=all). The
+# image is built with the cu130 torch wheel, which wants a driver >= 580.
 #
 # The GPU image gets its own tag, so it sits beside the CPU one
 # (docker-inspire_franka:latest) instead of replacing it: switching between
@@ -20,4 +19,12 @@ services:
     build:
       args:
         TORCH_INDEX: cu130
-    gpus: all
+    # The GPU through CDI, not `gpus: all`. With `gpus: all` the toolkit's hook
+    # grants the device nodes behind Docker's back, and with the systemd cgroup
+    # driver (Ubuntu's default) the next `systemctl daemon-reload` - any package
+    # install or snap refresh triggers one - drops the grant: the running
+    # container's nvidia-smi then fails with "Failed to initialize NVML: Unknown
+    # Error" and torch quietly falls back to the CPU. CDI devices are Docker's
+    # own, so they survive the reload.
+    devices:
+      - nvidia.com/gpu=all
