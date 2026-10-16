@@ -44,6 +44,34 @@ docker compose up -d
 docker exec -it inspire_franka bash
 ```
 
+On a host with an NVIDIA GPU, layer `docker/docker-compose.gpu.yml` over the
+base file. It builds the image with the CUDA torch wheel (cu130, driver >= 580)
+and hands the GPU to the container, which lets `apps/policy_rollout` run the
+student's full 16 flow steps at 15 Hz instead of the CPU's two. The container
+needs the NVIDIA Container Toolkit on the host, once:
+
+```bash
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker            # stops the running container
+```
+
+Then select the override for this host and rebuild. `docker/.env` is
+untracked, so the workcell without a GPU keeps the CPU image:
+
+```bash
+cd docker
+echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml' > .env
+docker compose build
+docker compose up -d
+docker exec inspire_franka nvidia-smi   # the GPU is visible inside
+```
+
 For an existing clone, initialize the newly added submodules once:
 
 ```bash

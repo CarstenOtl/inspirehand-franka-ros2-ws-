@@ -14,6 +14,9 @@
 # Corporate root CAs for TLS inspection - machine-specific, never committed.
 docker/certs/*.crt
 
+# Per-host compose selection (e.g. the GPU override) - never committed.
+docker/.env
+
 # MuJoCo writes this into whatever directory a model is loaded from.
 MUJOCO_LOG.TXT
 

@@ -1199,6 +1199,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "checkpoint_sha256": metadata["sha256"],
             "checkpoint_weight_source": metadata["weight_source"],
             "flow_integration_steps": metadata["integration_steps"],
+            "policy_device": metadata["device"],
             "camera_profile": str(calibration.source_path),
             "hand_velocity_observation": runner.config.hand_velocity_observation,
             "collection_mode": (

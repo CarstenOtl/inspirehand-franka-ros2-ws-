@@ -1,0 +1,18 @@
+# NVIDIA GPU override for hosts that have one. Layer it over the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# or put `COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml` in a local,
+# untracked docker/.env so plain `docker compose` picks it up on this host.
+#
+# Needs the NVIDIA Container Toolkit on the host (`nvidia-ctk runtime configure
+# --runtime=docker`, then restart dockerd); without it `up` fails with "could
+# not select device driver nvidia". The image is built with the cu130 torch
+# wheel, which wants a driver >= 580.
+services:
+  inspire_franka:
+    build:
+      args:
+        TORCH_INDEX: cu130
+    gpus: all

@@ -178,14 +178,18 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     && python3 -c "import cv2, mujoco"
 
 # Inference runtime for apps/policy_rollout (the distilled DP3 flow student).
-# CPU-only PyTorch: this workcell has no NVIDIA GPU, and the CPU wheel is a
-# fraction of the CUDA one. torchdiffeq is the vendored flow_matching solver's
-# runtime dependency. Kept separate from the layer above so a version bump
-# here does not invalidate the mujoco layer.
+# TORCH_INDEX selects the PyTorch wheel index: `cpu` by default, because the
+# original workcell has no NVIDIA GPU and the CPU wheel is a fraction of the
+# CUDA one. A host with an NVIDIA GPU builds with docker-compose.gpu.yml, which
+# sets `cu130` (needs driver >= 580 and the NVIDIA Container Toolkit) and lets
+# the policy run its full 16 flow steps at 15 Hz. torchdiffeq is the vendored
+# flow_matching solver's runtime dependency. Kept separate from the layer above
+# so a version bump here does not invalidate the mujoco layer.
 ARG TORCH_VERSION=2.14.0
+ARG TORCH_INDEX=cpu
 ARG TORCHDIFFEQ_VERSION=0.2.5
 RUN pip3 install --no-cache-dir --break-system-packages \
-        --index-url https://download.pytorch.org/whl/cpu \
+        --index-url https://download.pytorch.org/whl/${TORCH_INDEX} \
         torch==${TORCH_VERSION} \
     && pip3 install --no-cache-dir --break-system-packages \
         torchdiffeq==${TORCHDIFFEQ_VERSION} \

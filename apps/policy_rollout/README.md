@@ -42,7 +42,7 @@ ros2 launch realsense2_camera rs_launch.py \
 In another sourced shell, run:
 
 ```bash
-python3 apps/policy_rollout/run_policy_rollout.py hardware --device cpu --viewer
+python3 apps/policy_rollout/run_policy_rollout.py hardware --viewer
 ```
 
 `--viewer` opens a side-by-side window using the exact RGB and aligned-depth
@@ -52,19 +52,49 @@ hardware default is 5 Hz so rendering does not compete heavily with policy
 inference. Use `--viewer-depth-max METRES` or `--viewer-hz HZ` to change the
 display.
 
-The CPU hardware backend uses two flow integration steps per action. On this
-workcell that benchmarks at about 34 Hz before ROS/control load; an offline
+The runner picks its device on its own: CUDA when the container's torch build
+sees a GPU, otherwise CPU, and `--device` overrides that. The whole pass moves
+with it, point-cloud construction included. The flow-step default follows the
+device. On CUDA the policy runs the 16 Euler steps it was distilled with (see
+"GPU inference" below for the measured cost). On CPU it runs two, which
+benchmarks at about 34 Hz on the workcell before ROS/control load; an offline
 teacher-forced check gives 0.0060 unified-action MAE versus 0.0043 with four
 steps. Before enabling motion, the runner measures four steady real-frame
 passes and requires the slowest to fit within 90% of the requested policy
-period. Use `--integration-steps N` to override it; a setting that cannot meet
-the requested rate is rejected before physical execution.
+period. Use `--integration-steps N` to override either default; a setting
+that cannot meet the requested rate is rejected before physical execution.
+Each recording stores `policy_device` and `flow_integration_steps` in its
+metadata. A seeded run on CUDA does not reproduce a seeded CPU run: the flow
+noise comes from a device-bound generator. Point sampling is identical on
+both, since evaluation uses a fixed priority buffer.
+
+### GPU inference
+
+The development laptop (i7-12700H, RTX 3060 Laptop 6 GB) runs the container
+from `docker/docker-compose.gpu.yml`; the top-level README has the one-time
+host setup. With it, `--device auto` resolves to CUDA and the default becomes
+16 flow steps. `tests/benchmark_policy_inference.py` on the deployed 26-D
+checkpoint, 320x180 frames, measured on 2026-10-15:
+
+| flow steps | CUDA mean / max | CPU mean / max |
+|---|---|---|
+| 2 | 3.0 / 3.3 ms | 16 / 18 ms |
+| 16 | 11.7 / 12.0 ms | 92 / 225 ms |
+| 32 | 21.9 / 22.3 ms | - |
+
+Sixteen steps on the GPU use a fifth of the 60 ms preflight budget at 15 Hz;
+on this CPU they fail it. The per-step cost is about 0.6 ms on CUDA against
+3 ms on CPU, and the fixed vision cost drops from about 10 ms to 2 ms. Compute
+is no longer what bounds `--rate`: the checkpoint was distilled at 15 Hz, so
+its action horizon, temporal ensemble and progress clock assume that period,
+and the D415 profile delivers 30 frames per second. Raising the rate is a
+training-side change, not a deployment flag.
 
 The camera path can be checked against real frames and the student checkpoint
 without bringing up or commanding the arm or hand:
 
 ```bash
-python3 apps/policy_rollout/tests/smoke_test_camera.py --device cpu
+python3 apps/policy_rollout/tests/smoke_test_camera.py
 ```
 
 The hardware backend deliberately has two operator gates unless `--yes` is
@@ -121,7 +151,7 @@ policy commands, mock hand driver and `/camera/camera/rgbd`.
 
 ```bash
 ros2 launch inspire_franka_trajectory_replay sim_policy.launch.py
-python3 apps/policy_rollout/run_policy_rollout.py ros-sim --device cpu --yes
+python3 apps/policy_rollout/run_policy_rollout.py ros-sim --yes
 ```
 
 The launch opens two windows. One is the MuJoCo viewer, which starts on a free
@@ -226,8 +256,7 @@ impedance acts.
 ## Run in MuJoCo
 
 ```bash
-MUJOCO_GL=glfw python3 apps/policy_rollout/run_policy_rollout.py mujoco \
-  --device cpu
+MUJOCO_GL=glfw python3 apps/policy_rollout/run_policy_rollout.py mujoco
 ```
 
 The simulator runs the same student policy at 15 Hz and executes native OSC

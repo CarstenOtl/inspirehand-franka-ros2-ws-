@@ -25,7 +25,7 @@ if str(APP_ROOT) not in sys.path:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--steps", type=int, nargs="+", default=[1, 2, 4, 8, 16])
     parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args(argv)

@@ -48,22 +48,35 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--hand-topic", default="/inspire_hand/command")
     parser.add_argument("--hand-state-topic", default="/inspire_hand/joint_states")
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--integration-steps", type=int, default=2)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--integration-steps",
+        type=int,
+        default=None,
+        help="Flow ODE steps (default: 16 on CUDA, 2 on CPU, as in the rollout).",
+    )
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--max-state-age", type=float, default=0.5)
     parser.add_argument("--max-frame-skew", type=float, default=0.04)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
-    if args.integration_steps < 1 or args.iterations < 1 or args.timeout <= 0.0:
+    if (
+        (args.integration_steps is not None and args.integration_steps < 1)
+        or args.iterations < 1
+        or args.timeout <= 0.0
+    ):
         parser.error("integration-steps, iterations, and timeout must be positive")
 
     import rclpy
     from rclpy.executors import MultiThreadedExecutor
 
     from franka_trajectory_replay.runconfig import load_config
-    from policy_rollout.flow_policy import FlowPolicyRunner
+    from policy_rollout.flow_policy import (
+        FlowPolicyRunner,
+        default_integration_steps,
+        resolve_device,
+    )
     from policy_rollout.hardware import (
         TrainingFrameAdapter,
         _hardware_node_class,
@@ -74,9 +87,12 @@ def main(argv=None) -> int:
 
     calibration = load_camera_calibration(args.camera_calibration)
     config = load_config(args.config)
+    device = resolve_device(args.device)
+    if args.integration_steps is None:
+        args.integration_steps = default_integration_steps(device)
     runner = FlowPolicyRunner(
         args.checkpoint,
-        device=args.device,
+        device=device,
         integration_steps=args.integration_steps,
     )
     session = PolicyRolloutSession(runner, calibration)

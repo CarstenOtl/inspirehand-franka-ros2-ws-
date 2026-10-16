@@ -38,7 +38,14 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help=(
+            "torch device for the policy, vision encoder included: 'auto' picks "
+            "CUDA when the torch build sees a GPU, else CPU (default: auto)."
+        ),
+    )
     parser.add_argument("--camera-calibration", default=None)
     parser.add_argument(
         "--config",
@@ -57,8 +64,11 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser.add_argument(
         "--integration-steps",
         type=int,
-        default=2,
-        help="Flow ODE steps per action (hardware default: 2 for 15 Hz CPU execution).",
+        default=None,
+        help=(
+            "Flow ODE steps per action (default: the 16 the student was distilled "
+            "with on CUDA, 2 on CPU so the 15 Hz period still fits)."
+        ),
     )
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=1500)
@@ -198,8 +208,21 @@ def _top_help() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_execution(args):
+    """Pin the policy device and fill the device-dependent step default."""
+
+    from policy_rollout.flow_policy import default_integration_steps, resolve_device
+
+    device = resolve_device(args.device)
+    args.device = str(device)
+    if args.integration_steps is None:
+        args.integration_steps = default_integration_steps(device)
+    return device
+
+
 def _run_hardware(argv, sim: bool = False) -> int:
     args = _hardware_parser(sim).parse_args(argv)
+    _resolve_execution(args)
     for name in (
         "rate",
         "hand_timeout",
@@ -238,7 +261,7 @@ def _run_hardware(argv, sim: bool = False) -> int:
     warm_up_s = _warm_up_runner(runner, calibration, args.seed)
     print(
         f"policy model warm-up complete in {warm_up_s:.3f} s "
-        f"({args.integration_steps} flow steps)"
+        f"({args.integration_steps} flow steps on {runner.device})"
     )
     viewer_process = None
     try:

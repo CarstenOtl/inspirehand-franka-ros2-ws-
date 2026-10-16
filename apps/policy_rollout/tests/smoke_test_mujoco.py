@@ -180,7 +180,7 @@ def main(argv=None) -> int:
     parser.add_argument("--mjcf", default=str(DEFAULT_MJCF))
     parser.add_argument("--frames", default="0,60,150,300,500,800")
     parser.add_argument("--output-dir", default=str(DEFAULT_EPISODE.parent / "smoke"))
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--base-plate-z",
         type=float,

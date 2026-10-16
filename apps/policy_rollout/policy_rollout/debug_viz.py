@@ -211,8 +211,8 @@ class PolicyDebugPublisher:
             )
         sampled = points[0].cpu().numpy().astype(np.float64)
         valid = valid_points[0].cpu().numpy().astype(bool)
-        centre = self.encoder.xyz_center_m.numpy().reshape(3)
-        scale = self.encoder.xyz_scale_m.numpy().reshape(3)
+        centre = self.encoder.xyz_center_m.cpu().numpy().reshape(3)
+        scale = self.encoder.xyz_scale_m.cpu().numpy().reshape(3)
         xyz_cam = sampled[:, :3] * scale + centre
         rgb01 = np.clip((sampled[:, 3:6] + 1.0) * 0.5, 0.0, 1.0)
         xyz_cam, rgb01 = xyz_cam[valid], rgb01[valid]

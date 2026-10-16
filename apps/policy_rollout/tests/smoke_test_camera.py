@@ -26,8 +26,13 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--camera-calibration", default=None)
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--integration-steps", type=int, default=2)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--integration-steps",
+        type=int,
+        default=None,
+        help="Flow ODE steps (default: 16 on CUDA, 2 on CPU, as in the rollout).",
+    )
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument(
         "--observe-seconds",
@@ -51,7 +56,7 @@ def main(argv=None) -> int:
         args.timeout <= 0.0
         or args.observe_seconds <= 0.0
         or args.max_frame_skew <= 0.0
-        or args.integration_steps < 1
+        or (args.integration_steps is not None and args.integration_steps < 1)
     ):
         _parser().error("timeout, max-frame-skew, and integration-steps must be positive")
 
@@ -59,7 +64,11 @@ def main(argv=None) -> int:
     from rclpy.qos import qos_profile_sensor_data
     from realsense2_camera_msgs.msg import RGBD
 
-    from policy_rollout.flow_policy import FlowPolicyRunner
+    from policy_rollout.flow_policy import (
+        FlowPolicyRunner,
+        default_integration_steps,
+        resolve_device,
+    )
     from policy_rollout.hardware import (
         RgbdFrameSynchronizer,
         assert_policy_camera_frames,
@@ -146,9 +155,12 @@ def main(argv=None) -> int:
             rgb, depth, profile, depth_units=depth_units
         )
 
+        device = resolve_device(args.device)
+        if args.integration_steps is None:
+            args.integration_steps = default_integration_steps(device)
         runner = FlowPolicyRunner(
             args.checkpoint,
-            device=args.device,
+            device=device,
             integration_steps=args.integration_steps,
         )
         profile.assert_checkpoint_compatible(runner.config.to_dict())

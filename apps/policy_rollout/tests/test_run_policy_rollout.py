@@ -3,10 +3,30 @@ from types import SimpleNamespace
 import run_policy_rollout as cli
 
 
-def test_hardware_defaults_fit_the_cpu_policy_rate():
+def test_hardware_defaults_resolve_the_flow_steps_from_the_device():
     args = cli._hardware_parser().parse_args([])
     assert args.rate == 15.0
-    assert args.integration_steps == 2
+    assert args.device == "auto"
+    assert args.integration_steps is None
+
+    cpu = cli._hardware_parser().parse_args(["--device", "cpu"])
+    assert str(cli._resolve_execution(cpu)) == "cpu"
+    assert cpu.device == "cpu"
+    assert cpu.integration_steps == 2
+
+    from policy_rollout.flow_policy import default_integration_steps
+
+    assert default_integration_steps("cuda") == 16
+    assert default_integration_steps("cuda:0") == 16
+    assert default_integration_steps("cpu") == 2
+
+
+def test_explicit_flow_steps_survive_device_resolution():
+    args = cli._hardware_parser().parse_args(
+        ["--device", "cpu", "--integration-steps", "16"]
+    )
+    cli._resolve_execution(args)
+    assert args.integration_steps == 16
 
 
 def test_ros_sim_backend_shares_the_hardware_options():

@@ -438,6 +438,30 @@ class FlowActionChunkEnsembler:
         return weighted / total
 
 
+def resolve_device(device: str | torch.device = "auto") -> torch.device:
+    """Map ``"auto"`` to CUDA when this torch build can see a GPU, else CPU.
+
+    Any other value is passed to ``torch.device`` unchanged, so an explicit
+    ``cuda`` on a CPU-only build still fails loudly instead of silently
+    falling back.
+    """
+
+    if isinstance(device, str) and device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
+
+
+def default_integration_steps(device: str | torch.device) -> int:
+    """Flow ODE steps the deployment runs when none are requested.
+
+    The student was distilled with 16 Euler steps; a GPU runs all of them
+    well inside the 15 Hz period, while the CPU budget on the workcell fits
+    two (about 34 Hz there before ROS and control load).
+    """
+
+    return 16 if torch.device(device).type == "cuda" else 2
+
+
 class FlowPolicyRunner:
     """Strict checkpoint loader plus seeded receding-horizon DP3 inference."""
 
@@ -445,14 +469,14 @@ class FlowPolicyRunner:
         self,
         checkpoint_path: str | Path,
         *,
-        device: str = "cpu",
+        device: str | torch.device = "auto",
         integration_steps: int = 16,
         temporal_ensemble_decay: float = 0.5,
         raw_weights: bool = False,
         seed: int = 0,
     ) -> None:
         self.path = Path(checkpoint_path).expanduser().resolve()
-        self.device = torch.device(device)
+        self.device = resolve_device(device)
         try:
             payload = torch.load(
                 self.path, map_location=self.device, weights_only=False
@@ -564,6 +588,7 @@ class FlowPolicyRunner:
             "checkpoint": str(self.path),
             "sha256": digest,
             "weight_source": self.weight_source,
+            "device": str(self.device),
             "integration_steps": self.integration_steps,
             "epoch": self.payload.get("epoch"),
             "config": self.config.to_dict(),
@@ -577,4 +602,6 @@ __all__ = [
     "FlowActionChunkEnsembler",
     "FlowPolicyConfig",
     "FlowPolicyRunner",
+    "default_integration_steps",
+    "resolve_device",
 ]

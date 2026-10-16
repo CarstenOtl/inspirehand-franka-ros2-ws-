@@ -54,7 +54,7 @@ def main(argv=None) -> int:
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=1500)
     parser.add_argument("--output-dir", default=str(DEFAULT_EPISODE.parent / "student_rollout"))
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--integration-steps", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--record-rgbd", action="store_true")
@@ -103,6 +103,7 @@ def main(argv=None) -> int:
             "checkpoint_sha256": metadata["sha256"],
             "checkpoint_weight_source": metadata["weight_source"],
             "flow_integration_steps": metadata["integration_steps"],
+            "policy_device": metadata["device"],
             "camera_profile": str(profile.source_path),
             "collection_mode": "mujoco_closed_loop_student",
             "reference_episode": str(args.episode),

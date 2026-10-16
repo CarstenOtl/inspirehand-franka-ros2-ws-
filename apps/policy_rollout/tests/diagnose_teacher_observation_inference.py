@@ -62,7 +62,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
     parser.add_argument("--episode", default=str(DEFAULT_EPISODE))
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--integration-steps", type=int, nargs="+", default=[4, 16])
     parser.add_argument("--stride", type=int, default=15)
     parser.add_argument("--seed", type=int, default=0)
