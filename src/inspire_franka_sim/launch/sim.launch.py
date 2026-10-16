@@ -166,6 +166,14 @@ def launch_setup(context, *args, **kwargs):
             emulate_tty=True,
             output="both",
             parameters=[use_sim_time, ParameterFile(controllers_yaml, allow_substs=True)],
+            # controller_manager mlockall()s the process, so every reserved
+            # page counts against the container's memlock limit. MuJoCo's
+            # renderer and the mesa driver start a thread per core, and glibc
+            # gives each a 64 MB malloc arena, up to 8 per core: on a 20-thread
+            # host that locked 8.2 GB, hit the limit, and the next controller's
+            # thread failed to start ("Resource temporarily unavailable").
+            # Two arenas keep it near 2 GB.
+            additional_env={"MALLOC_ARENA_MAX": "2"},
             # If MuJoCo dies, tear the whole launch down rather than leaving
             # orphaned spawners waiting on a controller_manager that is gone.
             on_exit=Shutdown(),
