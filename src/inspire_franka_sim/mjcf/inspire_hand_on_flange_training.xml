@@ -1,0 +1,48 @@
+<mujoco model="inspire_hand_on_flange_training">
+  <!-- ForgeUltra's TRAINING hand geometry as an FR3 end effector, for
+       fr3.xml's `end_effector` attachment slot. The sibling of
+       inspire_hand_on_flange.xml, which mounts the dex-urdf hand; keep the
+       two transforms identical, because the only thing that should differ
+       between the two scenes is the hand itself.
+
+       Why a second one exists: the workspace has two independent
+       descriptions of the same Inspire RH56, and they disagree about where
+       the thumb sits by about 15 degrees of carry. The student policy was
+       distilled on this one, and teacher rollouts on the bench say it is also
+       the closer match to the physical hand. See
+       scripts/make_training_hand_mjcf.py and
+       apps/policy_rollout/utils/compare_hand_models.py.
+
+       As in the sibling, this wrapper materialises the fr3_link8 body that
+       Menagerie's FR3 lacks, and attaches hand_mount to the flange 10 mm
+       along +z with a 180 degree clocking angle. The 10 mm is the thickness
+       of the black physical adapter flange. Keep this transform equal to
+       hand_flange_xyz/rpy in
+       inspire_franka_description/urdf/inspire_franka.urdf.xacro. -->
+
+  <asset>
+    <model name="inspire_hand_training" file="inspire_hand_right_training.xml"/>
+  </asset>
+
+  <worldbody>
+    <body name="fr3_link8">
+      <!-- The point a POLICY ROLLOUT controls: the thumb/index fingertip
+           midpoint at the threading grip, in this hand's geometry, which is
+           where the number came from in the first place. Keep equal to
+           tool_offset_xyz in controllers_policy.yaml and
+           controllers_sim_policy.yaml, and to POLICY_TOOL_OFFSET_XYZ in
+           apps/policy_rollout/policy_rollout/hardware.py. Group 4 is hidden
+           by default: show it with the passive viewer's site_groups:=4.
+
+           The sibling file also carries a `grasp_tcp` site for trajectory
+           replay. It is deliberately absent here: that point is the midpoint
+           of a closed pinch measured on the dex-urdf hand, and replay does
+           not run against this scene. -->
+      <site name="policy_grasp_tcp" pos="-0.059067 -0.028773 0.173311"
+        size="0.005" group="4" rgba="0.15 0.85 0.35 0.95"/>
+      <frame pos="0 0 0.010" quat="0 0 0 1">
+        <attach model="inspire_hand_training" prefix=""/>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>

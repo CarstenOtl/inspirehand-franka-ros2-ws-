@@ -1,0 +1,12 @@
+<library path="franka_forge_cartesian_impedance">
+  <class name="franka_forge_cartesian_impedance/CartesianImpedanceController"
+         type="franka_forge_cartesian_impedance::CartesianImpedanceController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Holds or moves a controlled frame of an FR3 under the ForgeUltra operational-space torque
+      law: stiffness and damping on the pose error, a mass-weighted dynamically consistent
+      nullspace term, and the training environment's per-cycle target clip. Accepts pose gotos,
+      Cartesian trajectories and live policy goals, and publishes reference vs measured at 1 kHz.
+    </description>
+  </class>
+</library>

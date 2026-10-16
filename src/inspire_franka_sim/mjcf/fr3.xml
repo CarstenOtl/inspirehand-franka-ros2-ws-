@@ -6,7 +6,12 @@
   <default>
     <default class="fr3">
       <!-- Overwritten in joints 5, 6, and 7. -->
-      <joint damping="0.21" armature="0.195" frictionloss="1.137"/>
+      <!-- FRICTION EXPERIMENT 2026-09-30: damping/frictionloss zeroed to match training
+           (Isaac) and the working MuJoCo-only loop, which sets both to 0. Original:
+           damping="0.21" frictionloss="1.137". Revert by checking this file out of git.
+           (A double hyphen is illegal inside an XML comment, so the command cannot be
+           written here: ament_xmllint rejects the whole file for one.) -->
+      <joint damping="0" armature="0.195" frictionloss="0"/>
       <position inheritrange="1"/>
       <default class="visual">
         <geom type="mesh" group="2" contype="0" conaffinity="0"/>
@@ -107,7 +112,7 @@
                   <inertial pos="-0.00160396 0.0292536 -0.0972966" quat="0.919031 0.125604 0.0751531 -0.366003"
                     mass="2.32712" diaginertia="0.0579335 0.0449144 0.0130634"/>
                   <joint name="fr3_joint5" axis="0 0 1" range="-2.8065 2.8065" actuatorfrcrange="-12 12"
-                    armature="0.074" frictionloss="0.763"/>
+                    armature="0.074" frictionloss="0"/>  <!-- FRICTION EXPERIMENT: was 0.763 -->
                   <geom mesh="link5_0" material="white" class="visual"/>
                   <geom mesh="link5_1" material="white" class="visual"/>
                   <geom mesh="link5_2" material="black" class="visual"/>
@@ -116,7 +121,7 @@
                     <inertial pos="0.0597131 -0.0410295 -0.0101693" quat="0.621301 0.552665 0.510011 0.220081"
                       mass="1.81704" diaginertia="0.0175039 0.0161123 0.00193529"/>
                     <joint name="fr3_joint6" axis="0 0 1" range="0.5445 4.5169" actuatorfrcrange="-12 12"
-                      armature="0.074" frictionloss="0.44"/>
+                      armature="0.074" frictionloss="0"/>  <!-- FRICTION EXPERIMENT: was 0.44 -->
                     <geom mesh="link6_0" material="button_green" class="visual"/>
                     <geom mesh="link6_1" material="white" class="visual"/>
                     <geom mesh="link6_2" material="white" class="visual"/>
@@ -130,7 +135,7 @@
                       <inertial pos="0.00452258 0.00862619 -0.0161633" quat="0.727579 0.0978688 -0.24906 0.63168"
                         mass="0.627143" diaginertia="0.000223836 0.000223642 5.64132e-07"/>
                       <joint name="fr3_joint7" axis="0 0 1" range="-3.0159 3.0159" actuatorfrcrange="-12 12"
-                        armature="0.074" frictionloss="0.248"/>
+                        armature="0.074" frictionloss="0"/>  <!-- FRICTION EXPERIMENT: was 0.248 -->
                       <geom mesh="link7_0" material="black" class="visual"/>
                       <geom mesh="link7_1" material="white" class="visual"/>
                       <geom mesh="link7_2" material="white" class="visual"/>

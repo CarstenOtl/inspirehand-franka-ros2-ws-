@@ -30,7 +30,7 @@ controller_manager:
       type: franka_example_controllers/GravityCompensationExampleController
 
     cartesian_trajectory_replay_controller:
-      type: franka_trajectory_replay/CartesianTrajectoryReplayController
+      type: franka_forge_cartesian_impedance/CartesianImpedanceController
 
     hand_joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController

@@ -30,6 +30,8 @@ class RGBPointCloudDP3Encoder(nn.Module):
         output_activation: str = "elu",
     ) -> None:
         super().__init__()
+        self.last_sampled_points = None
+        self.last_sampled_valid = None
         camera = torch.as_tensor(camera_matrix, dtype=torch.float32)
         if camera.numel() != 9:
             raise ValueError("camera_matrix must contain nine values")
@@ -173,6 +175,11 @@ class RGBPointCloudDP3Encoder(nn.Module):
         if valid_mask is not None and valid_mask.shape != depth.shape:
             raise ValueError("valid_mask must have the same shape as depth")
         points, valid = self._sample_points(rgb, depth, valid_mask)
+        # Keep what was sampled so a debug view can draw the points the policy
+        # actually saw instead of sampling the same frame a second time. Held as
+        # a plain attribute, not a buffer, so it stays out of the state dict.
+        self.last_sampled_points = points.detach()
+        self.last_sampled_valid = valid.detach()
         point_features = self.point_mlp(points)
         floor = torch.finfo(point_features.dtype).min
         pooled = point_features.masked_fill(~valid.unsqueeze(-1), floor).amax(dim=1)

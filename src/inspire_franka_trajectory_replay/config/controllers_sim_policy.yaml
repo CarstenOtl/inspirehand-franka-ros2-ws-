@@ -4,9 +4,22 @@
 # The FR3 blocks are controllers_policy.yaml's, so the runner's policy-profile
 # parameter check passes unchanged. Differences, all forced by the simulator:
 # the Cartesian controller takes its pose and Jacobian from the built-in DH
-# model (model_source: dh, which never applies a coriolis term), there is no
-# franka_robot_state_broadcaster, and gravity is off in the scene in place of
-# libfranka's compensation. The hand controllers are controllers_sim_impedance.yaml's.
+# model (model_source: dh), there is no franka_robot_state_broadcaster, and
+# gravity is off in the scene in place of libfranka's compensation. The hand
+# controllers are controllers_sim_impedance.yaml's.
+
+# The threaded nut in inspire_franka_policy_scene.xml is not part of the robot,
+# so no ros2_control interface reaches it. inspire_franka_sim's thread pair
+# plugin publishes its twist on /thread_state and clamps the thread on
+# /thread_hold, which is what the rollout's release/return lifecycle needs
+# instead of the grasp-frame yaw proxy. MujocoSystemInterface reads this off the
+# node it gets from get_node(), hence the wildcard: the parameter belongs to the
+# simulator's own node, not to a controller.
+/**:
+  ros__parameters:
+    mujoco_plugins:
+      thread_pair:
+        type: inspire_franka_sim/ThreadPairPlugin
 
 controller_manager:
   ros__parameters:
@@ -18,7 +31,7 @@ controller_manager:
     trajectory_replay_controller:
       type: franka_trajectory_replay/TrajectoryReplayController
     cartesian_trajectory_replay_controller:
-      type: franka_trajectory_replay/CartesianTrajectoryReplayController
+      type: franka_forge_cartesian_impedance/CartesianImpedanceController
 
     hand_joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
@@ -55,8 +68,9 @@ cartesian_trajectory_replay_controller:
     arm_prefix: ""
     base_frame: fr3_link0
     model_source: dh
-    # The training grasp midpoint at the threading grip; see
-    # controllers_policy.yaml. Keep the two equal.
+    # The training grasp midpoint at the threading grip, used until the first
+    # policy goal brings the live one; see controllers_policy.yaml. Keep the two
+    # equal.
     tool_offset_xyz: [-0.059067, -0.028773, 0.173311]
     tool_offset_rpy: [0.0, 0.0, 0.0]
     translational_stiffness: 565.0
@@ -64,8 +78,38 @@ cartesian_trajectory_replay_controller:
     nullspace_stiffness: 10.0
     stiffness_scale: 1.0
     target_filter: 1.0
+    # The two places the franka example's law departs from ForgeUltra's
+    # compute_dof_torque. lambda 0.2 turns the nullspace projector into a leaky
+    # one: near the threading posture it sits on top of the three smallest
+    # singular values of J^T, so the joint spring pushes 12.5 N on the tool at a
+    # 1 rad wrist excursion, against the 11.3 N the policy commands for a full
+    # 20 mm step. lambda 0 restores the exact projection (0.4 N). axis_angle
+    # feeds the rotational spring the full angle instead of sin(theta/2), which
+    # is what turns 28 Nm/rad into the 14 Nm/rad the example actually applies.
+    nullspace_damping_lambda: 0.0
+    rotation_error: axis_angle
+    # A1b: Forge's nullspace term in full -- the joint PD weighted by the arm mass
+    # matrix and projected by (I - J^T Jbar^T) instead of a pseudo-inverse. On this
+    # 'dh' path the mass matrix is a pinocchio CRBA over the robot description with
+    # the hand joints locked, which matched MuJoCo's own arm block to 8e-04 kg m^2
+    # on 2026-10-01 (the residual is the frozen hand posture, bounded at 1.2e-03 by
+    # sweeping every finger limit to limit).
+    mass_weighted_nullspace: true
+    # Rigid-body inertia only. Both MJCFs carry Menagerie's 0.195 / 0.074 armature,
+    # but Isaac's arm armature lives in fr3_no_hand.usd, which is a git-lfs pointer
+    # in this checkout, and robot.py sets armature for the hand joints only. Set
+    # this to [0.195 x4, 0.074 x3] once the USD confirms it.
+    arm_armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     nullspace_target: trajectory
-    coriolis_compensation: true
+    # compute_dof_torque has no Coriolis term (the 'dh' path never applied one
+    # anyway; the hardware profile now agrees).
+    coriolis_compensation: false
+    # ForgeUltra's +-100 Nm clamp and its per-substep target clip, as in
+    # controllers_policy.yaml. Keep the two equal; the runner checks them.
+    torque_limit: 100.0
+    policy_clip_position_m: 0.02
+    policy_clip_orientation_rad: 0.097
+    policy_clip_frame_yaw: 3.141592653589793
     torque_rate_limit: 1.0
     goto_max_velocity: 0.10
     goto_max_angular_velocity: 0.50

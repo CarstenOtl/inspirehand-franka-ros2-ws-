@@ -44,6 +44,10 @@ REG_SAVE_FLASH = 1005
 #: so see :meth:`HandTransport.calibrate_force_sensors` before writing it.
 REG_FORCE_CLB = 1009
 REG_CURRENT_LIMIT = 1020
+# Manual 2.4.8: six shorts, two byte-addresses each, from 1032. These are the
+# power-on speeds kept in flash, which is what the hand runs at until someone
+# writes SPEED_SET (1522) over them.
+REG_DEFAULT_SPEED_SET = 1032
 REG_POS_SET = 1474
 REG_ANGLE_SET = 1486
 REG_FORCE_SET = 1498
@@ -379,6 +383,24 @@ class HandTransport:
         """Read back FORCE_SET, the per-DOF force threshold currently in effect."""
         return self.read_registers(REG_FORCE_SET, 6)
 
+    def read_speeds(self) -> List[int]:
+        """Read back SPEED_SET, the per-DOF speed limit currently in effect.
+
+        Some firmware treats the SET registers as write-only, so callers must
+        be ready for this to raise or to answer zeros; it is a diagnostic and a
+        clamp source, never something the hand is required to supply.
+        """
+        return self.read_registers(REG_SPEED_SET, 6)
+
+    def read_default_speeds(self) -> List[int]:
+        """Read back DEFAULT_SPEED_SET, the per-DOF power-on speed held in flash.
+
+        This is the value the hand actually runs at after a power cycle when
+        nothing writes SPEED_SET, so it is what governs finger rate on a rig
+        that never sets a speed. Same write-only caveat as :meth:`read_speeds`.
+        """
+        return self.read_registers(REG_DEFAULT_SPEED_SET, 6)
+
     def calibrate_force_sensors(self) -> None:
         """Start the hand's own force-sensor calibration and return immediately.
 
@@ -523,6 +545,9 @@ class MockTransport(HandTransport):
         self.external_force: List[int] = [0] * 6
         self.force_thresholds = [0] * 6
         self.speeds = [0] * 6
+        # The hand's own power-on speed, as held in flash. Non-zero so a rig
+        # that never writes SPEED_SET still has a real ceiling to clamp with.
+        self.default_speeds = [1000] * 6
         self.temperatures = [35] * 6
         self._errors = [0] * 6
         self._status = [STATUS_AT_TARGET] * 6
@@ -626,6 +651,8 @@ class MockTransport(HandTransport):
                 return list(self.force_thresholds[:count])
             if addr == REG_SPEED_SET:
                 return list(self.speeds[:count])
+            if addr == REG_DEFAULT_SPEED_SET:
+                return list(self.default_speeds[:count])
             if REG_ERROR <= addr < REG_TEMP + 6:
                 first = addr - REG_ERROR
                 return pack_bytes(self._health_bytes()[first : first + 2 * count])

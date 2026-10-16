@@ -90,6 +90,19 @@ ACTUATOR_TORQUE = 1.0
 # characterise the real hand.
 JOINT_DYNAMICS = dict(damping=0.1, armature=0.002, frictionloss=0.005)
 
+# Sliding friction of the finger pads, from the training asset rather than from
+# a measurement. ForgeUltra sets 0.75 on every geom of its hand's
+# `hand_collision` class and on the nut
+# (`policy_rollout.mujoco_threading_env.CONTACT_FRICTION`), so a hand that
+# keeps MuJoCo's default 1.0 grips the threading nut harder than the plant the
+# student was distilled on -- MuJoCo takes the element-wise MAXIMUM of the two
+# geoms' friction, so lowering the nut alone cannot fix it.
+#
+# Real pad rubber on a steel nut is unmeasured; see the sim-to-real table in
+# docs/policy_rollout_training_gap_todo.md. This is training's number, chosen
+# so the two simulators agree, not a claim about the hardware.
+CONTACT_FRICTION = (0.75, 0.005, 0.0001)
+
 # Body pairs whose collision geometry overlaps no matter what the joints do, so
 # a contact between them is always an artefact of the coarse geometry rather
 # than the hand touching itself.
@@ -145,9 +158,13 @@ def build(spec, side: str) -> None:
     # over the visual shells. Menagerie's convention is group 3 for collision,
     # which the viewer hides unless asked. Visual geoms (which the importer
     # already marks contype=0) keep group 1.
+    #
+    # The same pass sets the pad friction, which the URDF is also silent on; see
+    # CONTACT_FRICTION.
     for geom in spec.geoms:
         if geom.contype != 0 or geom.conaffinity != 0:
             geom.group = 3
+            geom.friction = list(CONTACT_FRICTION)
 
     # Restore the parent/child contact filter by hand.
     #

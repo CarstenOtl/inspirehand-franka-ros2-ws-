@@ -23,6 +23,10 @@
   <exec_depend>inspire_hand_msgs</exec_depend>
   <exec_depend>python3-serial</exec_depend>
 
+  <!-- Only inspire_hand_velocity_plot needs this, and it degrades to printing
+       its figures without it. The driver node does not plot anything. -->
+  <exec_depend>python3-matplotlib</exec_depend>
+
   <!-- Only the launch file's publish_description path needs these; the driver
        node itself has no description or visualisation dependency. -->
   <exec_depend>robot_state_publisher</exec_depend>

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(franka_trajectory_replay_msgs)
+project(franka_forge_cartesian_impedance_msgs)
 
 find_package(ament_cmake REQUIRED)
 find_package(builtin_interfaces REQUIRED)
@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
     msg/CartesianTrajectory.msg
     msg/CartesianGoto.msg
     msg/CartesianReplayState.msg
+    msg/PolicyGoal.msg
     DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
 )
 

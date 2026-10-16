@@ -64,7 +64,11 @@ def main(argv=None) -> int:
 
     from franka_trajectory_replay.runconfig import load_config
     from policy_rollout.flow_policy import FlowPolicyRunner
-    from policy_rollout.hardware import TrainingFrameAdapter, _hardware_node_class
+    from policy_rollout.hardware import (
+        TrainingFrameAdapter,
+        _hardware_node_class,
+        policy_goal_base,
+    )
     from policy_rollout.session import PolicyRolloutSession
     from utils.camera_calibration import load_camera_calibration
 
@@ -118,13 +122,10 @@ def main(argv=None) -> int:
                 task_signals={"completed_cycles": 0, "watchdog_stop": False},
             )
             inferred = time.perf_counter()
-            frame.controller_target(
-                result.filtered_native_action.numpy(),
-                grasp_position_base=grasp_position,
-                grasp_quaternion_base=grasp_quaternion,
-                controlled_position_base=sample.controller_measured_position,
-                controlled_quaternion_base=sample.controller_measured_quaternion,
-            )
+            # What the loop sends: the preclipped goal and the live grasp frame on
+            # the flange (the controller clips and acts at that frame itself).
+            policy_goal_base(frame, result.filtered_native_action.numpy())
+            node.grasp_pose_and_tool()
             finished = time.perf_counter()
             stages = {
                 "sample": sampled - started,

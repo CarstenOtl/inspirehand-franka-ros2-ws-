@@ -1,0 +1,145 @@
+<mujoco model="inspire_hand_right_training">
+  <compiler angle="radian" meshdir="assets_hand/" />
+  <default>
+    <default class="official_hand">
+      <joint actuatorfrcrange="-1 1" damping="0.1" frictionloss="0.005" armature="0.002" />
+      <default class="hand_visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" />
+      </default>
+      <default class="hand_collision">
+        <geom type="mesh" group="3" rgba="0.15 0.15 0.17 1" />
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="hand_R_base_link" content_type="model/stl" file="training_right/R_base_link.STL" />
+    <mesh name="hand_right_thumb_1" content_type="model/stl" file="training_right/right_thumb_1.STL" />
+    <mesh name="hand_right_thumb_2" content_type="model/stl" file="training_right/right_thumb_2.STL" />
+    <mesh name="hand_right_thumb_3" content_type="model/stl" file="training_right/right_thumb_3.STL" />
+    <mesh name="hand_right_thumb_4" content_type="model/stl" file="training_right/right_thumb_4.STL" />
+    <mesh name="hand_right_index_1" content_type="model/stl" file="training_right/right_index_1.STL" />
+    <mesh name="hand_right_index_2" content_type="model/stl" file="training_right/right_index_2.STL" />
+    <mesh name="hand_right_middle_1" content_type="model/stl" file="training_right/right_middle_1.STL" />
+    <mesh name="hand_right_middle_2" content_type="model/stl" file="training_right/right_middle_2.STL" />
+    <mesh name="hand_right_ring_1" content_type="model/stl" file="training_right/right_ring_1.STL" />
+    <mesh name="hand_right_ring_2" content_type="model/stl" file="training_right/right_ring_2.STL" />
+    <mesh name="hand_right_little_1" content_type="model/stl" file="training_right/right_little_1.STL" />
+    <mesh name="hand_right_little_2" content_type="model/stl" file="training_right/right_little_2.STL" />
+  </asset>
+  <worldbody>
+    <body name="hand_mount">
+      <body name="hand_base_link" childclass="official_hand">
+        <inertial pos="0.00252515 -0.00196005 0.0660468" quat="0.999566 0.00534839 -0.00355008 0.0287623" mass="0.38756" diaginertia="0.000598657 0.000500485 0.000184613" />
+        <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_R_base_link" />
+        <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_R_base_link" />
+        <body name="thumb_proximal_base" pos="0.01696 0.02045 0.06635">
+          <inertial pos="0.000853491 0.00482217 -0.00482" quat="0.62265 0.746734 -0.185656 -0.142219" mass="0.00483" diaginertia="2.12995e-07 1.70477e-07 1.23818e-07" />
+          <joint name="thumb_proximal_yaw_joint" range="0 1.24616" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1" actuatorfrclimited="true" />
+          <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_thumb_1" />
+          <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_thumb_1" />
+          <body name="thumb_proximal" pos="0.010735 0.0090002 -0.0065" quat="0.561736 0.561738 0.429479 0.429477">
+            <inertial pos="0.0194641 0.016298 -0.00803857" quat="0.638977 0.30145 -0.639673 0.302745" mass="0.05759" diaginertia="1.70013e-05 1.42936e-05 5.29608e-06" />
+            <joint name="thumb_proximal_pitch_joint" range="0 0.48" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" actuatorfrclimited="true" />
+            <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_thumb_2" />
+            <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_thumb_2" />
+            <body name="thumb_intermediate" pos="0.037617 0.041486 -0.0008">
+              <inertial pos="0.00946652 0.00207631 -0.00720001" quat="0.540569 0.455787 -0.540629 0.45581" mass="0.00985" diaginertia="1.28966e-06 1.22915e-06 5.82719e-07" />
+              <joint name="thumb_intermediate_joint" range="0 0.3578" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" actuatorfrclimited="true" />
+              <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_thumb_3" />
+              <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_thumb_3" />
+              <body name="thumb_distal" pos="0.014957 0.017012 -0.0012">
+                <inertial pos="0.00604905 0.00861523 -0.00600329" quat="0.552019 0.437851 -0.554425 0.442915" mass="0.00552" diaginertia="3.37471e-07 3.27117e-07 1.19552e-07" />
+                <joint name="thumb_distal_joint" range="0 0.2775" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" actuatorfrclimited="true" />
+                <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_thumb_4" />
+                <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_thumb_4" />
+                <body name="thumb_tip" pos="0.00214444 0.0178998 -0.00745" />
+              </body>
+            </body>
+          </body>
+        </body>
+        <body name="index_proximal" pos="-0.000285 0.020275 0.136946" quat="0.719336 0.694662 0 0">
+          <inertial pos="0.000852715 0.0119736 -0.00599987" quat="0.525442 0.472889 -0.526818 0.471963" mass="0.01229" diaginertia="2.05873e-06 1.9562e-06 5.46223e-07" />
+          <joint name="index_proximal_joint" range="0 1.333" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 -0.069756 -0.997564" actuatorfrclimited="true" />
+          <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_index_1" />
+          <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_index_1" />
+          <body name="index_intermediate" pos="0.008099 0.031095 -0.001">
+            <inertial pos="0.00408343 0.0192601 -0.005" quat="0.596349 0.380057 -0.596308 0.379923" mass="0.00633" diaginertia="1.14024e-06 1.12462e-06 1.08348e-07" />
+            <joint name="index_intermediate_joint" range="0 1.527" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1" actuatorfrclimited="true" />
+            <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_index_2" />
+            <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_index_2" />
+            <body name="index_tip" pos="0.0157444 0.0316562 -0.00605" />
+          </body>
+        </body>
+        <body name="middle_proximal" pos="-0.000285 0.00295 0.1371" quat="0.707105 0.707108 0 0">
+          <inertial pos="0.000852856 0.0119736 -0.00399985" quat="0.524217 0.472069 -0.528046 0.472773" mass="0.01229" diaginertia="2.05874e-06 1.95622e-06 5.46242e-07" />
+          <joint name="middle_proximal_joint" range="0 1.333" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1" actuatorfrclimited="true" />
+          <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_middle_1" />
+          <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_middle_1" />
+          <body name="middle_intermediate" pos="0.0081 0.031095 0.001">
+            <inertial pos="0.00471135 0.0203466 -0.00500003" quat="0.597374 0.378343 -0.597374 0.378343" mass="0.00681" diaginertia="1.43878e-06 1.42175e-06 1.17529e-07" />
+            <joint name="middle_intermediate_joint" range="0 1.527" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1" actuatorfrclimited="true" />
+            <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_middle_2" />
+            <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_middle_2" />
+            <body name="middle_tip" pos="0.015745 0.0316559 -0.00605" />
+          </body>
+        </body>
+        <body name="ring_proximal" pos="-0.000285 -0.018271 0.136282" quat="0.688339 0.725389 0 0">
+          <inertial pos="0.000852458 0.0119735 -0.00599989" quat="0.52521 0.472652 -0.527043 0.472207" mass="0.01229" diaginertia="2.05873e-06 1.95619e-06 5.46217e-07" />
+          <joint name="ring_proximal_joint" range="0 1.333" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1" actuatorfrclimited="true" />
+          <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_ring_1" />
+          <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_ring_1" />
+          <body name="ring_intermediate" pos="0.008099 0.031095 -0.001">
+            <inertial pos="0.00408287 0.01926 -0.00499998" quat="0.579084 0.405513 -0.61244 0.35375" mass="0.00633" diaginertia="1.14024e-06 1.12462e-06 1.0835e-07" />
+            <joint name="ring_intermediate_joint" range="0 1.527" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1" actuatorfrclimited="true" />
+            <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_ring_2" />
+            <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_ring_2" />
+            <body name="ring_tip" pos="0.0157437 0.0316565 -0.00605" />
+          </body>
+        </body>
+        <body name="pinky_proximal" pos="-0.000285 -0.037422 0.13446" quat="0.669137 0.743139 0 0">
+          <inertial pos="0.000851611 0.0119735 -0.00599989" quat="0.525652 0.473057 -0.526567 0.471841" mass="0.01229" diaginertia="2.05873e-06 1.95619e-06 5.4622e-07" />
+          <joint name="pinky_proximal_joint" range="0 1.333" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1" actuatorfrclimited="true" />
+          <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_little_1" />
+          <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_little_1" />
+          <body name="pinky_intermediate" pos="0.008097 0.031096 -0.001">
+            <inertial pos="0.0027393 0.01616 -0.00499668" quat="0.595524 0.381249 -0.595524 0.381249" mass="0.00525" diaginertia="6.6906e-07 6.5812e-07 8.59895e-08" />
+            <joint name="pinky_intermediate_joint" range="0 1.527" actuatorfrcrange="-1 1" armature="0.002" damping="0.1" frictionloss="0.005" axis="0 0 -1" actuatorfrclimited="true" />
+            <geom class="hand_visual" rgba="0.15 0.15 0.17 1" mesh="hand_right_little_2" />
+            <geom class="hand_collision" friction="0.75" rgba="0.15 0.15 0.17 1" mesh="hand_right_little_2" />
+            <body name="pinky_tip" pos="0.0157396 0.0316586 -0.00505" />
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude name="hand_base_link_thumb_proximal_base" body1="hand_base_link" body2="thumb_proximal_base" />
+    <exclude name="hand_base_link_index_proximal" body1="hand_base_link" body2="index_proximal" />
+    <exclude name="hand_base_link_middle_proximal" body1="hand_base_link" body2="middle_proximal" />
+    <exclude name="hand_base_link_ring_proximal" body1="hand_base_link" body2="ring_proximal" />
+    <exclude name="hand_base_link_pinky_proximal" body1="hand_base_link" body2="pinky_proximal" />
+    <exclude name="thumb_proximal_base_thumb_proximal" body1="thumb_proximal_base" body2="thumb_proximal" />
+    <exclude name="thumb_proximal_thumb_intermediate" body1="thumb_proximal" body2="thumb_intermediate" />
+    <exclude name="thumb_intermediate_thumb_distal" body1="thumb_intermediate" body2="thumb_distal" />
+    <exclude name="index_proximal_index_intermediate" body1="index_proximal" body2="index_intermediate" />
+    <exclude name="middle_proximal_middle_intermediate" body1="middle_proximal" body2="middle_intermediate" />
+    <exclude name="ring_proximal_ring_intermediate" body1="ring_proximal" body2="ring_intermediate" />
+    <exclude name="pinky_proximal_pinky_intermediate" body1="pinky_proximal" body2="pinky_intermediate" />
+  </contact>
+  <equality>
+    <joint name="index_intermediate_joint_follows_index_proximal_joint" joint1="index_intermediate_joint" joint2="index_proximal_joint" polycoef="0 1.1169 0 0 0" />
+    <joint name="middle_intermediate_joint_follows_middle_proximal_joint" joint1="middle_intermediate_joint" joint2="middle_proximal_joint" polycoef="0 1.1169 0 0 0" />
+    <joint name="ring_intermediate_joint_follows_ring_proximal_joint" joint1="ring_intermediate_joint" joint2="ring_proximal_joint" polycoef="0 1.1169 0 0 0" />
+    <joint name="pinky_intermediate_joint_follows_pinky_proximal_joint" joint1="pinky_intermediate_joint" joint2="pinky_proximal_joint" polycoef="0 1.1169 0 0 0" />
+    <joint name="thumb_intermediate_joint_follows_thumb_proximal_pitch_joint" joint1="thumb_intermediate_joint" joint2="thumb_proximal_pitch_joint" polycoef="0 1.1425 0 0 0" />
+    <joint name="thumb_distal_joint_follows_thumb_intermediate_joint" joint1="thumb_distal_joint" joint2="thumb_intermediate_joint" polycoef="0 0.7508 0 0 0" />
+  </equality>
+  <actuator>
+    <general name="pinky_proximal_joint" joint="pinky_proximal_joint" ctrlrange="-1 1" ctrllimited="true" />
+    <general name="ring_proximal_joint" joint="ring_proximal_joint" ctrlrange="-1 1" ctrllimited="true" />
+    <general name="middle_proximal_joint" joint="middle_proximal_joint" ctrlrange="-1 1" ctrllimited="true" />
+    <general name="index_proximal_joint" joint="index_proximal_joint" ctrlrange="-1 1" ctrllimited="true" />
+    <general name="thumb_proximal_pitch_joint" joint="thumb_proximal_pitch_joint" ctrlrange="-1 1" ctrllimited="true" />
+    <general name="thumb_proximal_yaw_joint" joint="thumb_proximal_yaw_joint" ctrlrange="-1 1" ctrllimited="true" />
+  </actuator>
+</mujoco>

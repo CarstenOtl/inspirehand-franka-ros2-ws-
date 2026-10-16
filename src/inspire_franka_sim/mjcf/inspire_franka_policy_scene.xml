@@ -6,10 +6,13 @@
        The flange torque scene (gravity off, as libfranka compensates it on
        the real arm) in the distilled policy's training environment, for
        inspire_franka_trajectory_replay's sim_policy.launch.py. Poses are the
-       training world's converted into fr3_link0: bench top at z = 0, M24 bolt
-       and first recorded nut pose, and the calibrated D415 colour camera with
-       its exact pinhole matrix. The nut is a fixed visual; this hand model has
-       no collision geometry. -->
+       training world's converted into fr3_link0: bench top at z = 0, the M24
+       bolt, and the calibrated D415 colour camera with its exact pinhole
+       matrix. The nut rides ForgeUltra's simplified thread pair (an axial
+       slide coupled to a twist hinge), so it can be gripped and turned.
+
+       Careful with comments in here: a double hyphen is illegal inside an XML
+       comment, and ament_xmllint rejects the whole file for one. -->
 
   <asset>
     <model name="end_effector" file="inspire_hand_on_flange.xml"/>
@@ -55,16 +58,34 @@
       <geom name="table_leg_3" type="cylinder" pos="-0.35 -0.25 -0.39" size="0.015 0.36"
         material="table_leg" contype="0" conaffinity="0"/>
     </body>
+    <!-- Visual only, as in the training asset: the thread coupling, not a
+         contact, is what holds the nut on the bolt. -->
     <body name="m24_bolt" pos="0.59 7.22541611e-17 0.05" quat="6.123234e-17 0 0 1">
       <geom name="m24_bolt_geom" type="mesh" mesh="forge_m24_bolt" material="forge_bolt"
         contype="0" conaffinity="0"/>
     </body>
-    <body name="m24_nut" pos="0.59 7.22541611e-17 0.10997997" quat="0.965925807 0 0 -0.258819115">
-      <geom name="m24_nut_geom" type="mesh" mesh="forge_m24_nut" material="forge_nut"
-        contype="0" conaffinity="0"/>
+    <body name="nut_carrier" pos="0.59 7.22541611e-17 0.10232">
+      <inertial pos="0 0 0" mass="0.001" diaginertia="1e-06 1e-06 1e-06"/>
+      <joint name="nut_axial" type="slide" axis="0 0 1" range="-0.02614 0.01216"
+        armature="5"/>
+      <body name="m24_nut" quat="0.965925807 0 0 -0.258819115">
+        <joint name="nut_twist" type="hinge" axis="0 0 1"
+          armature="0.001"
+          damping="0.0002"
+          frictionloss="0.002"/>
+        <geom name="m24_nut_geom" type="mesh" mesh="forge_m24_nut" material="forge_nut"
+          mass="0.05" friction="0.75 0.005 0.0001"/>
+      </body>
     </body>
   </worldbody>
+
+  <equality>
+    <joint name="thread_coupling" joint1="nut_axial" joint2="nut_twist"
+      polycoef="0.00766 0.000477464829 0 0 0" solref="0.004 1" solimp="0.99 0.999 0.0005 0.5 2"/>
+    <joint name="thread_hold" joint1="nut_twist" active="false"
+      polycoef="0 1 0 0 0" solref="0.004 1" solimp="0.99 0.999 0.0005 0.5 2"/>
+  </equality>
   <keyframe>
-    <key name="policy_home" qpos="-0.52446674 0.250818023 0.130924487 -2.17656685 1.6790497 2.05749575 -1.01828739 1.18507856 0.050614548 0.067519807 0.0337599035 0.214675498 0.182962583 1.333 1.37284867 1.333 1.37284867 1.333 1.37284867"/>
+    <key name="policy_home" qpos="-0.52446674 0.250818023 0.130924487 -2.17656685 1.6790497 2.05749575 -1.01828739 1.18507856 0.050614548 0.067519807 0.0337599035 0.214675498 0.182962583 1.333 1.37284867 1.333 1.37284867 1.333 1.37284867 0.00766 0"/>
   </keyframe>
 </mujoco>

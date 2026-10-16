@@ -9,12 +9,12 @@
 
 #include <Eigen/Dense>
 
-#include "franka_trajectory_replay/cartesian_impedance.hpp"
+#include "franka_forge_cartesian_impedance/cartesian_impedance.hpp"
 
-namespace franka_trajectory_replay {
+namespace franka_forge_cartesian_impedance {
 
 // Forward kinematics and geometric Jacobian of the FR3 flange from Franka's published
-// modified-DH (Craig) table, the same table as franka_trajectory_replay/kinematics.py, which
+// modified-DH (Craig) table, the same table as franka_forge_cartesian_impedance/kinematics.py, which
 // is checked against pinocchio on the URDF. Used when the controller runs without
 // franka_hardware's robot model (model_source: dh), i.e. in simulation.
 
@@ -77,4 +77,4 @@ inline Matrix6x7d fr3_zero_jacobian(const Vector7d& q) {
   return jacobian;
 }
 
-}  // namespace franka_trajectory_replay
+}  // namespace franka_forge_cartesian_impedance

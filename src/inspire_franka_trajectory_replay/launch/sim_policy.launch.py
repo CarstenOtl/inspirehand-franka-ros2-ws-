@@ -13,7 +13,8 @@ also opens rqt_image_view on the relayed colour stream the policy consumes.
 Everything the hardware backend talks to is here, under the same names:
 
 - the FR3 in ``inspire_franka_policy_scene.xml`` (the flange torque scene in
-  the student's training environment: bench, M24 bolt and nut) with
+  the student's training environment: bench, M24 bolt, and the nut on
+  ForgeUltra's thread pair) with
   ``trajectory_replay_controller`` active for homing and
   ``cartesian_trajectory_replay_controller`` inactive, both from
   ``controllers_sim_policy.yaml`` (the policy profile on the DH model);
@@ -25,11 +26,20 @@ Everything the hardware backend talks to is here, under the same names:
   colour/aligned-depth topics, with the profile's camera matrix and frame, and
   a static fr3_link0 -> camera_color_optical_frame transform for RViz.
 
-What it does not model: contact (the hand model has no collision geometry and
-the nut is fixed), the FR3's own dynamics (DH kinematics, no coriolis, gravity
-off), RealSense depth noise, and the hand's RS485 timing. It exercises frames,
-units, rates, the controller switch, the policy command path and the camera
-contract end to end, and shows in the viewer where each command sends the arm.
+- ``inspire_franka_sim``'s thread pair plugin, loaded through the
+  ``mujoco_plugins`` parameter in ``controllers_sim_policy.yaml``. The nut is
+  not part of the robot, so no ros2_control interface reaches it; the plugin
+  publishes its twist on ``/thread_state`` and clamps the thread on
+  ``/thread_hold``, which is what lets the runner gate the release on the
+  nut's real turn instead of on grasp-frame yaw.
+
+What it does not model: the FR3's own dynamics (the controller runs on DH
+kinematics with no coriolis term, and gravity is off in the scene in place of
+libfranka's compensation), RealSense depth noise, and the hand's RS485 timing.
+The nut now has contact geometry and a thread, but the hand's own fingertip
+geometry is this workspace's RH56 model rather than training's, and the two
+disagree by 2x on tip separation (D1 in docs/policy_rollout_training_gap_todo.md)
+-- so where the pads land on the nut is not yet the training answer.
 """
 
 from pathlib import Path
@@ -45,7 +55,18 @@ import yaml
 
 CONTROLLER = "trajectory_replay_controller"
 CARTESIAN_CONTROLLER = "cartesian_trajectory_replay_controller"
-SCENE = "inspire_franka_policy_scene.xml"
+#: Which hand description the simulated plant uses. The workspace carries two
+#: independent derivations of the same Inspire RH56 and they disagree about the
+#: thumb by roughly 15 degrees of carry, which is the difference between a
+#: 12 mm pinch and a 55 mm gap at the joint angles the policy commands.
+#: "workspace" is the dex-urdf hand this rig has always simulated; "training"
+#: is the geometry the student was distilled on, and the one bench rollouts say
+#: is closer to the physical hand. See
+#: apps/policy_rollout/utils/compare_hand_models.py.
+SCENES = {
+    "workspace": "inspire_franka_policy_scene.xml",
+    "training": "inspire_franka_policy_training_scene.xml",
+}
 MJCF_CAMERA = "policy_d415"
 
 
@@ -87,10 +108,11 @@ def launch_setup(context, *args, **kwargs):
             "hardware_type": "mujoco",
             "headless": arg("headless"),
             "start_rviz": arg("start_rviz"),
+            "rviz_config_path": arg("rviz_config"),
             "arm_command_interface": "none",
             "hand_command_interface": "position_direct",
             "controllers_config_path": controllers_yaml,
-            "mjcf": SCENE,
+            "mjcf": SCENES[arg("hand_model")],
             "camera_publish_rate": arg("camera_rate"),
             "sim_speed_factor": arg("sim_speed"),
         }.items(),
@@ -176,7 +198,23 @@ def generate_launch_description():
                 default_value="false",
                 description="false opens the MuJoCo viewer (needs xhost +local:root on the host).",
             ),
-            DeclareLaunchArgument("start_rviz", default_value="false", description="Start RViz2."),
+            DeclareLaunchArgument(
+                "start_rviz",
+                default_value="false",
+                description="Start RViz2 on rviz_config. With run_policy_rollout.py --debug-viz "
+                "this shows the 4096 points the DP3 encoder actually sampled.",
+            ),
+            DeclareLaunchArgument(
+                "rviz_config",
+                default_value=str(
+                    Path(get_package_share_directory("inspire_franka_sim"))
+                    / "rviz"
+                    / "policy_debug.rviz"
+                ),
+                description="RViz2 config. The default shows the policy's DP3 cloud, the points "
+                "above the table in the base frame, and the control frames published by "
+                "run_policy_rollout.py --debug-viz.",
+            ),
             DeclareLaunchArgument(
                 "camera_rate",
                 default_value="15.0",
@@ -191,6 +229,14 @@ def generate_launch_description():
                 "paces the policy on /clock, so below 1 the policy keeps its trained "
                 "15 Hz in simulated time while inference, rendering and the viewers "
                 "share this 4-core CPU. 1.0 is real time.",
+            ),
+            DeclareLaunchArgument(
+                "hand_model",
+                default_value="training",
+                choices=sorted(SCENES),
+                description="Which Inspire RH56 description the plant simulates. 'training' is "
+                "ForgeUltra's geometry, which the student was distilled on; 'workspace' is the "
+                "dex-urdf one. They disagree about the thumb by about 15 degrees.",
             ),
             DeclareLaunchArgument(
                 "camera_view",

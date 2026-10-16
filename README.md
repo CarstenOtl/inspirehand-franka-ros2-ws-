@@ -1017,6 +1017,176 @@ ros2 action send_goal /hand_joint_trajectory_controller/follow_joint_trajectory 
 The full interface reference, the unit conversion and the per-DOF radian limits
 are in [`docs/hand.md`](docs/hand.md).
 
+### Finger speed: a derived reading, and what it is worth
+
+`/inspire_hand/joint_states` now carries `velocity` alongside `position`, for
+all twelve joints — the six followers at their coupling ratio, since a
+four-bar's follower turns at a fixed multiple of its driver.
+
+**It is differenced, not measured.** The RH56 has no speed sensor: its register
+map has `POS_ACT`, `ANGLE_ACT`, `FORCE_ACT`, `CURRENT`, `ERROR`, `STATUS` and
+`TEMP`, and `SPEED_SET` is a limit the hand is *told*, not a rate it reports.
+So the velocity is a backward difference of the ANGLE readings, and its quality
+follows from that:
+
+- **One ANGLE count is the floor.** The registers hold 0..1000 across the whole
+  range, so one count is 1.5 mrad on a finger, and at the ~41 Hz this actually
+  publishes at on hardware, one count per sample is **0.062 rad/s**. Nothing
+  finer than that exists to report. A finger creeping below that rate flips a
+  count only every few samples, so the raw difference arrives as bursts of one
+  count separated by exact zeros.
+- **So it is filtered**, one pole at `velocity_filter_hz` (10 Hz by default),
+  which fills those gaps in and costs 16 ms. `velocity_filter_hz:=0` gives the
+  raw difference; both the filter and `publish_velocity` retune live with
+  `ros2 param set`, which is the point — the way to judge a filter is the same
+  move with and without it, and relaunching in between loses the speed
+  registers and the force tare.
+- **It is clamped** to the rate `SPEED_SET` allows, so a dropped or repeated
+  sample cannot surface as a non-physical spike. The intent was a clamp that
+  can miss a spike but never erase real motion; **on hardware it erases real
+  motion**, because the bound it is computed from is wrong — see the measured
+  figures below before trusting a fast move. The driver logs the ceiling it is
+  using at startup, and `inspire_hand_probe` now reads `SPEED_SET` and
+  `DEFAULT_SPEED_SET` — worth knowing, because with `startup_speed:=0` nothing
+  in this stack writes a speed and the hand runs on whatever is in its own
+  flash.
+
+```bash
+# Live: every DOF's position and speed, bars either side of zero. Compliant by
+# default, so you can push a fingertip and watch the reading follow.
+ros2 run inspire_hand_driver inspire_hand_velocity_check
+
+# One finger alone, with a trace of its rate over the last few seconds.
+ros2 run inspire_hand_driver inspire_hand_velocity_check --only 4
+
+# Measure it: one DOF across its range, both directions, with a verdict.
+ros2 run inspire_hand_driver inspire_hand_velocity_check --sweep --channel 4
+
+# The raw difference, with no pole in the way, at a known speed setting.
+ros2 run inspire_hand_driver inspire_hand_velocity_check --sweep \
+    --channel 4 --speed 400 --filter 0
+```
+
+**Driving the fingers from the live view.** Checking a position reading means
+putting the finger somewhere known and seeing what comes back, so the live view
+commands as well as watches. `--pose` sets a pose on the way in (`--pose 0.3`
+for every DOF, `--pose 4:0.3,6:0.8` per channel, open ratios as on
+`~/command`), and in a terminal the keys drive it from there:
+
+| key | what it does |
+|---|---|
+| `1`–`6` | Select a DOF. `a` selects all six. |
+| `+` / `-` | Nudge the selection by the step, which starts at 0.05 (50 ANGLE counts). |
+| `o` / `c` / `h` | Open, closed, half. |
+| `[` / `]` | Step size down/up, through 0.01 / 0.02 / 0.05 / 0.10 / 0.25. 0.01 is ten counts. |
+| `t` | Toggle compliant mode, which also re-tares the fingertips. |
+| `r` | Reset the peak marks. `q` quits. |
+
+The columns are `cmd` (what was commanded), `pos` and `count` (what the hand
+reports, as a ratio and as the ANGLE register value the speed is differenced
+from), and `err`, the counts between them. `err` is taken against the command
+*after* the thumb-abduction overlay in `command_overlays.py`, so channel 6 does
+not show a standing 250-count error for sitting exactly where it was told: a
+command of 0.0 there is a physical 0.25 by calibration.
+
+A commanded position means something different in each mode, which is worth
+keeping in mind while reading `err`: stiff, it is a target held against
+whatever pushes back; compliant, it is a *rest* position that a fingertip push
+displaces and release returns to.
+
+In `--only`, the `#` row is the rate the driver reports and `+` the same
+positions centred-differenced. Watching `+` lead `#` through a direction change
+is the filter's lag, which is the thing a single number cannot show you. The
+trace sizes itself to the window every frame, and one column is one sample, so
+a wider terminal is literally more resolution — at 150x40 it resolves a
+deceleration ramp that is three characters wide in an 80-column window.
+
+**Looking closer than a terminal can.** One column is one sample and one row is
+a fortieth of the scale, which is the ceiling on reading this by eye. `--log`
+writes every sample out instead — phase, stamp, channel, joint, ANGLE count,
+radians, the reported rate, and this tool's centred difference of the same
+positions — so the reading and what it is judged against can be plotted
+properly:
+
+```bash
+ros2 run inspire_hand_driver inspire_hand_velocity_check --sweep --channel 4 \
+    --log ~/velocity_index.csv
+ros2 run inspire_hand_driver inspire_hand_velocity_check --only 4 \
+    --log ~/velocity_live.csv
+```
+
+Then plot it. `inspire_hand_velocity_plot` reads that CSV and draws three
+panels per phase — the reported rate against the centred difference, the ANGLE
+count as the staircase it actually is, and the residual both raw and with the
+measured lag taken out — and prints the same figures the sweep does:
+
+```bash
+ros2 run inspire_hand_driver inspire_hand_velocity_plot ~/velocity_index.csv
+```
+
+It reads a file, so it needs no hand, no ROS graph and no display (it forces
+matplotlib's Agg backend; this image has no X). matplotlib is already in the
+image and is declared as an exec_depend, but the tool degrades to printing its
+figures if it is ever missing.
+
+The sweep is the honest answer to "how accurate is it", because a derived rate
+cannot be compared against a measurement of the same quantity — there is none.
+What it compares against instead: a **centred** difference of the same
+positions (better in principle — no half-sample lag, and it averages two
+intervals of quantisation noise — though see the caveat below about what
+uneven register updates do to it on real hardware), the **travel** the
+positions record over the move
+(the integral of a correct rate is the distance, so an integral that comes up
+short is a filter or a clamp eating real motion), **Inspire's own
+specification** (manual 2.4.8: full travel in 800 ms at `SPEED_SET` 1000, which
+is the only check on the one number in `kinematics.py` that was assumed rather
+than measured), and **standstill**, where every honest rate is zero and what it
+actually reports is the noise floor.
+
+It separates lag from noise rather than conflating them: the residual is
+reported both raw and with the measured lag slid out, because 23 ms of delay
+across a ramp is a quarter of a rad/s of error that says nothing about how
+noisy the reading is.
+
+The clamp itself is published, per channel, as `speed_ceiling` and
+`speed_ceiling_rad_s` in `/inspire_hand/diagnostics` — because `~/set_speed`
+moves it, so the startup log stops being the answer the moment anything writes
+a speed, and from outside a clamped reading and a slow finger look identical.
+
+**Measured on hardware, 2026-10-08** (index finger, `--sweep --channel 4`,
+`startup_speed` 0 so the hand ran on its own flash default):
+
+| | measured | note |
+|---|---|---|
+| standstill | 0.000 rad/s on all four fingers; 0.017 and 0.034 on thumb bend and thumb rotation | The thumb channels jitter by a count at rest. Treat anything under 0.034 rad/s as no motion. |
+| sample interval | 23.5–24.3 ms, ±1.9, max 31 | **Not the 20 ms `publish_rate_hz:=50` asks for** — about 41 Hz. The RS485 round trip with `state_extras_divisor:=1` does not keep up. |
+| resolution | 0.060–0.062 rad/s per ANGLE count | One count per 24 ms sample. |
+| lag | 17 ms closing, 26 ms opening | Against ~28 ms predicted at this rate (half a sample plus the 10 Hz pole). |
+| full travel | **0.61 s**, both directions, 1637 and 1651 counts/s | Inspire's manual 2.4.8 says 800 ms at `SPEED_SET` 1000. This hand is ~30 % faster than its own specification. |
+
+**The speed clamp is wrong, and it is eating real motion.** That last row is
+not a curiosity. `FULL_TRAVEL_TIME_S = 0.8` makes the clamp 1.837 rad/s on a
+finger, and this hand sustains about 2.3 rad/s, so a third of every fast move
+is clipped off: the sweep reports 35 % of each leg held at the ceiling and the
+integral of the reported rate comes up **34–38 % short of the distance the
+positions record**. Until that constant is corrected, `JointState.velocity` is
+trustworthy for slow motion and wrong at speed — in the direction of reporting
+too little. The sweep's own verdict fails on exactly this, with the evidence.
+
+**One caveat about the reference.** The ANGLE registers do not update evenly
+against a 24 ms sample: the per-sample step is a median of 40 counts but ranges
+1 to 91, with periodic double steps where one update was effectively missed.
+That makes the centred difference spiky — it reads a peak of 4.0 rad/s where
+the sustained rate is 2.3 — so on hardware the reference is a good measure of
+*average* rate and a poor one of instantaneous rate. The driver's filtered
+output is the smoother of the two. This is the one failure mode the sweep
+cannot see directly, since rate and reference come from the same registers.
+A mock has no sensor noise and a perfectly regular bus, so the two figures that
+can only come from the real hand are the **standstill floor** (zero on the
+mock; on hardware it is whatever the ANGLE registers jitter by, and it is the
+threshold below which the reading means nothing) and the **interval jitter**,
+which multiplies straight onto any single-sample rate.
+
 ## Six actuators, twelve joints
 
 The RH56 has six motors. Each finger's `*_intermediate` joint follows its

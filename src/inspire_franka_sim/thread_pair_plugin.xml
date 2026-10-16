@@ -1,0 +1,13 @@
+<library path="inspire_franka_sim_thread_pair_plugin">
+  <class name="inspire_franka_sim/ThreadPairPlugin"
+         type="inspire_franka_sim::ThreadPairPlugin"
+         base_class_type="mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase">
+    <description>
+      Publishes the threaded M24 nut's axial position and twist angle on
+      /thread_state, clamps the thread while /thread_hold is true, and returns
+      it to its start pose on the bolt on /reset_thread. Needed by
+      inspire_franka_policy_scene.xml, whose nut is not part of the robot and so
+      has no ros2_control state interface; idle in every other scene.
+    </description>
+  </class>
+</library>

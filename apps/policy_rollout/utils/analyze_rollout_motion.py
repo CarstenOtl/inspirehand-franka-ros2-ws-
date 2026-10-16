@@ -174,7 +174,9 @@ def main(argv=None) -> int:
     report_path = args.run_dir / "report.json"
     if report_path.exists():
         report = json.loads(report_path.read_text())
-        print("report:", {k: report.get(k) for k in ("status", "error", "steps", "missed_policy_deadlines", "limited_policy_targets")})
+        # limited_policy_targets: runs before 2026-10-06, when the runner shortened
+        # steps; clipped_policy_ticks: the controller's own clip binding since.
+        print("report:", {k: report.get(k) for k in ("status", "error", "steps", "missed_policy_deadlines", "limited_policy_targets", "clipped_policy_ticks")})
     rows, t = analyze(args.run_dir)
     dt = np.diff(t)
     if len(dt):

@@ -19,7 +19,9 @@ APP_ROOT = Path(__file__).resolve().parent
 WORKSPACE_ROOT = APP_ROOT.parents[1]
 DEFAULT_CHECKPOINT = (
     APP_ROOT
-    / "checkpoints/sequential_threading_cycle10_hybrid_teacher_d415_20ep/checkpoint.pt"
+    / "checkpoints/fr3_offline_flow_matching_parallel_vision_13102026"
+    / "m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013-135143-648368"
+    / "nn/checkpoint.pt"
 )
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -92,6 +94,21 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--max-state-age", type=float, default=0.5)
     parser.add_argument("--max-frame-skew", type=float, default=0.04)
     parser.add_argument("--max-home-delta", type=float, default=0.01)
+    parser.add_argument(
+        "--debug-viz",
+        action="store_true",
+        help=(
+            "publish the DP3 cloud, control frames and camera-view overlay "
+            "(/fr3_policy_rollout/dp3_overlay, for rqt_image_view). Its cost is "
+            "inside the policy period, so the preflight gate measures it too."
+        ),
+    )
+    parser.add_argument(
+        "--debug-viz-every",
+        type=int,
+        default=2,
+        help="publish every Nth policy step (default 2)",
+    )
     return parser
 
 

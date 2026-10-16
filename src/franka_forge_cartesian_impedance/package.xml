@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>franka_forge_cartesian_impedance</name>
+  <version>0.1.0</version>
+  <description>
+    A Cartesian impedance controller for the FR3 that reproduces the operational-space torque
+    law of the ForgeUltra Isaac Lab tasks: stiffness and damping on the pose error of a
+    configurable controlled frame, a mass-weighted dynamically consistent nullspace term, and
+    the same per-cycle target clip the training environment applies to a policy action. Drives
+    pose gotos, Cartesian trajectories and live policy goals.
+  </description>
+  <maintainer email="boizbigd@gmail.com">Carsten Oertel</maintainer>
+  <license>Apache 2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>control_msgs</depend>
+  <depend>controller_interface</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>franka_forge_cartesian_impedance_msgs</depend>
+  <depend>franka_msgs</depend>
+  <depend>franka_semantic_components</depend>
+  <depend>geometry_msgs</depend>
+  <depend>hardware_interface</depend>
+  <depend>pinocchio</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>realtime_tools</depend>
+  <depend>std_msgs</depend>
+
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>controller_manager_msgs</exec_depend>
+  <exec_depend>franka_description</exec_depend>
+
+  <test_depend>ament_cmake_gmock</test_depend>
+  <test_depend>controller_manager</test_depend>
+  <test_depend>ros2_control_test_assets</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <controller_interface plugin="${prefix}/franka_forge_cartesian_impedance.xml"/>
+  </export>
+</package>

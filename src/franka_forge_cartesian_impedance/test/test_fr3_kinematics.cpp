@@ -4,12 +4,12 @@
 
 #include <gtest/gtest.h>
 
-#include <franka_trajectory_replay/fr3_kinematics.hpp>
-#include <franka_trajectory_replay/cartesian_impedance.hpp>
+#include <franka_forge_cartesian_impedance/fr3_kinematics.hpp>
+#include <franka_forge_cartesian_impedance/cartesian_impedance.hpp>
 
-using franka_trajectory_replay::fr3_flange_transform;
-using franka_trajectory_replay::fr3_zero_jacobian;
-using franka_trajectory_replay::Vector7d;
+using franka_forge_cartesian_impedance::fr3_flange_transform;
+using franka_forge_cartesian_impedance::fr3_zero_jacobian;
+using franka_forge_cartesian_impedance::Vector7d;
 
 namespace {
 
@@ -21,7 +21,7 @@ Vector7d joints(double a, double b, double c, double d, double e, double f, doub
 
 }  // namespace
 
-// Reference values from franka_trajectory_replay/kinematics.py (flange_transform), which is
+// Reference values from franka_forge_cartesian_impedance/kinematics.py (flange_transform), which is
 // checked against pinocchio on the FR3 URDF in test/python/test_kinematics.py.
 TEST(Fr3Kinematics, flange_transform_matches_the_python_dh_model) {
   const auto zero = fr3_flange_transform(Vector7d::Zero());
@@ -96,9 +96,9 @@ TEST(Fr3Kinematics, jacobian_is_the_derivative_of_the_forward_kinematics) {
 
 
 TEST(Fr3Kinematics, shifted_jacobian_is_the_derivative_of_the_tool_point) {
-  using franka_trajectory_replay::rpy_to_rotation;
-  using franka_trajectory_replay::shift_jacobian;
-  using franka_trajectory_replay::skew_symmetric;
+  using franka_forge_cartesian_impedance::rpy_to_rotation;
+  using franka_forge_cartesian_impedance::shift_jacobian;
+  using franka_forge_cartesian_impedance::skew_symmetric;
 
   // The Inspire hand's grasp centre in the flange frame.
   const Eigen::Vector3d tool(-0.0874, -0.0327, 0.1453);

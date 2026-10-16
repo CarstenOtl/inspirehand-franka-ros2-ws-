@@ -1,12 +1,12 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>franka_trajectory_replay_msgs</name>
+  <name>franka_forge_cartesian_impedance_msgs</name>
   <version>0.1.0</version>
   <description>
-    Messages for Cartesian waypoint replay on an FR3: a pose goto, a pose trajectory whose
-    points carry the nullspace joint configuration, and the per-cycle state of the Cartesian
-    impedance replay controller.
+    Messages for the Forge Cartesian impedance controller on an FR3: a pose goto, a pose
+    trajectory whose points carry the nullspace joint configuration, a policy goal (preclipped
+    target plus the live controlled frame) and the controller's per-cycle state.
   </description>
   <maintainer email="boizbigd@gmail.com">Carsten Oertel</maintainer>
   <license>Apache 2.0</license>

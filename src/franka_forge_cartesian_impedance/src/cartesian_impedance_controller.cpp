@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <franka_trajectory_replay/cartesian_trajectory_replay_controller.hpp>
-#include <franka_trajectory_replay/collision_behavior.hpp>
+#include <franka_forge_cartesian_impedance/cartesian_impedance_controller.hpp>
+#include <franka_forge_cartesian_impedance/collision_behavior.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -27,7 +27,7 @@
 
 using namespace std::chrono_literals;
 
-namespace franka_trajectory_replay {
+namespace franka_forge_cartesian_impedance {
 
 namespace {
 
@@ -36,6 +36,11 @@ constexpr std::array<double, 7> kPositionLower{-2.9007, -1.8361, -2.9007, -3.077
                                                -2.8763, 0.4398,  -3.0508};
 constexpr std::array<double, 7> kPositionUpper{2.9007, 1.8361, 2.9007, -0.1169,
                                                2.8763, 4.6216, 3.0508};
+
+// How far a policy goal may put the controlled frame from the flange. The Inspire grasp
+// midpoint is about 0.19 m out; anything much larger is a typo in the sender, and the law's
+// lever arm grows with it.
+constexpr double kMaxToolOffset = 0.5;
 
 std::string format_pose(const Eigen::Vector3d& position, const Eigen::Quaterniond& orientation) {
   char buffer[160];
@@ -88,7 +93,7 @@ bool read_pose(const geometry_msgs::msg::Pose& pose, Eigen::Vector3d& position,
 
 }  // namespace
 
-const char* CartesianTrajectoryReplayController::phase_name(Phase phase) {
+const char* CartesianImpedanceController::phase_name(Phase phase) {
   switch (phase) {
     case Phase::kIdle:
       return "idle";
@@ -104,11 +109,11 @@ const char* CartesianTrajectoryReplayController::phase_name(Phase phase) {
   return "unknown";
 }
 
-double CartesianTrajectoryReplayController::quintic_blend(double s) {
+double CartesianImpedanceController::quintic_blend(double s) {
   return s * s * s * (10.0 + s * (-15.0 + 6.0 * s));
 }
 
-void CartesianTrajectoryReplayController::sample_trajectory(
+void CartesianImpedanceController::sample_trajectory(
     const Trajectory& trajectory, double t, size_t& segment_hint, Eigen::Vector3d& position,
     Eigen::Quaterniond& orientation, Vector7d& nullspace) {
   const size_t n = trajectory.times.size();
@@ -172,7 +177,7 @@ void CartesianTrajectoryReplayController::sample_trajectory(
 
 // --- interfaces ---------------------------------------------------------------------------
 
-std::vector<std::string> CartesianTrajectoryReplayController::joint_names() const {
+std::vector<std::string> CartesianImpedanceController::joint_names() const {
   std::vector<std::string> names;
   names.reserve(kNumJoints);
   for (int i = 1; i <= kNumJoints; ++i) {
@@ -182,7 +187,7 @@ std::vector<std::string> CartesianTrajectoryReplayController::joint_names() cons
 }
 
 controller_interface::InterfaceConfiguration
-CartesianTrajectoryReplayController::command_interface_configuration() const {
+CartesianImpedanceController::command_interface_configuration() const {
   controller_interface::InterfaceConfiguration config;
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
   for (const auto& joint : joint_names()) {
@@ -192,7 +197,7 @@ CartesianTrajectoryReplayController::command_interface_configuration() const {
 }
 
 controller_interface::InterfaceConfiguration
-CartesianTrajectoryReplayController::state_interface_configuration() const {
+CartesianImpedanceController::state_interface_configuration() const {
   controller_interface::InterfaceConfiguration config;
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
   for (const auto& joint : joint_names()) {
@@ -217,7 +222,7 @@ CartesianTrajectoryReplayController::state_interface_configuration() const {
   return config;
 }
 
-void CartesianTrajectoryReplayController::update_joint_states() {
+void CartesianImpedanceController::update_joint_states() {
   for (int i = 0; i < kNumJoints; ++i) {
     joint_positions_current_[i] = state_interfaces_.at(kPositionOffset + i).get_value();
     joint_velocities_current_[i] = state_interfaces_.at(kVelocityOffset + i).get_value();
@@ -227,7 +232,7 @@ void CartesianTrajectoryReplayController::update_joint_states() {
 
 // --- law helpers --------------------------------------------------------------------------
 
-Vector7d CartesianTrajectoryReplayController::saturate_torque_rate(const Vector7d& tau_desired,
+Vector7d CartesianImpedanceController::saturate_torque_rate(const Vector7d& tau_desired,
                                                           const Vector7d& tau_previous) const {
   if (!(torque_rate_limit_ > 0.0)) {
     return tau_desired;
@@ -241,7 +246,7 @@ Vector7d CartesianTrajectoryReplayController::saturate_torque_rate(const Vector7
   return tau_saturated;
 }
 
-void CartesianTrajectoryReplayController::update_gains(bool initialise) {
+void CartesianImpedanceController::update_gains(bool initialise) {
   const GainSettings* settings = gain_settings_buffer_.readFromRT();
   if (settings != nullptr && (initialise || settings->revision != rt_gain_revision_)) {
     std::array<double, 6> scaled{};
@@ -260,13 +265,14 @@ void CartesianTrajectoryReplayController::update_gains(bool initialise) {
   }
 }
 
-void CartesianTrajectoryReplayController::begin_stopping() {
+void CartesianImpedanceController::begin_stopping() {
   if (rt_phase_ == Phase::kIdle) {
     return;
   }
   if (rt_phase_ != Phase::kStopping) {
     rt_stopping_from_ = rt_phase_;
   }
+  rt_goal_active_ = false;  // the last clipped target becomes the hold
   rt_rate_ramp_start_ = rt_playback_rate_;
   rt_playback_target_ = 0.0;
   rt_rate_ramp_elapsed_ = 0.0;
@@ -274,7 +280,7 @@ void CartesianTrajectoryReplayController::begin_stopping() {
   rt_phase_ = Phase::kStopping;
 }
 
-void CartesianTrajectoryReplayController::advance_clock(double dt, double requested_rate) {
+void CartesianImpedanceController::advance_clock(double dt, double requested_rate) {
   if (rt_phase_ != Phase::kStopping && requested_rate != rt_playback_target_) {
     rt_rate_ramp_start_ = rt_playback_rate_;
     rt_playback_target_ = requested_rate;
@@ -296,13 +302,13 @@ void CartesianTrajectoryReplayController::advance_clock(double dt, double reques
 
 // --- non-realtime input -------------------------------------------------------------------
 
-void CartesianTrajectoryReplayController::reject(const std::string& reason) {
+void CartesianImpedanceController::reject(const std::string& reason) {
   ++rejections_;
   last_rejection_ = reason;
   RCLCPP_ERROR(get_node()->get_logger(), "Rejected: %s", reason.c_str());
 }
 
-bool CartesianTrajectoryReplayController::inside_workspace(const Eigen::Vector3d& position) const {
+bool CartesianImpedanceController::inside_workspace(const Eigen::Vector3d& position) const {
   for (int i = 0; i < 3; ++i) {
     if (position(i) < workspace_min_[i] || position(i) > workspace_max_[i]) {
       return false;
@@ -311,7 +317,7 @@ bool CartesianTrajectoryReplayController::inside_workspace(const Eigen::Vector3d
   return true;
 }
 
-bool CartesianTrajectoryReplayController::read_nullspace(const std::vector<double>& values,
+bool CartesianImpedanceController::read_nullspace(const std::vector<double>& values,
                                                          std::array<double, 7>& out,
                                                          const std::string& source) {
   if (values.size() != static_cast<size_t>(kNumJoints)) {
@@ -333,8 +339,8 @@ bool CartesianTrajectoryReplayController::read_nullspace(const std::vector<doubl
   return true;
 }
 
-void CartesianTrajectoryReplayController::goto_callback(
-    const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg) {
+void CartesianImpedanceController::goto_callback(
+    const franka_forge_cartesian_impedance_msgs::msg::CartesianGoto::SharedPtr msg) {
   if (!command_initialized_.load(std::memory_order_acquire)) {
     reject("goto arrived before the first update cycle");
     return;
@@ -407,8 +413,8 @@ void CartesianTrajectoryReplayController::goto_callback(
               format_pose(position, orientation).c_str());
 }
 
-void CartesianTrajectoryReplayController::trajectory_callback(
-    const franka_trajectory_replay_msgs::msg::CartesianTrajectory::SharedPtr msg) {
+void CartesianImpedanceController::trajectory_callback(
+    const franka_forge_cartesian_impedance_msgs::msg::CartesianTrajectory::SharedPtr msg) {
   if (!command_initialized_.load(std::memory_order_acquire)) {
     reject("trajectory arrived before the first update cycle");
     return;
@@ -553,8 +559,8 @@ void CartesianTrajectoryReplayController::trajectory_callback(
               100.0 * peak_angular_ratio, start_error_m, start_error_rad);
 }
 
-void CartesianTrajectoryReplayController::policy_command_callback(
-    const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg) {
+void CartesianImpedanceController::policy_command_callback(
+    const franka_forge_cartesian_impedance_msgs::msg::CartesianGoto::SharedPtr msg) {
   if (!command_initialized_.load(std::memory_order_acquire)) {
     reject("policy command arrived before the first update cycle");
     return;
@@ -607,7 +613,80 @@ void CartesianTrajectoryReplayController::policy_command_callback(
   command_buffer_.writeFromNonRT(command);
 }
 
-void CartesianTrajectoryReplayController::pause_callback(
+void CartesianImpedanceController::policy_goal_callback(
+    const franka_forge_cartesian_impedance_msgs::msg::PolicyGoal::SharedPtr msg) {
+  if (!command_initialized_.load(std::memory_order_acquire)) {
+    reject("policy goal arrived before the first update cycle");
+    return;
+  }
+  if (!(policy_clip_position_m_ > 0.0) || !(policy_clip_orientation_rad_ > 0.0)) {
+    reject("policy goal refused: this profile sets no policy_clip_position_m / "
+           "policy_clip_orientation_rad, so the controller cannot run ForgeUltra's target clip");
+    return;
+  }
+  const auto phase = static_cast<Phase>(phase_.load(std::memory_order_acquire));
+  if (phase != Phase::kIdle && phase != Phase::kPolicy) {
+    reject("policy goal while busy (phase " + std::string(phase_name(phase)) +
+           "); abort first");
+    return;
+  }
+  Eigen::Vector3d position;
+  Eigen::Quaterniond orientation;
+  if (!read_pose(msg->goal, position, orientation)) {
+    reject("policy goal pose is not finite or has a degenerate quaternion");
+    return;
+  }
+  // The goal is what the clip pulls toward, one clip per cycle, for as long as goals keep
+  // coming. There is no previous-target step check here because the clip already bounds the
+  // executed step from the measured pose; the workspace box bounds where it can end.
+  if (!inside_workspace(position)) {
+    reject("policy goal " + format_pose(position, orientation) +
+           " is outside the workspace box");
+    return;
+  }
+
+  Command command;
+  command.kind = CommandKind::kPolicyGoal;
+  std::copy(position.data(), position.data() + 3, command.position.begin());
+  command.orientation = to_array(orientation);
+  if (!msg->tool_in_flange.empty()) {
+    const auto& tool = msg->tool_in_flange;
+    if (tool.size() != 7) {
+      reject("policy goal tool_in_flange must hold exactly 7 values (xyz, xyzw) or be empty");
+      return;
+    }
+    if (!std::all_of(tool.begin(), tool.end(), [](double v) { return std::isfinite(v); })) {
+      reject("policy goal tool_in_flange is not finite");
+      return;
+    }
+    const Eigen::Vector3d translation(tool[0], tool[1], tool[2]);
+    if (translation.norm() > kMaxToolOffset) {
+      reject("policy goal tool_in_flange is " + std::to_string(translation.norm()) +
+             " m from the flange, beyond the " + std::to_string(kMaxToolOffset) + " m bound");
+      return;
+    }
+    Eigen::Quaterniond rotation(tool[6], tool[3], tool[4], tool[5]);
+    if (rotation.coeffs().norm() < 1e-6) {
+      reject("policy goal tool_in_flange quaternion is degenerate");
+      return;
+    }
+    rotation.normalize();
+    command.tool_in_flange = {translation.x(), translation.y(), translation.z(),
+                              rotation.x(),    rotation.y(),    rotation.z(),
+                              rotation.w()};
+    command.has_tool = true;
+  }
+  if (!msg->nullspace_positions.empty()) {
+    if (!read_nullspace(msg->nullspace_positions, command.nullspace, "policy goal")) {
+      return;
+    }
+    command.has_nullspace = true;
+  }
+  command.id = ++next_command_id_;
+  command_buffer_.writeFromNonRT(command);
+}
+
+void CartesianImpedanceController::pause_callback(
     const std_msgs::msg::Empty::SharedPtr /*msg*/) {
   if (static_cast<Phase>(phase_.load(std::memory_order_acquire)) != Phase::kTrajectory) {
     reject("pause is only valid while a trajectory is running");
@@ -617,7 +696,7 @@ void CartesianTrajectoryReplayController::pause_callback(
   RCLCPP_INFO(get_node()->get_logger(), "Trajectory pause requested.");
 }
 
-void CartesianTrajectoryReplayController::resume_callback(
+void CartesianImpedanceController::resume_callback(
     const std_msgs::msg::Empty::SharedPtr /*msg*/) {
   if (static_cast<Phase>(phase_.load(std::memory_order_acquire)) != Phase::kTrajectory) {
     reject("resume is only valid while a trajectory is running");
@@ -627,7 +706,7 @@ void CartesianTrajectoryReplayController::resume_callback(
   RCLCPP_INFO(get_node()->get_logger(), "Trajectory resume requested.");
 }
 
-void CartesianTrajectoryReplayController::abort_callback(
+void CartesianImpedanceController::abort_callback(
     const std_msgs::msg::Empty::SharedPtr /*msg*/) {
   Command command;
   command.kind = CommandKind::kAbort;
@@ -637,7 +716,7 @@ void CartesianTrajectoryReplayController::abort_callback(
               static_cast<unsigned long>(command.id));
 }
 
-void CartesianTrajectoryReplayController::publish_status() {
+void CartesianImpedanceController::publish_status() {
   if (!is_active_.load(std::memory_order_acquire)) {
     return;
   }
@@ -677,6 +756,28 @@ void CartesianTrajectoryReplayController::publish_status() {
       std::to_string(gains_applied_snapshot_[1].load(std::memory_order_relaxed)));
   add("nullspace_stiffness_applied",
       std::to_string(gains_applied_snapshot_[2].load(std::memory_order_relaxed)));
+  add("nullspace_damping_lambda", std::to_string(nullspace_damping_lambda_));
+  add("mass_weighted_nullspace", mass_weighted_nullspace_ ? "true" : "false");
+  add("rotation_error",
+      rotation_error_form_ == RotationErrorForm::kAxisAngle ? "axis_angle" : "quaternion_vector");
+  add("coriolis_compensation", (coriolis_compensation_ && !model_from_dh_) ? "true" : "false");
+  add("torque_limit", std::to_string(torque_limit_));
+  add("policy_clip_position_m", std::to_string(policy_clip_position_m_));
+  add("policy_clip_orientation_rad", std::to_string(policy_clip_orientation_rad_));
+  add("policy_clip_frame_yaw", std::to_string(policy_clip_frame_yaw_));
+  add("policy_goal_active", policy_goal_active_.load(std::memory_order_relaxed) ? "true" : "false");
+  {
+    char buffer[200];
+    std::snprintf(buffer, sizeof(buffer), "%.4f %.4f %.4f %.4f %.4f %.4f %.4f",
+                  tool_in_flange_snapshot_[0].load(std::memory_order_relaxed),
+                  tool_in_flange_snapshot_[1].load(std::memory_order_relaxed),
+                  tool_in_flange_snapshot_[2].load(std::memory_order_relaxed),
+                  tool_in_flange_snapshot_[3].load(std::memory_order_relaxed),
+                  tool_in_flange_snapshot_[4].load(std::memory_order_relaxed),
+                  tool_in_flange_snapshot_[5].load(std::memory_order_relaxed),
+                  tool_in_flange_snapshot_[6].load(std::memory_order_relaxed));
+    add("tool_in_flange", buffer);
+  }
   {
     char buffer[160];
     std::snprintf(buffer, sizeof(buffer), "%.4f %.4f %.4f %.4f %.4f %.4f %.4f",
@@ -711,7 +812,7 @@ void CartesianTrajectoryReplayController::publish_status() {
 
 // --- realtime loop ------------------------------------------------------------------------
 
-controller_interface::return_type CartesianTrajectoryReplayController::update(
+controller_interface::return_type CartesianImpedanceController::update(
     const rclcpp::Time& time, const rclcpp::Duration& period) {
   update_joint_states();
   const Vector7d q_current(joint_positions_current_.data());
@@ -739,21 +840,54 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
     }
   }
 
-  // Move the controlled point from the flange onto the tool. The measured pose, the Jacobian
-  // the law differentiates through, and therefore the whole impedance, all refer to the tool
-  // frame from here on; the robot's own F_T_EE stays at identity.
-  if (tool_active_) {
-    const Eigen::Matrix3d flange_rotation = orientation.toRotationMatrix();
-    const Eigen::Vector3d offset_base = flange_rotation * tool_translation_;
-    position += offset_base;
-    orientation = Eigen::Quaterniond(flange_rotation * tool_rotation_);
-    orientation.normalize();
-    jacobian = shift_jacobian(jacobian, offset_base);
-  }
-
   const double dt = period.seconds();
   if (!std::isfinite(dt) || dt < 0.0) {
     return controller_interface::return_type::ERROR;
+  }
+
+  // A policy goal can move the controlled frame, so take it before measuring the tool pose:
+  // this cycle's measurement, clip and law then all refer to the same point. The rest of the
+  // command is handled below, after the first-update initialisation it may depend on.
+  const Command* command = command_buffer_.readFromRT();
+  const bool new_command = command != nullptr && command->id != rt_command_id_;
+  if (new_command && command->kind == CommandKind::kPolicyGoal && command->has_tool) {
+    const auto& tool = command->tool_in_flange;
+    const Eigen::Vector3d tool_translation(tool[0], tool[1], tool[2]);
+    const Eigen::Quaterniond tool_rotation =
+        Eigen::Quaterniond(tool[6], tool[3], tool[4], tool[5]).normalized();
+    // Moving the controlled point moves the MEASURED pose, so carry the reference and the
+    // target with it by the same rigid change. The law's error is
+    // (p - p_d, -axis_angle(q_d q^-1)) in the base frame, and both measured and reference are
+    // right-multiplied by the same q_old^-1 q_new here, so the error -- and the tracking-fault
+    // check that reads it -- is exactly invariant across the change instead of jumping by the
+    // difference between the two frames. The first goal makes that jump the whole grasp
+    // rotation: the profile's tool_offset_rpy is identity while the live grasp frame's
+    // approach axis is 80 deg off the flange's, i.e. four times max_orientation_error, so
+    // without this the first goal always faults on orientation.
+    const Eigen::Matrix3d flange_rotation = orientation.toRotationMatrix();
+    const Eigen::Vector3d translation_shift =
+        flange_rotation * (tool_translation - rt_tool_translation_);
+    const Eigen::Quaterniond rotation_shift(rt_tool_rotation_.transpose() *
+                                            tool_rotation.toRotationMatrix());
+    position_target_ += translation_shift;
+    position_d_ += translation_shift;
+    orientation_target_ = (orientation_target_ * rotation_shift).normalized();
+    orientation_d_ = (orientation_d_ * rotation_shift).normalized();
+    rt_tool_translation_ = tool_translation;
+    rt_tool_rotation_ = tool_rotation.toRotationMatrix();
+    rt_tool_active_ = true;
+  }
+
+  // Move the controlled point from the flange onto the tool. The measured pose, the Jacobian
+  // the law differentiates through, and therefore the whole impedance, all refer to the tool
+  // frame from here on; the robot's own F_T_EE stays at identity.
+  if (rt_tool_active_) {
+    const Eigen::Matrix3d flange_rotation = orientation.toRotationMatrix();
+    const Eigen::Vector3d offset_base = flange_rotation * rt_tool_translation_;
+    position += offset_base;
+    orientation = Eigen::Quaterniond(flange_rotation * rt_tool_rotation_);
+    orientation.normalize();
+    jacobian = shift_jacobian(jacobian, offset_base);
   }
 
   if (first_update_) {
@@ -784,11 +918,11 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
     update_gains(false);
   }
 
-  const Command* command = command_buffer_.readFromRT();
-  if (command != nullptr && command->id != rt_command_id_) {
+  if (new_command) {
     rt_command_id_ = command->id;
     switch (command->kind) {
       case CommandKind::kGoto:
+        rt_goal_active_ = false;
         blend_position_start_ = position_target_;
         blend_position_target_ = Eigen::Vector3d(command->position.data());
         blend_orientation_start_ = orientation_target_;
@@ -810,6 +944,7 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
         rt_phase_ = Phase::kGoto;
         break;
       case CommandKind::kTrajectory:
+        rt_goal_active_ = false;
         rt_trajectory_ = command->trajectory;
         rt_segment_hint_ = 0;
         rt_duration_ = command->duration;
@@ -832,8 +967,24 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
         }
         break;
       case CommandKind::kPolicy:
+        rt_goal_active_ = false;
         position_target_ = Eigen::Vector3d(command->position.data());
         orientation_target_ = to_quaternion(command->orientation);
+        if (command->has_nullspace) {
+          nullspace_target_ = Vector7d(command->nullspace.data());
+        }
+        rt_elapsed_ = 0.0;
+        rt_duration_ = policy_command_timeout_;
+        rt_policy_command_age_ = 0.0;
+        policy_watchdog_stop_.store(false, std::memory_order_release);
+        rt_phase_ = Phase::kPolicy;
+        break;
+      case CommandKind::kPolicyGoal:
+        // The tool, if the goal carried one, was taken above. The target itself is set by
+        // the clip in the sampler below, every cycle, from the measured pose.
+        rt_goal_position_ = Eigen::Vector3d(command->position.data());
+        rt_goal_orientation_ = to_quaternion(command->orientation);
+        rt_goal_active_ = true;
         if (command->has_nullspace) {
           nullspace_target_ = Vector7d(command->nullspace.data());
         }
@@ -867,7 +1018,19 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
       if (rt_policy_command_age_ > policy_command_timeout_) {
         policy_watchdog_stop_.store(true, std::memory_order_release);
         completed_command_id_.store(rt_command_id_);
+        rt_goal_active_ = false;  // hold the last clipped target
         rt_phase_ = Phase::kIdle;
+      } else if (rt_goal_active_) {
+        // ForgeUltra's `_apply_action` step (2) at this controller's rate: the goal clipped
+        // against where the grasp frame is NOW, so the target leads the hand by at most one
+        // clip as it moves instead of arriving at once and being held for the policy tick.
+        const ForgeClippedTarget clipped = forge_clip_target(
+            rt_goal_position_, rt_goal_orientation_, position, orientation, policy_clip_frame_,
+            policy_clip_position_m_, policy_clip_orientation_rad_);
+        position_target_ = clipped.position;
+        orientation_target_ = clipped.orientation;
+        rt_position_clipped_ = clipped.position_clipped;
+        rt_orientation_clipped_ = clipped.orientation_clipped;
       }
       break;
     case Phase::kGoto:
@@ -935,10 +1098,29 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
   }
 
   // The example's law on the filtered reference, then its filters toward the new target.
+  const Matrix7d* arm_mass_matrix = nullptr;
+  if (mass_weighted_nullspace_) {
+    if (arm_mass_model_.loaded()) {
+      if (arm_mass_model_.compute(q_current, arm_armature_, arm_mass_matrix_)) {
+        arm_mass_matrix = &arm_mass_matrix_;
+      }
+    } else if (franka_robot_model_) {
+      // getMassMatrix() is already the 7x7 arm block, column major like libfranka's Jacobian
+      // (and symmetric, so the convention only matters for reading the code). It carries the
+      // configured end-effector load, so the hand must be set as the load for this to match
+      // training rather than a bare flange.
+      const std::array<double, 49> mass_array = franka_robot_model_->getMassMatrix();
+      arm_mass_matrix_ = Eigen::Map<const Matrix7d>(mass_array.data());
+      arm_mass_matrix = &arm_mass_matrix_;
+    }
+  }
   const CartesianImpedanceTerms terms = example_cartesian_impedance(
       position, orientation, jacobian, coriolis, q_current, dq_current, position_d_,
-      orientation_d_, nullspace_d_, stiffness_, damping_, nullspace_stiffness_);
-  const Vector7d output = saturate_torque_rate(terms.tau_command, tau_command_previous_);
+      orientation_d_, nullspace_d_, stiffness_, damping_, nullspace_stiffness_,
+      nullspace_damping_lambda_, rotation_error_form_, arm_mass_matrix);
+  // Forge's clamp first, then the libfranka torque-rate bound the robot would enforce anyway.
+  const Vector7d output = saturate_torque_rate(clamp_torque(terms.tau_command, torque_limit_),
+                                               tau_command_previous_);
   tau_command_previous_ = output;
   for (int i = 0; i < kNumJoints; ++i) {
     command_interfaces_[i].set_value(output(i));
@@ -982,6 +1164,18 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
   gains_applied_snapshot_[0].store(stiffness_(0, 0), std::memory_order_relaxed);
   gains_applied_snapshot_[1].store(stiffness_(3, 3), std::memory_order_relaxed);
   gains_applied_snapshot_[2].store(nullspace_stiffness_, std::memory_order_relaxed);
+  std::array<double, 7> tool_in_flange{};
+  {
+    const Eigen::Quaterniond tool_rotation(rt_tool_rotation_);
+    tool_in_flange = {rt_tool_translation_.x(), rt_tool_translation_.y(),
+                      rt_tool_translation_.z(), tool_rotation.x(),
+                      tool_rotation.y(),        tool_rotation.z(),
+                      tool_rotation.w()};
+    for (int i = 0; i < 7; ++i) {
+      tool_in_flange_snapshot_[i].store(tool_in_flange[i], std::memory_order_relaxed);
+    }
+  }
+  policy_goal_active_.store(rt_goal_active_, std::memory_order_relaxed);
   position_error_.store(position_error);
   orientation_error_.store(orientation_error);
   joint_limit_margin_.store(margin);
@@ -1028,6 +1222,12 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
     for (int i = 0; i < 6; ++i) {
       msg.error[i] = terms.error(i);
     }
+    for (int i = 0; i < 7; ++i) {
+      msg.tool_in_flange[i] = tool_in_flange[i];
+    }
+    fill_pose(msg.goal, rt_goal_position_, rt_goal_orientation_);
+    msg.position_clipped = rt_goal_active_ && rt_position_clipped_;
+    msg.orientation_clipped = rt_goal_active_ && rt_orientation_clipped_;
     for (int i = 0; i < kNumJoints; ++i) {
       msg.nullspace_reference[i] = nullspace_d_(i);
       msg.tau_task[i] = terms.tau_task(i);
@@ -1043,12 +1243,14 @@ controller_interface::return_type CartesianTrajectoryReplayController::update(
 
 // --- lifecycle ----------------------------------------------------------------------------
 
-CartesianTrajectoryReplayController::CallbackReturn CartesianTrajectoryReplayController::on_init() {
+CartesianImpedanceController::CallbackReturn CartesianImpedanceController::on_init() {
   try {
     auto_declare<std::string>("arm_id", "fr3");
     auto_declare<std::string>("arm_prefix", "");
     auto_declare<std::string>("base_frame", "fr3_link0");
     auto_declare<std::string>("model_source", "franka");
+    auto_declare<bool>("mass_weighted_nullspace", false);
+    auto_declare<std::vector<double>>("arm_armature", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     auto_declare<std::vector<double>>("tool_offset_xyz", {0.0, 0.0, 0.0});
     auto_declare<std::vector<double>>("tool_offset_rpy", {0.0, 0.0, 0.0});
     auto_declare<double>("translational_stiffness", 150.0);
@@ -1057,7 +1259,13 @@ CartesianTrajectoryReplayController::CallbackReturn CartesianTrajectoryReplayCon
     auto_declare<double>("stiffness_scale", 1.0);
     auto_declare<double>("target_filter", 0.005);
     auto_declare<std::string>("nullspace_target", "trajectory");
+    auto_declare<double>("nullspace_damping_lambda", kNullspaceDampingLambda);
+    auto_declare<std::string>("rotation_error", "quaternion_vector");
     auto_declare<bool>("coriolis_compensation", true);
+    auto_declare<double>("torque_limit", 0.0);
+    auto_declare<double>("policy_clip_position_m", 0.0);
+    auto_declare<double>("policy_clip_orientation_rad", 0.0);
+    auto_declare<double>("policy_clip_frame_yaw", 0.0);
     auto_declare<double>("torque_rate_limit", 0.0);
     auto_declare<double>("goto_max_velocity", 0.10);
     auto_declare<double>("goto_max_angular_velocity", 0.50);
@@ -1097,7 +1305,7 @@ CartesianTrajectoryReplayController::CallbackReturn CartesianTrajectoryReplayCon
   return CallbackReturn::SUCCESS;
 }
 
-bool CartesianTrajectoryReplayController::assign_parameters() {
+bool CartesianImpedanceController::assign_parameters() {
   const auto node = get_node();
   arm_id_ = node->get_parameter("arm_id").as_string();
   arm_prefix_ = node->get_parameter("arm_prefix").as_string();
@@ -1140,6 +1348,41 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
     return false;
   }
 
+  nullspace_damping_lambda_ = node->get_parameter("nullspace_damping_lambda").as_double();
+  if (!std::isfinite(nullspace_damping_lambda_) || nullspace_damping_lambda_ < 0.0) {
+    RCLCPP_FATAL(node->get_logger(), "nullspace_damping_lambda must be finite and >= 0, got %f",
+                 nullspace_damping_lambda_);
+    return false;
+  }
+
+  mass_weighted_nullspace_ = node->get_parameter("mass_weighted_nullspace").as_bool();
+  const auto armature = node->get_parameter("arm_armature").as_double_array();
+  if (armature.size() != static_cast<std::size_t>(kNumJoints)) {
+    RCLCPP_FATAL(node->get_logger(), "arm_armature must hold %d values, got %zu", kNumJoints,
+                 armature.size());
+    return false;
+  }
+  for (int i = 0; i < kNumJoints; ++i) {
+    if (!std::isfinite(armature[i]) || armature[i] < 0.0) {
+      RCLCPP_FATAL(node->get_logger(), "arm_armature[%d] must be finite and >= 0, got %f", i,
+                   armature[i]);
+      return false;
+    }
+    arm_armature_(i) = armature[i];
+  }
+
+  const auto rotation_error_mode = node->get_parameter("rotation_error").as_string();
+  if (rotation_error_mode == "quaternion_vector") {
+    rotation_error_form_ = RotationErrorForm::kQuaternionVector;
+  } else if (rotation_error_mode == "axis_angle") {
+    rotation_error_form_ = RotationErrorForm::kAxisAngle;
+  } else {
+    RCLCPP_FATAL(node->get_logger(),
+                 "rotation_error must be 'quaternion_vector' or 'axis_angle', got '%s'",
+                 rotation_error_mode.c_str());
+    return false;
+  }
+
   const auto nullspace_mode = node->get_parameter("nullspace_target").as_string();
   if (nullspace_mode == "trajectory") {
     nullspace_follows_trajectory_ = true;
@@ -1151,6 +1394,31 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
     return false;
   }
   coriolis_compensation_ = node->get_parameter("coriolis_compensation").as_bool();
+  torque_limit_ = node->get_parameter("torque_limit").as_double();
+  policy_clip_position_m_ = node->get_parameter("policy_clip_position_m").as_double();
+  policy_clip_orientation_rad_ = node->get_parameter("policy_clip_orientation_rad").as_double();
+  policy_clip_frame_yaw_ = node->get_parameter("policy_clip_frame_yaw").as_double();
+  {
+    const auto finite_nonnegative = [](double value) {
+      return std::isfinite(value) && value >= 0.0;
+    };
+    if (!finite_nonnegative(torque_limit_) || !finite_nonnegative(policy_clip_position_m_) ||
+        !finite_nonnegative(policy_clip_orientation_rad_) ||
+        !std::isfinite(policy_clip_frame_yaw_)) {
+      RCLCPP_FATAL(node->get_logger(),
+                   "torque_limit, policy_clip_position_m and policy_clip_orientation_rad must "
+                   "be finite and >= 0, policy_clip_frame_yaw finite");
+      return false;
+    }
+    if ((policy_clip_position_m_ > 0.0) != (policy_clip_orientation_rad_ > 0.0)) {
+      RCLCPP_FATAL(node->get_logger(),
+                   "policy_clip_position_m and policy_clip_orientation_rad must both be set "
+                   "(ForgeUltra clips position and orientation together) or both be 0");
+      return false;
+    }
+    policy_clip_frame_ =
+        Eigen::Quaterniond(Eigen::AngleAxisd(policy_clip_frame_yaw_, Eigen::Vector3d::UnitZ()));
+  }
   torque_rate_limit_ = node->get_parameter("torque_rate_limit").as_double();
   goto_max_velocity_ = node->get_parameter("goto_max_velocity").as_double();
   goto_max_angular_velocity_ = node->get_parameter("goto_max_angular_velocity").as_double();
@@ -1220,7 +1488,7 @@ bool CartesianTrajectoryReplayController::assign_parameters() {
   return publish_gain_settings(settings, "configuration");
 }
 
-bool CartesianTrajectoryReplayController::publish_gain_settings(GainSettings settings,
+bool CartesianImpedanceController::publish_gain_settings(GainSettings settings,
                                                                 const char* origin) {
   const auto finite_nonnegative = [](double value) { return std::isfinite(value) && value >= 0.0; };
   if (!std::all_of(settings.stiffness.begin(), settings.stiffness.end(), finite_nonnegative) ||
@@ -1249,7 +1517,7 @@ bool CartesianTrajectoryReplayController::publish_gain_settings(GainSettings set
 }
 
 rcl_interfaces::msg::SetParametersResult
-CartesianTrajectoryReplayController::gain_parameters_callback(
+CartesianImpedanceController::gain_parameters_callback(
     const std::vector<rclcpp::Parameter>& parameters) {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
@@ -1287,7 +1555,7 @@ CartesianTrajectoryReplayController::gain_parameters_callback(
   return result;
 }
 
-void CartesianTrajectoryReplayController::set_cartesian_stiffness_callback(
+void CartesianImpedanceController::set_cartesian_stiffness_callback(
     const std::shared_ptr<franka_msgs::srv::SetCartesianStiffness::Request> request,
     std::shared_ptr<franka_msgs::srv::SetCartesianStiffness::Response> response) {
   GainSettings settings = *gain_settings_buffer_.readFromNonRT();
@@ -1303,8 +1571,8 @@ void CartesianTrajectoryReplayController::set_cartesian_stiffness_callback(
   response->error = "";
 }
 
-CartesianTrajectoryReplayController::CallbackReturn
-CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State& /*previous_state*/) {
+CartesianImpedanceController::CallbackReturn
+CartesianImpedanceController::on_configure(const rclcpp_lifecycle::State& /*previous_state*/) {
   if (!assign_parameters()) {
     return CallbackReturn::FAILURE;
   }
@@ -1317,6 +1585,27 @@ CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State&
 
   franka_cartesian_pose_.reset();
   franka_robot_model_.reset();
+  if (mass_weighted_nullspace_ && model_from_dh_) {
+    // ForgeUltra's nullspace term needs the arm block of the whole articulation's mass
+    // matrix, which the DH model cannot supply. Build it from the description the controller
+    // manager hands us; this is the ros-sim path.
+    std::string error;
+    if (!arm_mass_model_.load(get_robot_description(), joint_names(), error)) {
+      RCLCPP_FATAL(get_node()->get_logger(),
+                   "mass_weighted_nullspace is set but the arm mass model could not be built "
+                   "from the robot description: %s",
+                   error.c_str());
+      return CallbackReturn::FAILURE;
+    }
+    RCLCPP_INFO(get_node()->get_logger(),
+                "mass-weighted nullspace: arm mass matrix from the robot description "
+                "(non-arm joints locked), armature [%g %g %g %g %g %g %g]",
+                arm_armature_(0), arm_armature_(1), arm_armature_(2), arm_armature_(3),
+                arm_armature_(4), arm_armature_(5), arm_armature_(6));
+  } else if (mass_weighted_nullspace_) {
+    RCLCPP_INFO(get_node()->get_logger(),
+                "mass-weighted nullspace: arm mass matrix from franka_robot_model_->getMass()");
+  }
   if (model_from_dh_) {
     RCLCPP_WARN(get_node()->get_logger(),
                 "model_source is 'dh': pose and Jacobian come from the built-in FR3 DH model with "
@@ -1337,22 +1626,28 @@ CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State&
     return CallbackReturn::FAILURE;
   }
 
-  goto_subscriber_ = get_node()->create_subscription<franka_trajectory_replay_msgs::msg::CartesianGoto>(
+  goto_subscriber_ = get_node()->create_subscription<franka_forge_cartesian_impedance_msgs::msg::CartesianGoto>(
       "~/goto", rclcpp::QoS(1),
-      [this](const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg) {
+      [this](const franka_forge_cartesian_impedance_msgs::msg::CartesianGoto::SharedPtr msg) {
         goto_callback(msg);
       });
   trajectory_subscriber_ =
-      get_node()->create_subscription<franka_trajectory_replay_msgs::msg::CartesianTrajectory>(
+      get_node()->create_subscription<franka_forge_cartesian_impedance_msgs::msg::CartesianTrajectory>(
           "~/trajectory", rclcpp::QoS(1).reliable(),
-          [this](const franka_trajectory_replay_msgs::msg::CartesianTrajectory::SharedPtr msg) {
+          [this](const franka_forge_cartesian_impedance_msgs::msg::CartesianTrajectory::SharedPtr msg) {
             trajectory_callback(msg);
           });
   policy_command_subscriber_ =
-      get_node()->create_subscription<franka_trajectory_replay_msgs::msg::CartesianGoto>(
+      get_node()->create_subscription<franka_forge_cartesian_impedance_msgs::msg::CartesianGoto>(
           "~/policy_command", rclcpp::QoS(1).reliable(),
-          [this](const franka_trajectory_replay_msgs::msg::CartesianGoto::SharedPtr msg) {
+          [this](const franka_forge_cartesian_impedance_msgs::msg::CartesianGoto::SharedPtr msg) {
             policy_command_callback(msg);
+          });
+  policy_goal_subscriber_ =
+      get_node()->create_subscription<franka_forge_cartesian_impedance_msgs::msg::PolicyGoal>(
+          "~/policy_goal", rclcpp::QoS(1).reliable(),
+          [this](const franka_forge_cartesian_impedance_msgs::msg::PolicyGoal::SharedPtr msg) {
+            policy_goal_callback(msg);
           });
   pause_subscriber_ = get_node()->create_subscription<std_msgs::msg::Empty>(
       "~/pause", rclcpp::QoS(1),
@@ -1396,17 +1691,19 @@ CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State&
     msg.output.effort.assign(kNumJoints, 0.0);
   }
   auto cartesian_publisher =
-      get_node()->create_publisher<franka_trajectory_replay_msgs::msg::CartesianReplayState>(
+      get_node()->create_publisher<franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState>(
           "~/cartesian_state", rclcpp::SystemDefaultsQoS());
   cartesian_state_publisher_ = std::make_unique<
-      realtime_tools::RealtimePublisher<franka_trajectory_replay_msgs::msg::CartesianReplayState>>(
+      realtime_tools::RealtimePublisher<franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState>>(
       cartesian_publisher);
 
   RCLCPP_INFO(get_node()->get_logger(),
-              "Configured: Cartesian impedance (example law, %s model) about %s%s, nullspace "
-              "target %s, target filter %.4f, goto <= %.2f m/s / %.2f rad/s, max goto step "
-              "%.2f m / %.2f rad.",
-              model_from_dh_ ? "built-in DH" : "franka_hardware",
+              "Configured: Cartesian impedance (%s rotation error, nullspace lambda %.3f, %s "
+              "model) about %s%s, nullspace target %s, target filter %.4f, goto <= %.2f m/s / "
+              "%.2f rad/s, max goto step %.2f m / %.2f rad.",
+              rotation_error_form_ == RotationErrorForm::kAxisAngle ? "axis-angle"
+                                                                   : "quaternion-vector",
+              nullspace_damping_lambda_, model_from_dh_ ? "built-in DH" : "franka_hardware",
               tool_active_ ? format_pose(tool_translation_,
                                          Eigen::Quaterniond(tool_rotation_)).c_str()
                            : "the flange",
@@ -1414,11 +1711,19 @@ CartesianTrajectoryReplayController::on_configure(const rclcpp_lifecycle::State&
               nullspace_follows_trajectory_ ? "follows the trajectory" : "fixed at activation",
               get_node()->get_parameter("target_filter").as_double(), goto_max_velocity_,
               goto_max_angular_velocity_, max_goto_step_m_, max_goto_step_rad_);
+  if (policy_clip_position_m_ > 0.0) {
+    RCLCPP_INFO(get_node()->get_logger(),
+                "Policy goals (ForgeUltra's per-cycle decode) accepted: clip %.3f m per axis, "
+                "%.3f rad per Euler angle, in a frame yawed %.4f rad from %s; torque clamp "
+                "%.0f Nm.",
+                policy_clip_position_m_, policy_clip_orientation_rad_, policy_clip_frame_yaw_,
+                base_frame_.c_str(), torque_limit_);
+  }
   return CallbackReturn::SUCCESS;
 }
 
-CartesianTrajectoryReplayController::CallbackReturn
-CartesianTrajectoryReplayController::on_activate(const rclcpp_lifecycle::State& /*previous_state*/) {
+CartesianImpedanceController::CallbackReturn
+CartesianImpedanceController::on_activate(const rclcpp_lifecycle::State& /*previous_state*/) {
   const size_t expected = 3 * kNumJoints + (model_from_dh_ ? 0 : kPoseInterfaces);
   if (state_interfaces_.size() < expected) {
     RCLCPP_FATAL(get_node()->get_logger(), "Got %zu state interfaces, expected at least %zu.",
@@ -1455,6 +1760,24 @@ CartesianTrajectoryReplayController::on_activate(const rclcpp_lifecycle::State& 
   for (auto& value : gains_applied_snapshot_) {
     value.store(0.0, std::memory_order_relaxed);
   }
+  // The controlled frame starts at the static tool offset; a policy goal may move it later.
+  rt_tool_translation_ = tool_translation_;
+  rt_tool_rotation_ = tool_rotation_;
+  rt_tool_active_ = tool_active_;
+  rt_goal_active_ = false;
+  rt_position_clipped_ = false;
+  rt_orientation_clipped_ = false;
+  policy_goal_active_.store(false, std::memory_order_relaxed);
+  {
+    const Eigen::Quaterniond tool_rotation(tool_rotation_);
+    const std::array<double, 7> tool{tool_translation_.x(), tool_translation_.y(),
+                                     tool_translation_.z(), tool_rotation.x(),
+                                     tool_rotation.y(),     tool_rotation.z(),
+                                     tool_rotation.w()};
+    for (int i = 0; i < 7; ++i) {
+      tool_in_flange_snapshot_[i].store(tool[i], std::memory_order_relaxed);
+    }
+  }
   if (franka_robot_model_) {
     franka_robot_model_->assign_loaned_state_interfaces(state_interfaces_);
   }
@@ -1465,8 +1788,8 @@ CartesianTrajectoryReplayController::on_activate(const rclcpp_lifecycle::State& 
   return CallbackReturn::SUCCESS;
 }
 
-CartesianTrajectoryReplayController::CallbackReturn
-CartesianTrajectoryReplayController::on_deactivate(const rclcpp_lifecycle::State& /*previous_state*/) {
+CartesianImpedanceController::CallbackReturn
+CartesianImpedanceController::on_deactivate(const rclcpp_lifecycle::State& /*previous_state*/) {
   is_active_.store(false, std::memory_order_release);
   command_initialized_.store(false, std::memory_order_release);
   if (franka_robot_model_) {
@@ -1478,8 +1801,8 @@ CartesianTrajectoryReplayController::on_deactivate(const rclcpp_lifecycle::State
   return CallbackReturn::SUCCESS;
 }
 
-}  // namespace franka_trajectory_replay
+}  // namespace franka_forge_cartesian_impedance
 
 // NOLINTNEXTLINE
-PLUGINLIB_EXPORT_CLASS(franka_trajectory_replay::CartesianTrajectoryReplayController,
+PLUGINLIB_EXPORT_CLASS(franka_forge_cartesian_impedance::CartesianImpedanceController,
                        controller_interface::ControllerInterface)

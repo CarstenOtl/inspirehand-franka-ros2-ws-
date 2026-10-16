@@ -20,8 +20,6 @@
   <depend>diagnostic_msgs</depend>
   <depend>franka_msgs</depend>
   <depend>franka_semantic_components</depend>
-  <depend>franka_trajectory_replay_msgs</depend>
-  <depend>geometry_msgs</depend>
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
@@ -36,6 +34,7 @@
   <exec_depend>controller_manager_msgs</exec_depend>
   <exec_depend>franka_bringup</exec_depend>
   <exec_depend>franka_description</exec_depend>
+  <exec_depend>franka_forge_cartesian_impedance_msgs</exec_depend>
   <exec_depend>franka_robot_state_broadcaster</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>launch</exec_depend>

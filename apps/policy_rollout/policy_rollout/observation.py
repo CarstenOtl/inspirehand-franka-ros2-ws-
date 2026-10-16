@@ -7,7 +7,38 @@ from collections.abc import Sequence
 import torch
 
 
+# ForgeUltra's q and dq cover the seven arm joints followed by the three driven
+# hand joints.  A checkpoint trained with ``hand_velocity_observation:
+# omitted`` was shown only the arm half of dq, which is the whole of why its
+# proprioception is 26 values wide rather than 29.
+POLICY_DOF = 10
+ARM_DOF = 7
+PREVIOUS_ACTION_DIM = 9
+HAND_VELOCITY_OBSERVATION_MODES = ("included", "omitted")
 NATIVE_OSC_PROPRIO_DIM = 29
+
+
+def hand_velocity_width(hand_velocity_observation: str) -> int:
+    """Return how many of the ten dq values the given convention keeps."""
+
+    if hand_velocity_observation not in HAND_VELOCITY_OBSERVATION_MODES:
+        raise ValueError(
+            "hand_velocity_observation must be one of "
+            + ", ".join(repr(mode) for mode in HAND_VELOCITY_OBSERVATION_MODES)
+        )
+    return POLICY_DOF if hand_velocity_observation == "included" else ARM_DOF
+
+
+def native_osc_proprio_dim(hand_velocity_observation: str = "included") -> int:
+    """Return the proprioception width that dq convention produces."""
+
+    return (
+        POLICY_DOF
+        + hand_velocity_width(hand_velocity_observation)
+        + PREVIOUS_ACTION_DIM
+    )
+
+
 FORGE_POLICY_JOINT_NAMES = (
     *(f"fr3_joint{index}" for index in range(1, 8)),
     "thumb_joint_0",
@@ -40,17 +71,25 @@ def build_native_osc_proprio(
     joint_position,
     joint_velocity,
     previous_filtered_native_action,
+    *,
+    hand_velocity_observation: str = "included",
 ) -> torch.Tensor:
-    """Return ForgeUltra's exact ``q10 + dq10 + previous action`` vector."""
+    """Return ForgeUltra's exact ``q10 + dq + previous action`` vector.
 
-    q = _finite_vector(joint_position, 10, "joint_position")
-    dq = _finite_vector(joint_velocity, 10, "joint_velocity")
+    ``joint_velocity`` is always the full ten-joint measurement.  A checkpoint
+    that omits the hand velocities keeps only its arm prefix, so a caller feeds
+    and records what it measured without knowing which layout it is serving.
+    """
+
+    width = hand_velocity_width(hand_velocity_observation)
+    q = _finite_vector(joint_position, POLICY_DOF, "joint_position")
+    dq = _finite_vector(joint_velocity, POLICY_DOF, "joint_velocity")
     previous = _finite_vector(
         previous_filtered_native_action,
-        9,
+        PREVIOUS_ACTION_DIM,
         "previous_filtered_native_action",
     )
-    return torch.cat((q, dq, previous))
+    return torch.cat((q, dq[:width], previous))
 
 
 def one_hot_process_phase(phase: str, feature_names: Sequence[str]) -> torch.Tensor:
@@ -75,7 +114,10 @@ def one_hot_process_phase(phase: str, feature_names: Sequence[str]) -> torch.Ten
 __all__ = [
     "FR3_POLICY_JOINT_NAMES",
     "FORGE_POLICY_JOINT_NAMES",
+    "HAND_VELOCITY_OBSERVATION_MODES",
     "NATIVE_OSC_PROPRIO_DIM",
     "build_native_osc_proprio",
+    "hand_velocity_width",
+    "native_osc_proprio_dim",
     "one_hot_process_phase",
 ]
