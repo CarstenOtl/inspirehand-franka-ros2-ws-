@@ -148,7 +148,7 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
         parameters=[
             {
-                "source": "/" + MJCF_CAMERA,
+                "source": arg("camera_source").rstrip("/"),
                 "frame_id": camera["frame_id"],
                 "camera_matrix": [float(v) for v in camera["color"]["camera_matrix"]],
                 "output_prefix": prefix,
@@ -242,6 +242,13 @@ def generate_launch_description():
                 "camera_view",
                 default_value="true",
                 description="Open rqt_image_view on the simulated D415 colour stream.",
+            ),
+            DeclareLaunchArgument(
+                "camera_source",
+                default_value="/mujoco_camera_plugin/" + MJCF_CAMERA,
+                description="Topic prefix mujoco_ros2_control renders the MJCF camera on. "
+                "Its 0.1.2 apt release namespaces camera topics under the plugin node; "
+                "older builds published them at /" + MJCF_CAMERA + ".",
             ),
             DeclareLaunchArgument(
                 "camera_calibration",
