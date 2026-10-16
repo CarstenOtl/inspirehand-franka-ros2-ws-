@@ -263,6 +263,45 @@ loses meaning and the frame tips over. Hardware has no nut-angle topic, so `turn
 `grasp_yaw_proxy` and this hazard is live on every hardware run. Any hardware release event needs
 corroboration before it is believed.
 
+2026-10-16, first hardware run on CUDA (`hardware-20261016-135034-394484`, 16 flow steps).
+Timing is settled on hardware: preflight steady max 21 ms against 60 ms, 0 missed deadlines over
+360 steps. The run ended `return_failed` with 0 cycles. Everything below is reconstructed offline
+from the recorded joints with the rollout's own frame code (training scene FK for the flange,
+`TrainingHandKinematics` for the tips, `grasp_frame_from_tips`, the reset z transport). The
+reconstruction gives the printed release proxy to 0.3 deg (74.2 vs 74.5).
+
+- **The release was the degenerate-frame artefact again, not a turn.** The proxy read -22 deg at
+  step 52 and never showed a tightening turn. The index then closed (0.42 to 0.66 rad) and the
+  tips converged from 24 mm to 8.6 mm in nine steps, so nothing was between the pads. Grasp z
+  went from -0.76 to +0.20 against world z, and the proxy jumped -22 to +74 deg in steps 58-61,
+  crossing the 55 deg gate. Joint 7 turned -59 deg over the policy phase, but on this mount that
+  axis is close to horizontal, so it is not a turn about the bolt.
+- **The return failed on two of the three gates.** It ran the full 16 s and settled at
+  14.6 mm / 8.3 deg from the reset grasp (gates 5 mm / 5 deg); the hand was within 0.099 rad
+  (gate 0.15). The orientation counts here because the grasp frame turns with the fingers:
+  a flange-only estimate reads 3.9 deg and is the wrong measure.
+- **The physical reset sits 12.6 mm below training's.** At the M24 reset joints and
+  `THREADING_GRASP_POSTURE`, training's grasp is at (582.9, 1.7, 264.1) mm in the world. At the
+  first policy step this run's was at (585.2, 3.6, 251.5), 2.2 deg apart. The hand posture adds
+  only 0.6 mm of that; the arm adds 12.1 mm. Its joints were 0.005-0.017 rad off the reset, and
+  joint 7 was 0.057 rad off; joints 2, 5, 6 and 7 each move the grasp 3-6 mm down. The joints are
+  taken after the switch to the Cartesian controller, so this is homing error plus any drift
+  during the hold.
+- **The policy returns to its own reset, not to the measured one.** Its return target settles at
+  (+0, -2, +14) mm from the physical reset, which is within about 4 mm of training's reset. So
+  the student does what it learned, and the gate measures it against a reset 12.6 mm lower.
+- **The controller holds about 9 mm short of the return target.** The error is about (-7, +5,
+  +3.5) mm, steady for 16 s, and the controller clipped the step on 156 of 360 ticks. ros-sim
+  reached 0.4 mm on the same law, so this is the physical plant: joint friction, and the hand
+  load (D1: 0.19 kg here vs 0.54 kg in training).
+
+Next, in order:
+1. Find out why the pads close past the nut. Check that the physical bolt is where training puts
+   it: world (0.61, 0, 0.05), which is 0.59 m in front of `fr3_link0` on its x axis.
+2. Make homing land on the training reset grasp to about a millimetre, not only near the reset
+   joints.
+3. Size the Cartesian steady-state error against the 5 mm gate, using the weighed hand mass.
+
 ### C1. Publish hand joint velocities from the Inspire driver  [should]
 
 Done 2026-10-08, in `inspire_hand_driver`. The hand has no speed sensor -- its register map
