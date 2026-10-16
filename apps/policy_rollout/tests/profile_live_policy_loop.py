@@ -18,7 +18,9 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = APP_ROOT.parents[1]
 DEFAULT_CHECKPOINT = (
     APP_ROOT
-    / "checkpoints/sequential_threading_cycle10_hybrid_teacher_d415_20ep/checkpoint.pt"
+    / "checkpoints/fr3_offline_flow_matching_parallel_vision_13102026"
+    / "m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013-135143-648368"
+    / "nn/checkpoint.pt"
 )
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
