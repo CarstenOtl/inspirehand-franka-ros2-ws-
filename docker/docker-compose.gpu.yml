@@ -10,8 +10,13 @@
 # --runtime=docker`, then restart dockerd); without it `up` fails with "could
 # not select device driver nvidia". The image is built with the cu130 torch
 # wheel, which wants a driver >= 580.
+#
+# The GPU image gets its own tag, so it sits beside the CPU one
+# (docker-inspire_franka:latest) instead of replacing it: switching between
+# them is an `up -d`, not a rebuild. Only the torch layer differs.
 services:
   inspire_franka:
+    image: docker-inspire_franka:gpu
     build:
       args:
         TORCH_INDEX: cu130

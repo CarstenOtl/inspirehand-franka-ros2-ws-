@@ -1,0 +1,7 @@
+# CUDA 13.0 PyTorch for an NVIDIA GPU with driver >= 580 (check with
+# nvidia-smi). The policy then defaults to the full 16 flow steps it was
+# distilled with. Matches the GPU Docker image (docker-compose.gpu.yml,
+# TORCH_INDEX=cu130).
+--extra-index-url https://download.pytorch.org/whl/cu130
+-r requirements.txt
+torch==2.14.0+cu130

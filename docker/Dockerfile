@@ -185,6 +185,8 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # the policy run its full 16 flow steps at 15 Hz. torchdiffeq is the vendored
 # flow_matching solver's runtime dependency. Kept separate from the layer above
 # so a version bump here does not invalidate the mujoco layer.
+# apps/policy_rollout/requirements*.txt repeat these pins for use outside the
+# image; bump both together.
 ARG TORCH_VERSION=2.14.0
 ARG TORCH_INDEX=cpu
 ARG TORCHDIFFEQ_VERSION=0.2.5

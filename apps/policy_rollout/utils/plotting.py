@@ -36,7 +36,8 @@ def _pyplot():
         from matplotlib import pyplot
     except ImportError as exc:
         raise ImportError(
-            "plotting rollout data requires matplotlib; install requirements.txt"
+            "plotting rollout data requires matplotlib; install "
+            "apps/policy_rollout/requirements-cpu.txt (or -gpu.txt)"
         ) from exc
     return pyplot
 

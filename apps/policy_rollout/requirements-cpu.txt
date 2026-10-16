@@ -1,0 +1,6 @@
+# CPU-only PyTorch: works on any machine, and the policy defaults to 2 flow
+# steps per action so that 15 Hz still fits. Matches the default Docker image
+# (TORCH_INDEX=cpu).
+--extra-index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+torch==2.14.0+cpu

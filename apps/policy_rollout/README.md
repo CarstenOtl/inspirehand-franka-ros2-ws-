@@ -70,11 +70,15 @@ both, since evaluation uses a fixed priority buffer.
 
 ### GPU inference
 
-The development laptop (i7-12700H, RTX 3060 Laptop 6 GB) runs the container
-from `docker/docker-compose.gpu.yml`; the top-level README has the one-time
-host setup. With it, `--device auto` resolves to CUDA and the default becomes
-16 flow steps. `tests/benchmark_policy_inference.py` on the deployed 26-D
-checkpoint, 320x180 frames, measured on 2026-10-15:
+A host with an NVIDIA GPU runs the GPU variant of the image; the top-level
+README ("CPU or GPU") covers the choice and the one-time host setup. With it,
+`--device auto` resolves to CUDA and the default becomes 16 flow steps.
+Nothing else in this app changes between the two variants. Outside Docker,
+`requirements-cpu.txt` and `requirements-gpu.txt` install the matching torch.
+
+Measured on the development laptop (i7-12700H, RTX 3060 Laptop 6 GB) with
+`tests/benchmark_policy_inference.py`, on the deployed 26-D checkpoint with
+320x180 frames, on 2026-10-15:
 
 | flow steps | CUDA mean / max | CPU mean / max |
 |---|---|---|
@@ -89,6 +93,10 @@ is no longer what bounds `--rate`: the checkpoint was distilled at 15 Hz, so
 its action horizon, temporal ensemble and progress clock assume that period,
 and the D415 profile delivers 30 frames per second. Raising the rate is a
 training-side change, not a deployment flag.
+
+Through the regular compose setup, the same benchmark gives 13.5 ms for 16
+steps. A 1500-step `ros-sim` rollout on 2026-10-16 missed no 15 Hz deadline
+on CUDA with 16 steps. On the same laptop's CPU with 2 steps, it missed 27.
 
 The camera path can be checked against real frames and the student checkpoint
 without bringing up or commanding the arm or hand:

@@ -1,5 +1,25 @@
-numpy
-PyYAML
-torch
-torchdiffeq
-matplotlib
+# Python packages apps/policy_rollout needs beyond ROS 2 Jazzy, shared by the
+# CPU and the GPU setup. Install one of the two files that include this one,
+# never this file alone, because neither installs torch on its own:
+#
+#   pip install -r apps/policy_rollout/requirements-cpu.txt   # any machine
+#   pip install -r apps/policy_rollout/requirements-gpu.txt   # NVIDIA, driver >= 580
+#
+# The Docker image is the supported setup and already has all of this; these
+# files are for running the offline tools (the `mujoco` backend, the benchmark,
+# plotting) in a plain Python 3.12 environment. rclpy and the message packages
+# come from ROS and are not on PyPI, so the `hardware` and `ros-sim` backends
+# need the image or a sourced ROS 2 Jazzy install.
+#
+# Pins follow the image: the exact ones are the Dockerfile's ARGs
+# (MUJOCO_VERSION, TORCHDIFFEQ_VERSION, PYREALSENSE2_VERSION); the ranges cover
+# what Ubuntu 24.04's apt packages provide there. Change both together.
+numpy>=1.26,<2
+PyYAML>=6.0
+matplotlib>=3.6
+Pillow>=10.2
+opencv-python>=4.6
+mujoco==3.12.0
+torchdiffeq==0.2.5
+# Only utils/compare_depth_filters.py needs the RealSense SDK bindings.
+pyrealsense2==2.58.4.10922

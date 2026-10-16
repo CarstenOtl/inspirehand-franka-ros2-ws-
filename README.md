@@ -34,51 +34,139 @@ src/
 
 ## Getting started
 
+Everything runs inside one Docker image, and it comes in two variants: a CPU
+setup that runs on any machine, and a GPU setup for hosts with an NVIDIA card.
+Pick one per machine. The commands you run inside the container are the same
+for both.
+
+### What the host needs
+
+- Linux with Docker Engine and the Compose v2 plugin (`docker compose
+  version`). Add your user to the `docker` group (`sudo usermod -aG docker
+  $USER`), then log out and back in.
+- `git`, to clone with submodules.
+- For the GUIs (MuJoCo viewer, rqt, RViz): run `xhost +local:root` once per
+  login.
+- **GPU setup only:**
+  - An NVIDIA GPU with driver 580 or newer; `nvidia-smi` on the host shows the
+    version.
+  - Compose 2.30 or newer.
+  - The NVIDIA Container Toolkit (installed in step 1 below).
+
+The real-time limits for the Franka's 1 kHz control loop are already set in
+`docker/docker-compose.yml` and need nothing extra on the host.
+
+### CPU or GPU
+
+The two variants build the same image except for one layer: the PyTorch build
+that `apps/policy_rollout` runs the learned policy on. ROS, MuJoCo, the drivers
+and the simulator are identical in both. The policy picks its device on its
+own (`--device auto`), so no command changes between them.
+
+| | CPU setup (default) | GPU setup |
+|---|---|---|
+| PyTorch | `2.14.0+cpu` | `2.14.0+cu130` |
+| Image tag | `docker-inspire_franka:latest` | `docker-inspire_franka:gpu` |
+| Image size | ~6.4 GB | ~14 GB |
+| Policy flow steps per action (default) | 2, so 15 Hz still fits | 16, the number the policy was trained with |
+| One policy pass, measured | ~16 ms with 2 steps (i7-12700H) | ~13 ms with 16 steps (RTX 3060 Laptop) |
+| Host setup | nothing beyond Docker | driver and Container Toolkit, once |
+
+The workcell PC has no NVIDIA GPU and runs the CPU setup. Use the GPU setup
+wherever there is a GPU: the policy then runs at the step count it was trained
+with, rather than the CPU's 2-step shortcut.
+
+### Clone
+
 ```bash
 git clone --recurse-submodules <this repo> inspire_franka
 cd inspire_franka
+# an existing clone: git submodule update --init --recursive
+```
 
+### CPU setup
+
+```bash
 cd docker
-docker compose build                  # only after editing the Dockerfile or a *_REF
-docker compose up -d
+docker compose up -d                  # builds the image on first use
 docker exec -it inspire_franka bash
 ```
 
-On a host with an NVIDIA GPU, layer `docker/docker-compose.gpu.yml` over the
-base file. It builds the image with the CUDA torch wheel (cu130, driver >= 580)
-and hands the GPU to the container, which lets `apps/policy_rollout` run the
-student's full 16 flow steps at 15 Hz instead of the CPU's two. The container
-needs the NVIDIA Container Toolkit on the host, once:
+`docker compose build` is only needed again after editing the Dockerfile or a
+`*_REF`.
+
+### GPU setup
+
+1. Install the NVIDIA Container Toolkit on the host, once. It is not in
+   Ubuntu's own archive, so it comes from NVIDIA's apt repository:
+
+   ```bash
+   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+     | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+   curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#' \
+     | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+   sudo nvidia-ctk runtime configure --runtime=docker   # writes /etc/docker/daemon.json
+   sudo systemctl restart docker                        # stops running containers
+   docker info | grep -i runtimes                       # must now list "nvidia"
+   ```
+
+2. Select the GPU variant for this machine, then build and start it.
+   `docker/.env` is git-ignored, so this choice stays on this machine and
+   never reaches the workcell:
+
+   ```bash
+   cd docker
+   echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml' > .env
+   docker compose build
+   docker compose up -d
+   docker exec -it inspire_franka bash
+   ```
+
+3. Check that the container sees the GPU:
+
+   ```bash
+   docker exec inspire_franka nvidia-smi
+   docker exec inspire_franka python3 -c "import torch; print(torch.cuda.is_available())"   # True
+   ```
+
+### Switching, and when it goes wrong
+
+- **Switching variants on one machine.** Each variant has its own image tag,
+  so once both are built, switching is an `up -d`, not a rebuild:
+  - GPU to CPU: `rm docker/.env && docker compose up -d`. The first time,
+    this builds the CPU image.
+  - Back to GPU: write `docker/.env` again as above, then `docker compose up -d`.
+  - For a single run without touching `.env`: `docker compose -f
+    docker-compose.yml -f docker-compose.gpu.yml up -d`.
+
+  `up -d` recreates the container. The workspace is mounted from the host, so
+  `build/`, `install/` and `logs/` survive the switch; anything installed by
+  hand inside the container does not.
+- **CPU inside the GPU container.** Pass `--device cpu`; the step default
+  then drops to 2.
+- **"could not select device driver nvidia"** from `up`: step 1 is incomplete.
+  `docker info` lists no `nvidia` runtime, or Docker was not restarted.
+- **`torch.cuda.is_available()` is False in the GPU container:** the host
+  driver is older than 580, or the container was started without the GPU file.
+  `docker inspect inspire_franka --format '{{.Config.Image}}'` should print
+  `docker-inspire_franka:gpu`.
+
+### Without Docker
+
+Only the offline policy tools (the `mujoco` backend, benchmarks, plotting) run
+outside the image, in a Python 3.12 environment:
 
 ```bash
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#' \
-  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker            # stops the running container
+pip install -r apps/policy_rollout/requirements-cpu.txt   # or requirements-gpu.txt
 ```
 
-Then select the override for this host and rebuild. `docker/.env` is
-untracked, so the workcell without a GPU keeps the CPU image:
+The `hardware` and `ros-sim` backends need ROS 2 Jazzy, so for those use the
+image. `apps/policy_rollout/requirements.txt` explains how its version pins
+follow the Dockerfile.
 
-```bash
-cd docker
-echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml' > .env
-docker compose build
-docker compose up -d
-docker exec inspire_franka nvidia-smi   # the GPU is visible inside
-```
-
-For an existing clone, initialize the newly added submodules once:
-
-```bash
-git submodule update --init --recursive
-```
-
-Inside the container:
+### Inside the container
 
 ```bash
 rg2        # colcon build --symlink-install, Release, then source install/setup.bash
