@@ -15,7 +15,7 @@
        comment, and ament_xmllint rejects the whole file for one. -->
 
   <asset>
-    <model name="end_effector" file="inspire_hand_on_flange.xml"/>
+    <model name="end_effector" file="inspire_hand_on_flange_isaac.xml"/>
     <texture type="skybox" builtin="flat" rgb1="0.92 0.92 0.92" width="512" height="3072"/>
     <texture type="2d" name="groundplane" builtin="checker" mark="edge"
       rgb1="0.31 0.31 0.31" rgb2="0.31 0.31 0.31" markrgb="0.78 0.78 0.78"
@@ -85,7 +85,38 @@
     <joint name="thread_hold" joint1="nut_twist" active="false"
       polycoef="0 1 0 0 0" solref="0.004 1" solimp="0.99 0.999 0.0005 0.5 2"/>
   </equality>
+
+  <custom>
+    <!-- IsaacHandPlugin (inspire_franka_sim): Isaac Lab's hand dynamics that
+         MJCF cannot express. From make_hand_mjcf.py's ISAAC tables. -->
+    <numeric name="isaac_hand/velocity_limit" data="1"/>
+    <numeric name="isaac_hand/joint/thumb_proximal_yaw_joint" data="0.132"/>
+    <numeric name="isaac_hand/joint/thumb_proximal_pitch_joint" data="0.132"/>
+    <numeric name="isaac_hand/joint/thumb_intermediate_joint" data="0.07456"/>
+    <numeric name="isaac_hand/joint/thumb_distal_joint" data="0.01276"/>
+    <numeric name="isaac_hand/joint/index_proximal_joint" data="0.07456"/>
+    <numeric name="isaac_hand/joint/middle_proximal_joint" data="0.07456"/>
+    <numeric name="isaac_hand/joint/ring_proximal_joint" data="0.07456"/>
+    <numeric name="isaac_hand/joint/pinky_proximal_joint" data="0.07456"/>
+    <numeric name="isaac_hand/joint/index_intermediate_joint" data="0.01276"/>
+    <numeric name="isaac_hand/joint/middle_intermediate_joint" data="0.01276"/>
+    <numeric name="isaac_hand/joint/ring_intermediate_joint" data="0.01276"/>
+    <numeric name="isaac_hand/joint/pinky_intermediate_joint" data="0.01276"/>
+    <numeric name="isaac_hand/mimic/index_intermediate_joint" data="1.1169 0"/>
+    <text name="isaac_hand/mimic_leader/index_intermediate_joint" data="index_proximal_joint"/>
+    <numeric name="isaac_hand/mimic/middle_intermediate_joint" data="1.1169 0"/>
+    <text name="isaac_hand/mimic_leader/middle_intermediate_joint" data="middle_proximal_joint"/>
+    <numeric name="isaac_hand/mimic/ring_intermediate_joint" data="1.1169 0"/>
+    <text name="isaac_hand/mimic_leader/ring_intermediate_joint" data="ring_proximal_joint"/>
+    <numeric name="isaac_hand/mimic/pinky_intermediate_joint" data="1.1169 0"/>
+    <text name="isaac_hand/mimic_leader/pinky_intermediate_joint" data="pinky_proximal_joint"/>
+    <numeric name="isaac_hand/mimic/thumb_intermediate_joint" data="1.1425 0"/>
+    <text name="isaac_hand/mimic_leader/thumb_intermediate_joint" data="thumb_proximal_pitch_joint"/>
+    <numeric name="isaac_hand/mimic/thumb_distal_joint" data="0.7508 0"/>
+    <text name="isaac_hand/mimic_leader/thumb_distal_joint" data="thumb_intermediate_joint"/>
+  </custom>
   <keyframe>
-    <key name="policy_home" qpos="-0.52446674 0.250818023 0.130924487 -2.17656685 1.6790497 2.05749575 -1.01828739 1.18507856 0.050614548 0.0578271211 0.0434166025 0.214675498 0.239771064 1.333 1.4888277 1.333 1.4888277 1.333 1.4888277 0.00766 0"/>
+    <key name="policy_home" qpos="-0.52446674 0.250818023 0.130924487 -2.17656685 1.6790497 2.05749575 -1.01828739 1.18507856 0.050614548 0.0578271211 0.0434166025 0.214675498 0.239771064 1.333 1.4888277 1.333 1.4888277 1.333 1.4888277 0.00766 0"
+      ctrl="0 0 0 0 0 0 0 1.18507856 0.050614548 0.0578271211 0.0434166025 0.214675498 0.239771064 1.333 1.4888277 1.333 1.4888277 1.333 1.4888277"/>
   </keyframe>
 </mujoco>

@@ -34,10 +34,27 @@ ament_target_dependencies(${PROJECT_NAME}_thread_pair_plugin
 # reads as -lopt/... and cannot find. mujoco_vendor-extras.cmake defines a
 # correct imported target, so link that.
 target_link_libraries(${PROJECT_NAME}_thread_pair_plugin mujoco::mujoco)
-pluginlib_export_plugin_description_file(
-  mujoco_ros2_control_plugins thread_pair_plugin.xml)
 
-install(TARGETS ${PROJECT_NAME}_thread_pair_plugin
+# What of Isaac Lab's Inspire hand an MJCF cannot say: target-level mimic, the
+# 1 rad/s joint velocity limit and PhysX's load-dependent joint friction. Used
+# by inspire_franka_policy_scene.xml; see the header.
+add_library(${PROJECT_NAME}_isaac_hand_plugin SHARED src/isaac_hand_plugin.cpp)
+target_compile_features(${PROJECT_NAME}_isaac_hand_plugin PUBLIC cxx_std_17)
+target_include_directories(${PROJECT_NAME}_isaac_hand_plugin PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(${PROJECT_NAME}_isaac_hand_plugin
+  mujoco_ros2_control_plugins
+  pluginlib
+  rclcpp
+)
+target_link_libraries(${PROJECT_NAME}_isaac_hand_plugin mujoco::mujoco)
+
+pluginlib_export_plugin_description_file(
+  mujoco_ros2_control_plugins mujoco_plugins.xml)
+
+install(TARGETS ${PROJECT_NAME}_thread_pair_plugin ${PROJECT_NAME}_isaac_hand_plugin
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -53,6 +70,7 @@ install(
   PROGRAMS
     scripts/make_hand_mjcf.py
     scripts/inspire_hand_sim_bridge.py
+    scripts/isaac_hand_relay.py
     scripts/mujoco_vis_node.py
     scripts/policy_camera_relay.py
   DESTINATION lib/${PROJECT_NAME}

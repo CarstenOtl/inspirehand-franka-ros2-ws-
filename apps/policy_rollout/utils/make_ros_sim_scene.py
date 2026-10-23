@@ -53,10 +53,16 @@ from utils.camera_calibration import load_camera_calibration  # noqa: E402
 SIM_MJCF_DIR = WORKSPACE_ROOT / "src" / "inspire_franka_sim" / "mjcf"
 SCENE_NAME = "inspire_franka_policy_scene.xml"
 
-#: The hand the scene mounts: inspire_franka_sim's flange model, which is the
-#: training hand (forgeUltra's official Tiangong 2.0 Pro URDF) under the
-#: workspace's joint names.
-END_EFFECTOR = "inspire_hand_on_flange.xml"
+# inspire_franka_sim's hand generator holds the Isaac hand tables the scene's
+# <custom> block hands to IsaacHandPlugin. It is a script, not a module.
+sys.path.insert(0, str(WORKSPACE_ROOT / "src" / "inspire_franka_sim" / "scripts"))
+import make_hand_mjcf as hand  # noqa: E402
+
+#: The hand the scene mounts: the training hand (forgeUltra's official Tiangong
+#: 2.0 Pro URDF) under the workspace's joint names, with the dynamics Isaac Lab
+#: simulates it with during training (make_hand_mjcf.py with the isaac flag;
+#: the remainder is IsaacHandPlugin's, configured by isaac_hand_custom_xml).
+END_EFFECTOR = "inspire_hand_on_flange_isaac.xml"
 CAMERA_NAME = "policy_d415"
 KEYFRAME_NAME = "policy_home"
 MESH_SOURCE = WORKSPACE_ROOT / "assets" / "fr3_inspirehand" / "forge_nut_bolt" / "m24"
@@ -215,6 +221,31 @@ def thread_equality_xml() -> str:
 """
 
 
+def isaac_hand_custom_xml() -> str:
+    """IsaacHandPlugin's configuration, from make_hand_mjcf.py's Isaac tables.
+
+    The velocity limit and the PhysX joint friction coefficient per hand joint,
+    and the target-level mimic map in coupling order (the thumb's distal joint
+    follows the intermediate, so the intermediate has to come first).
+    """
+
+    lines = [
+        "  <custom>",
+        "    <!-- IsaacHandPlugin (inspire_franka_sim): Isaac Lab's hand dynamics that",
+        "         MJCF cannot express. From make_hand_mjcf.py's ISAAC tables. -->",
+        f'    <numeric name="isaac_hand/velocity_limit" data="{_fmt((hand.ISAAC_VELOCITY_LIMIT,))}"/>',
+    ]
+    for joint, coefficient in hand.ISAAC_JOINT_FRICTION.items():
+        lines.append(f'    <numeric name="isaac_hand/joint/{joint}" data="{_fmt((coefficient,))}"/>')
+    for follower, leader, multiplier, offset in hand.COUPLINGS:
+        lines.append(
+            f'    <numeric name="isaac_hand/mimic/{follower}" data="{_fmt((multiplier, offset))}"/>'
+        )
+        lines.append(f'    <text name="isaac_hand/mimic_leader/{follower}" data="{leader}"/>')
+    lines.append("  </custom>\n")
+    return "\n".join(lines)
+
+
 def scene_xml(profile, keyframe: str = "") -> str:
     bolt, _ = training_world_to_link0(fo.BOLT_BASE_POSITION, (1.0, 0.0, 0.0, 0.0))
     bolt_quat = fo.quat_from_euler_xyz(0.0, 0.0, math.pi)
@@ -290,7 +321,8 @@ def scene_xml(profile, keyframe: str = "") -> str:
 {thread_pair_xml()}
   </worldbody>
 
-{thread_equality_xml()}{keyframe}</mujoco>
+{thread_equality_xml()}
+{isaac_hand_custom_xml()}{keyframe}</mujoco>
 """
 
 
@@ -309,7 +341,14 @@ def _keyframe(model) -> str:
     qpos[model.jnt_qposadr[model.joint("nut_axial").id]] = te.NUT_START_AXIAL_OFFSET_M
     qpos[model.jnt_qposadr[model.joint("nut_twist").id]] = 0.0
     # Put the mimic followers on their couplings so the first step is quiet.
-    # Two passes, because the thumb's distal joint follows another follower.
+    # The hand has no equality couplings any more (Isaac's are target-level),
+    # so expand them here, in order: the thumb's distal follows the
+    # intermediate.
+    for follower, leader, multiplier, offset in hand.COUPLINGS:
+        x = qpos[model.jnt_qposadr[model.joint(leader).id]]
+        qpos[model.jnt_qposadr[model.joint(follower).id]] = multiplier * x + offset
+    # The remaining joint equalities (the thread coupling). Two passes, in case
+    # a follower follows another follower.
     for _ in range(2):
         for eq in range(model.neq):
             if model.eq_type[eq] != mujoco.mjtEq.mjEQ_JOINT or not model.eq_active0[eq]:
@@ -320,8 +359,17 @@ def _keyframe(model) -> str:
             c = model.eq_data[eq]
             x = qpos[model.jnt_qposadr[leader]]
             qpos[model.jnt_qposadr[follower]] = c[0] + c[1] * x + c[2] * x**2
+    # The hand's actuators are position servos, so their ctrl is a TARGET: a
+    # zero would drive every finger open until the controllers start. Hold the
+    # keyframe posture instead. The arm's motors keep a zero torque.
+    ctrl = np.zeros(model.nu)
+    for actuator in range(model.nu):
+        if model.actuator_biastype[actuator] == mujoco.mjtBias.mjBIAS_AFFINE:
+            joint = model.actuator_trnid[actuator, 0]
+            ctrl[actuator] = qpos[model.jnt_qposadr[joint]]
     return (
-        f'  <keyframe>\n    <key name="{KEYFRAME_NAME}" qpos="{_fmt(qpos)}"/>\n'
+        f'  <keyframe>\n    <key name="{KEYFRAME_NAME}" qpos="{_fmt(qpos)}"\n'
+        f'      ctrl="{_fmt(ctrl)}"/>\n'
         "  </keyframe>\n"
     )
 

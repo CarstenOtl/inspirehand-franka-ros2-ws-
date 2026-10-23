@@ -214,3 +214,56 @@ def test_policy_scene_thread_hold_clamps_the_nut():
     )
     assert abs(held_rise) < 1e-4
     assert abs(free_rise) > 1e-3
+
+
+def test_policy_scene_configures_the_isaac_hand_plugin_from_the_isaac_tables():
+    """The scene mounts the Isaac hand and hands IsaacHandPlugin its tables."""
+
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / scene.SCENE_NAME))
+    hand = scene.hand
+
+    def numeric(name):
+        index = model.numeric(name).id
+        return list(model.numeric_data[model.numeric_adr[index]:][: model.numeric_size[index]])
+
+    assert numeric("isaac_hand/velocity_limit") == [hand.ISAAC_VELOCITY_LIMIT]
+    for joint, coefficient in hand.ISAAC_JOINT_FRICTION.items():
+        assert numeric(f"isaac_hand/joint/{joint}") == pytest.approx([coefficient])
+    for follower, leader, multiplier, offset in hand.COUPLINGS:
+        assert numeric(f"isaac_hand/mimic/{follower}") == pytest.approx([multiplier, offset])
+        text = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TEXT, f"isaac_hand/mimic_leader/{follower}")
+        assert text >= 0, follower
+        assert model.text_data[model.text_adr[text]:].split(b"\0", 1)[0].decode() == leader
+    # The followers must be declared after the joints they follow (the thumb chains).
+    order = [model.numeric(i).name for i in range(model.nnumeric) if "/mimic/" in model.numeric(i).name]
+    assert order.index("isaac_hand/mimic/thumb_intermediate_joint") < order.index(
+        "isaac_hand/mimic/thumb_distal_joint"
+    )
+    # The Isaac hand, not the reusable one: free followers, a servo on each.
+    hand_actuators = [i for i in range(model.nu) if model.actuator(i).name in hand.ISAAC_DRIVES]
+    assert len(hand_actuators) == 12
+    assert not [model.eq(i).name for i in range(model.neq) if "_follows_" in model.eq(i).name]
+
+
+def test_policy_scene_keyframe_holds_the_hand_where_it_stands():
+    """Hand actuators are position servos, so keyframe ctrl is their target."""
+
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / scene.SCENE_NAME))
+    data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, model.key(scene.KEYFRAME_NAME).id)
+    for name in scene.hand.ISAAC_DRIVES:
+        joint = model.joint(name).id
+        assert data.ctrl[model.actuator(name).id] == pytest.approx(
+            data.qpos[model.jnt_qposadr[joint]]
+        ), name
+    for follower, leader, multiplier, offset in scene.hand.COUPLINGS:
+        q = lambda n: data.qpos[model.jnt_qposadr[model.joint(n).id]]  # noqa: E731
+        assert q(follower) == pytest.approx(multiplier * q(leader) + offset), follower
+    # Held there for half a second, with the plugin's mimic done by hand.
+    for _ in range(250):
+        mujoco.mj_step(model, data)
+    for name in scene.hand.ISAAC_DRIVES:
+        joint = model.joint(name).id
+        assert abs(data.qvel[model.jnt_dofadr[joint]]) < 1e-3, name

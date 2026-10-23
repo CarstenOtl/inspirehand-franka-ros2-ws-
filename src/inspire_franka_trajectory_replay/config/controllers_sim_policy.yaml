@@ -15,11 +15,18 @@
 # instead of the grasp-frame yaw proxy. MujocoSystemInterface reads this off the
 # node it gets from get_node(), hence the wildcard: the parameter belongs to the
 # simulator's own node, not to a controller.
+#
+# isaac_hand gives the scene's hand what its MJCF cannot say about Isaac Lab's
+# training hand: follower targets from leader targets, the 1 rad/s joint
+# velocity limit and PhysX joint friction (configured by the scene's
+# isaac_hand/* custom fields).
 /**:
   ros__parameters:
     mujoco_plugins:
       thread_pair:
         type: inspire_franka_sim/ThreadPairPlugin
+      isaac_hand:
+        type: inspire_franka_sim/IsaacHandPlugin
 
 controller_manager:
   ros__parameters:

@@ -259,3 +259,53 @@ def test_the_left_hand_is_the_mirror_of_the_right():
         for tip in ("thumb_tip", "index_tip", "pinky_tip"):
             mirrored = data_r.xpos[right.body(tip).id] * (1.0, -1.0, 1.0)
             assert data_l.xpos[left.body(tip).id] == pytest.approx(mirrored, abs=1.0e-9)
+
+
+def _hand_generator():
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "make_hand_mjcf.py"
+    spec = importlib.util.spec_from_file_location("make_hand_mjcf", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_isaac_hand_carries_isaac_labs_training_dynamics():
+    """inspire_hand_right_isaac.xml against make_hand_mjcf.py's ISAAC tables.
+
+    Same geometry, masses and ranges as the reusable hand; no equality
+    couplings (Isaac's mimic is target-level, in IsaacHandPlugin); one position
+    servo per joint with Isaac's stiffness, damping and effort limit.
+    """
+    gen = _hand_generator()
+    isaac = mujoco.MjModel.from_xml_path(str(MJCF_DIR / "inspire_hand_right_isaac.xml"))
+    plain = mujoco.MjModel.from_xml_path(str(MJCF_DIR / "inspire_hand_right.xml"))
+
+    assert isaac.neq == 0
+    assert set(joint_names(isaac)) == set(joint_names(plain)) == set(gen.ISAAC_DRIVES)
+    for name in joint_names(isaac):
+        joint, reference = isaac.joint(name), plain.joint(name)
+        assert tuple(joint.range) == pytest.approx(tuple(reference.range)), name
+        assert isaac.body_mass[joint.bodyid[0]] == pytest.approx(plain.body_mass[reference.bodyid[0]])
+        assert joint.armature[0] == pytest.approx(gen.ISAAC_ARMATURE[name]), name
+        assert joint.damping[0] == 0.0 and joint.frictionloss[0] == 0.0, name
+
+        stiffness, damping, effort = gen.ISAAC_DRIVES[name]
+        actuator = isaac.actuator(name)
+        assert actuator.trnid[0] == joint.id
+        assert actuator.gainprm[0] == pytest.approx(stiffness), name
+        assert tuple(actuator.biasprm[:3]) == pytest.approx((0.0, -stiffness, -damping)), name
+        assert tuple(actuator.forcerange) == pytest.approx((-effort, effort)), name
+        # The description's effort="1" must not survive as a joint-level clamp.
+        assert tuple(isaac.jnt_actfrcrange[joint.id]) == pytest.approx((-effort, effort)), name
+    assert isaac.nu == len(gen.ISAAC_DRIVES)
+
+
+def test_the_isaac_flange_wrapper_is_the_flange_wrapper_on_the_isaac_hand():
+    gen = _hand_generator()
+    source = (MJCF_DIR / gen.FLANGE_WRAPPER).read_text()
+    generated = (MJCF_DIR / "inspire_hand_on_flange_isaac.xml").read_text()
+    assert generated == gen.isaac_flange_wrapper(source, "inspire_hand_right_isaac.xml"), (
+        "regenerate with scripts/make_hand_mjcf.py --isaac"
+    )

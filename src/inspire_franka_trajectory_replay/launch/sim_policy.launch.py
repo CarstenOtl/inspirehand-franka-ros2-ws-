@@ -18,9 +18,17 @@ Everything the hardware backend talks to is here, under the same names:
   ``trajectory_replay_controller`` active for homing and
   ``cartesian_trajectory_replay_controller`` inactive, both from
   ``controllers_sim_policy.yaml`` (the policy profile on the DH model);
-- the Inspire hand driver in ``mock`` mode and ``inspire_hand_sim_bridge``, so
-  ``/inspire_hand/command`` open ratios go through the driver's conversion,
-  thumb-yaw overlay and quantisation before reaching MuJoCo;
+- the hand as Isaac Lab simulates it in training (``hand_chain:=isaac``, the
+  default): the training hand with Isaac's drives, armature and effort limits
+  (``inspire_hand_right_isaac.xml``), ``inspire_franka_sim``'s IsaacHandPlugin
+  for its target-level mimic, 1 rad/s velocity limit and PhysX joint friction,
+  and ``isaac_hand_relay.py`` serving ``/inspire_hand/command`` and
+  ``/inspire_hand/joint_states`` from the simulated joints. ``hand_chain:=driver``
+  puts the Inspire hand driver in ``mock`` mode and ``inspire_hand_sim_bridge``
+  in between instead, so open ratios go through the driver's conversion,
+  quantisation and wall-clock slew, and the runner sees the driver's state (the
+  thumb-yaw overlay is off: the simulated hand is the training hand, so the
+  logical command is the pose);
 - the calibrated D415: the MJCF camera is rendered by mujoco_ros2_control and
   ``policy_camera_relay`` republishes it as ``/camera/camera/rgbd`` plus the
   colour/aligned-depth topics, with the profile's camera matrix and frame, and
@@ -115,22 +123,43 @@ def launch_setup(context, *args, **kwargs):
             output="screen",
         )
 
-    hand_driver = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            str(Path(get_package_share_directory("inspire_hand_driver")) / "launch" / "inspire_hand.launch.py")
-        ),
-        launch_arguments={
-            "mock": "true",
-            "node_name": "inspire_hand",
-            "publish_description": "false",
-        }.items(),
-    )
-    bridge = Node(
-        package="inspire_franka_sim",
-        executable="inspire_hand_sim_bridge.py",
-        output="screen",
-        parameters=[{"driver_joint_states": "/inspire_hand/joint_states"}],
-    )
+    hand_chain = arg("hand_chain")
+    if hand_chain not in ("isaac", "driver"):
+        raise RuntimeError(f"hand_chain must be 'isaac' or 'driver', got {hand_chain!r}")
+    if hand_chain == "isaac":
+        # Isaac's way: the pinch target goes straight into the joint drives and
+        # the runner observes the simulated joints (see isaac_hand_relay.py).
+        hand_nodes = [
+            Node(
+                package="inspire_franka_sim",
+                executable="isaac_hand_relay.py",
+                output="screen",
+                parameters=[{"use_sim_time": True}],
+            )
+        ]
+    else:
+        hand_driver = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                str(Path(get_package_share_directory("inspire_hand_driver")) / "launch" / "inspire_hand.launch.py")
+            ),
+            launch_arguments={
+                "mock": "true",
+                "node_name": "inspire_hand",
+                "publish_description": "false",
+                # The simulated hand is the training hand, whose thumb can use its
+                # whole range: the policy's logical thumb yaw is the pose. The
+                # physical hand keeps the overlay (and the runner inverts it on
+                # feedback) until the bench says the training posture is reachable.
+                "thumb_abduction_overlay": "false",
+            }.items(),
+        )
+        bridge = Node(
+            package="inspire_franka_sim",
+            executable="inspire_hand_sim_bridge.py",
+            output="screen",
+            parameters=[{"driver_joint_states": "/inspire_hand/joint_states"}],
+        )
+        hand_nodes = [hand_driver, bridge]
     relay = Node(
         package="inspire_franka_sim",
         executable="policy_camera_relay.py",
@@ -172,8 +201,7 @@ def launch_setup(context, *args, **kwargs):
         simulator,
         spawner(CONTROLLER),
         spawner(CARTESIAN_CONTROLLER, "--inactive"),
-        hand_driver,
-        bridge,
+        *hand_nodes,
         relay,
         camera_tf,
     ]
@@ -218,6 +246,15 @@ def generate_launch_description():
                 "paces the policy on /clock, so below 1 the policy keeps its trained "
                 "15 Hz in simulated time while inference, rendering and the viewers "
                 "share this 4-core CPU. 1.0 is real time.",
+            ),
+            DeclareLaunchArgument(
+                "hand_chain",
+                default_value="isaac",
+                description="'isaac' (default): policy pinch targets go straight to the "
+                "hand's joint drives and the runner observes the simulated joints, as in "
+                "Isaac Lab training. 'driver': through the mock RS485 driver and "
+                "inspire_hand_sim_bridge.py, which slews in wall time and reports its own "
+                "state rather than the simulated fingers'; rehearses the driver contract.",
             ),
             DeclareLaunchArgument(
                 "camera_view",

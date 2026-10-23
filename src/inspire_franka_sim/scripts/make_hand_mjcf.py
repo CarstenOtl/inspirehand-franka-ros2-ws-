@@ -2,10 +2,13 @@
 """Turn the Inspire hand's URDF into a physics-ready MJCF.
 
     python3 scripts/make_hand_mjcf.py --side right
+    python3 scripts/make_hand_mjcf.py --isaac
 
 Writes ``mjcf/inspire_hand_<side>.xml`` and the meshes it needs into
 ``mjcf/assets_hand/``. Both are committed, so this only has to be re-run when
-the description is re-vendored.
+the description is re-vendored. ``--isaac`` writes the same hand with Isaac
+Lab's training-time dynamics instead (``mjcf/inspire_hand_right_isaac.xml`` and
+its flange wrapper), for the policy rollout scene; see ISAAC_DRIVES.
 
 Why a generator and not a hand-written model
 --------------------------------------------
@@ -124,6 +127,129 @@ SPURIOUS_PAIRS = (("hand_base_link", "thumb_proximal"),)
 
 MESH_SUBDIR = "assets_hand"
 
+# --- The hand as Isaac Lab simulates it for the threading student (--isaac) ---
+#
+# ForgeUltra's official profile (FR3_INSPIREHAND_ASSET_PROFILE unset, the
+# default since 2026-09-08; the M24 reset pose is written for it). Geometry,
+# masses and joint limits are already the training URDF's; what the URDF does
+# not carry is set at spawn, and these are those values:
+#
+# - assets/fr3_inspirehand/build_fr3_inspirehand.py strips every <mimic> before
+#   the USD conversion. The followers are free joints with their own drives,
+#   and forge_ultra/tasks/mdp/robot_control.py `_expand_hand_mimic_targets`
+#   couples them at the TARGET level only: follower target = multiplier *
+#   leader target. No equality holds them; contact can bend a distal joint off
+#   its leader. inspire_franka_sim's IsaacHandPlugin does that expansion.
+# - assets/fr3_inspirehand/robot.py: armature, PhysX joint friction
+#   (coefficient), stiffness/damping, effort 50 and velocity 1 rad/s on all
+#   twelve joints.
+# - forge_franka_threading_v2/forge_franka_env.py overrides the six leaders at
+#   reset: stiffness 30, damping 0.1 * 30, effort 20 (frozen_hand_*), and the
+#   reset pose's inactive fingers (middle, ring, little) 4.76 / 0.21 / 1.864.
+#
+# A PhysX "force" drive is f = k (target - q) - d qdot clamped at the effort
+# limit, which is exactly a MuJoCo <position> actuator with kp = k, kv = d and
+# forcerange = +-effort. The velocity limit and the joint friction have no
+# MuJoCo counterpart and are applied by the plugin, from the <custom> block the
+# policy scene carries (ISAAC_VELOCITY_LIMIT, ISAAC_JOINT_FRICTION).
+
+#: Isaac's name for each workspace joint, for tracing the tables below.
+ISAAC_JOINT_NAMES = {
+    "thumb_proximal_yaw_joint": "thumb_joint_0",
+    "thumb_proximal_pitch_joint": "thumb_joint_1",
+    "thumb_intermediate_joint": "thumb_joint_2",
+    "thumb_distal_joint": "thumb_joint_3",
+    "index_proximal_joint": "index_joint_0",
+    "index_intermediate_joint": "index_joint_1",
+    "middle_proximal_joint": "middle_joint_0",
+    "middle_intermediate_joint": "middle_joint_1",
+    "ring_proximal_joint": "ring_joint_0",
+    "ring_intermediate_joint": "ring_joint_1",
+    "pinky_proximal_joint": "little_joint_0",
+    "pinky_intermediate_joint": "little_joint_1",
+}
+
+#: (stiffness N m/rad, damping N m s/rad, effort limit N m) per joint.
+ISAAC_DRIVES = {
+    # Pinch leaders: frozen_hand_stiffness / 0.1 * that / frozen_hand_effort.
+    "thumb_proximal_yaw_joint": (30.0, 3.0, 20.0),
+    "thumb_proximal_pitch_joint": (30.0, 3.0, 20.0),
+    "index_proximal_joint": (30.0, 3.0, 20.0),
+    # Inactive leaders (reset_pose_m24.yaml: mode inactive).
+    "middle_proximal_joint": (4.76, 0.21, 1.864),
+    "ring_proximal_joint": (4.76, 0.21, 1.864),
+    "pinky_proximal_joint": (4.76, 0.21, 1.864),
+    # Followers keep robot.py's _HAND_STIFFNESS / _HAND_DAMPING and effort 50.
+    "thumb_intermediate_joint": (4.76, 0.21, 50.0),
+    "thumb_distal_joint": (0.9, 0.042, 50.0),
+    "index_intermediate_joint": (0.9, 0.042, 50.0),
+    "middle_intermediate_joint": (0.9, 0.042, 50.0),
+    "ring_intermediate_joint": (0.9, 0.042, 50.0),
+    "pinky_intermediate_joint": (0.9, 0.042, 50.0),
+}
+
+#: robot.py _HAND_ARMATURE, kg m^2.
+ISAAC_ARMATURE = {
+    "thumb_proximal_yaw_joint": 0.0032,
+    "thumb_proximal_pitch_joint": 0.0032,
+    "thumb_intermediate_joint": 0.00265,
+    "thumb_distal_joint": 0.0006,
+    "index_proximal_joint": 0.00265,
+    "middle_proximal_joint": 0.00265,
+    "ring_proximal_joint": 0.00265,
+    "pinky_proximal_joint": 0.00265,
+    "index_intermediate_joint": 0.0006,
+    "middle_intermediate_joint": 0.0006,
+    "ring_intermediate_joint": 0.0006,
+    "pinky_intermediate_joint": 0.0006,
+}
+
+#: robot.py _HAND_FRICTION: PhysX's unitless joint friction coefficient, which
+#: bounds the resisting effort by coefficient * (|F| + |T|) of the spatial force
+#: the joint transmits (PxArticulationJointReducedCoordinate::
+#: setFrictionCoefficient). Load-dependent, so it is not a MuJoCo frictionloss;
+#: the plugin recomputes the frictionloss from that bound every step.
+ISAAC_JOINT_FRICTION = {
+    "thumb_proximal_yaw_joint": 0.132,
+    "thumb_proximal_pitch_joint": 0.132,
+    "thumb_intermediate_joint": 0.07456,
+    "thumb_distal_joint": 0.01276,
+    "index_proximal_joint": 0.07456,
+    "middle_proximal_joint": 0.07456,
+    "ring_proximal_joint": 0.07456,
+    "pinky_proximal_joint": 0.07456,
+    "index_intermediate_joint": 0.01276,
+    "middle_intermediate_joint": 0.01276,
+    "ring_intermediate_joint": 0.01276,
+    "pinky_intermediate_joint": 0.01276,
+}
+
+#: robot.py _HAND_VELOCITY_LIMITS (the official URDF's <limit velocity>), rad/s.
+ISAAC_VELOCITY_LIMIT = 1.0
+
+
+#: The hand-written flange wrapper (tool sites, adapter frame); the Isaac variant
+#: is the same file pointed at the Isaac hand, so the two cannot drift apart.
+FLANGE_WRAPPER = "inspire_hand_on_flange.xml"
+
+
+def isaac_flange_wrapper(text: str, hand_file: str) -> str:
+    """``inspire_hand_on_flange.xml`` mounting ``hand_file`` instead."""
+
+    source = '<model name="inspire_hand" file="inspire_hand_right.xml"/>'
+    if text.count(source) != 1:
+        raise SystemExit(f"{FLANGE_WRAPPER} no longer mounts inspire_hand_right.xml once")
+    text = text.replace(source, f'<model name="inspire_hand" file="{hand_file}"/>')
+    text = text.replace(
+        '<mujoco model="inspire_hand_on_flange">',
+        '<mujoco model="inspire_hand_on_flange_isaac">\n'
+        "  <!-- GENERATED by inspire_franka_sim/scripts/make_hand_mjcf.py "
+        f"from {FLANGE_WRAPPER}\n       (make_hand_mjcf.py with the isaac flag). "
+        "Edit that file, not this one. -->",
+        1,
+    )
+    return text
+
 
 def rewrite_for_mujoco(urdf: str, meshdir: Path) -> str:
     """Make a ROS URDF loadable by MuJoCo's importer.
@@ -142,8 +268,13 @@ def rewrite_for_mujoco(urdf: str, meshdir: Path) -> str:
     return urdf.replace("</robot>", options + "</robot>")
 
 
-def build(spec, side: str) -> None:
-    """Add everything the URDF could not say."""
+def build(spec, side: str, isaac: bool = False) -> None:
+    """Add everything the URDF could not say.
+
+    ``isaac`` builds the hand as Isaac Lab simulates it instead (see
+    ISAAC_DRIVES): position actuators on all twelve joints, Isaac's armature,
+    no passive damping or friction, and no equality couplings.
+    """
     import mujoco
 
     for joint in spec.joints:
@@ -151,9 +282,20 @@ def build(spec, side: str) -> None:
             continue
         # damping is a 3-vector in MjSpec (ball and free joints use all three);
         # a hinge reads only the first element.
-        joint.damping[0] = JOINT_DYNAMICS["damping"]
-        joint.armature = JOINT_DYNAMICS["armature"]
-        joint.frictionloss = JOINT_DYNAMICS["frictionloss"]
+        if isaac:
+            joint.damping[0] = 0.0
+            joint.armature = ISAAC_ARMATURE[joint.name]
+            joint.frictionloss = 0.0
+            # The description's <limit effort="1"> imports as a joint-level
+            # actuator force clamp, which would cut Isaac's 20 N m pinch drive
+            # to 1 N m; the drive's own effort limit is the clamp here.
+            effort = ISAAC_DRIVES[joint.name][2]
+            joint.actfrcrange = [-effort, effort]
+            joint.actfrclimited = mujoco.mjtLimited.mjLIMITED_TRUE
+        else:
+            joint.damping[0] = JOINT_DYNAMICS["damping"]
+            joint.armature = JOINT_DYNAMICS["armature"]
+            joint.frictionloss = JOINT_DYNAMICS["frictionloss"]
 
     # MuJoCo's URDF importer leaves collision geoms in group 0, which the viewer
     # draws by default - so the hand renders twice, the collision hulls sitting
@@ -206,6 +348,23 @@ def build(spec, side: str) -> None:
     if missing:
         raise SystemExit(f"URDF is missing expected joints: {sorted(missing)}")
 
+    if isaac:
+        # One drive per joint, followers included, in the URDF's joint order.
+        for joint in spec.joints:
+            if joint.name not in ISAAC_DRIVES:
+                continue
+            stiffness, damping, effort = ISAAC_DRIVES[joint.name]
+            actuator = spec.add_actuator()
+            actuator.name = joint.name
+            actuator.set_to_position(kp=stiffness, kv=damping)
+            actuator.target = joint.name
+            actuator.trntype = mujoco.mjtTrn.mjTRN_JOINT
+            actuator.ctrlrange = list(joint.range)
+            actuator.ctrllimited = mujoco.mjtLimited.mjLIMITED_TRUE
+            actuator.forcerange = [-effort, effort]
+            actuator.forcelimited = mujoco.mjtLimited.mjLIMITED_TRUE
+        return
+
     for name in DRIVEN:
         actuator = spec.add_actuator()
         actuator.name = name
@@ -240,7 +399,15 @@ def main(argv=None) -> int:
         default=None,
         help="inspire_hand_description's root. Defaults to a sibling in src/.",
     )
+    parser.add_argument(
+        "--isaac",
+        action="store_true",
+        help="write inspire_hand_<side>_isaac.xml (the hand as Isaac Lab simulates "
+        "it, see ISAAC_DRIVES) and inspire_hand_on_flange_isaac.xml instead",
+    )
     args = parser.parse_args(argv)
+    if args.isaac and args.side != "right":
+        raise SystemExit("--isaac: training only has the right hand")
 
     import mujoco
     import xacro
@@ -269,8 +436,9 @@ def main(argv=None) -> int:
     finally:
         scratch.unlink(missing_ok=True)
 
-    spec.modelname = f"inspire_hand_{args.side}"
-    build(spec, args.side)
+    variant = f"inspire_hand_{args.side}" + ("_isaac" if args.isaac else "")
+    spec.modelname = variant
+    build(spec, args.side, isaac=args.isaac)
 
     # Compile before writing: a spec that will not compile is not worth saving,
     # and the error is far more legible here than at controller_manager startup.
@@ -295,7 +463,7 @@ def main(argv=None) -> int:
     # against the process's working directory rather than the output file. Run
     # it from mjcf/ so the relative meshdir it is about to write is the one it
     # validates against.
-    out = mjcf_dir / f"inspire_hand_{args.side}.xml"
+    out = mjcf_dir / f"{variant}.xml"
     cwd = Path.cwd()
     os.chdir(mjcf_dir)
     try:
@@ -303,6 +471,11 @@ def main(argv=None) -> int:
     finally:
         os.chdir(cwd)
     out.write_text(xml)
+    if args.isaac:
+        flange = mjcf_dir / FLANGE_WRAPPER
+        isaac_flange = mjcf_dir / FLANGE_WRAPPER.replace(".xml", "_isaac.xml")
+        isaac_flange.write_text(isaac_flange_wrapper(flange.read_text(), out.name))
+        print(f"{isaac_flange.relative_to(args.package_root)}: {FLANGE_WRAPPER} on {out.name}")
 
     print(
         f"{out.relative_to(args.package_root)}: "
