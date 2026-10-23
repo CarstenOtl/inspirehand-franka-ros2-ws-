@@ -171,6 +171,8 @@ def launch_setup(context, *args, **kwargs):
                         ("/tf_static", "/tf_static"),
                     ],
                 ),
+                # The 10 mm adapter flange and the 180-degree clocking, as
+                # hand_flange_xyz/rpy in inspire_franka.urdf.xacro.
                 Node(
                     package="tf2_ros",
                     executable="static_transform_publisher",
@@ -178,7 +180,7 @@ def launch_setup(context, *args, **kwargs):
                     arguments=[
                         "--x", "0",
                         "--y", "0",
-                        "--z", "0",
+                        "--z", "0.010",
                         "--roll", "0",
                         "--pitch", "0",
                         "--yaw", "3.141592653589793",

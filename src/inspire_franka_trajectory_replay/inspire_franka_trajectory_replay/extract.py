@@ -364,8 +364,10 @@ def expand_followers(driven: np.ndarray) -> Dict[str, np.ndarray]:
     for index, dof in enumerate(kin.DOFS):
         columns[dof.joint] = driven[:, index]
         for coupling in dof.couplings:
+            # A coupling may follow another follower (the thumb's distal joint
+            # follows its intermediate), which the DOF lists first.
             columns[coupling.joint] = np.clip(
-                coupling.multiplier * driven[:, index] + coupling.offset,
+                coupling.multiplier * columns[coupling.source or dof.joint] + coupling.offset,
                 coupling.lower,
                 coupling.upper,
             )

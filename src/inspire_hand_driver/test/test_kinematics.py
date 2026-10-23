@@ -65,21 +65,21 @@ def test_open_ratio_is_clamped_outside_the_unit_interval():
 # inspire_hand_description has its own test asserting the shipped URDF still
 # says this; here they pin the driver's copy of the same numbers.
 URDF_MIMICS = {
-    "pinky_intermediate_joint": (1.06399, -0.04545),
-    "ring_intermediate_joint": (1.06399, -0.04545),
-    "middle_intermediate_joint": (1.06399, -0.04545),
-    "index_intermediate_joint": (1.06399, -0.04545),
-    "thumb_intermediate_joint": (1.334, 0.0),
-    "thumb_distal_joint": (0.667, 0.0),
+    "pinky_intermediate_joint": (1.1169, 0.0),
+    "ring_intermediate_joint": (1.1169, 0.0),
+    "middle_intermediate_joint": (1.1169, 0.0),
+    "index_intermediate_joint": (1.1169, 0.0),
+    "thumb_intermediate_joint": (1.1425, 0.0),
+    "thumb_distal_joint": (0.7508, 0.0),
 }
 
 URDF_LIMITS = {
-    "pinky_intermediate_joint": (-0.04545, 1.56),
-    "ring_intermediate_joint": (-0.04545, 1.56),
-    "middle_intermediate_joint": (-0.04545, 1.56),
-    "index_intermediate_joint": (-0.04545, 1.56),
-    "thumb_intermediate_joint": (0.0, 0.8),
-    "thumb_distal_joint": (0.0, 0.4),
+    "pinky_intermediate_joint": (0.0, 1.527),
+    "ring_intermediate_joint": (0.0, 1.527),
+    "middle_intermediate_joint": (0.0, 1.527),
+    "index_intermediate_joint": (0.0, 1.527),
+    "thumb_intermediate_joint": (0.0, 0.3578),
+    "thumb_distal_joint": (0.0, 0.2775),
 }
 
 
@@ -104,21 +104,41 @@ def test_followers_sit_at_their_open_limit_when_the_hand_is_open():
         assert fully_open[joint] == pytest.approx(lower, abs=1e-6)
 
 
-def test_the_thumb_followers_are_clamped_at_the_closed_pose():
-    # Upstream rounds the thumb multipliers (1.334 and 0.667 rather than 4/3
-    # and 2/3), which overshoots both limits by 4e-4 rad. Clamping is what keeps
-    # TF and MuJoCo agreeing about where the thumb is.
+def test_the_thumb_distal_follows_the_intermediate_not_the_pitch():
+    couplings = {c.joint: c for d in kin.DOFS for c in d.couplings}
+    assert couplings["thumb_distal_joint"].source == "thumb_intermediate_joint"
+    assert couplings["thumb_intermediate_joint"].source == ""
+
+
+def test_the_thumb_intermediate_clamps_and_the_distal_stops_with_it():
+    # 1.1425 * 0.48 = 0.548 would overshoot the intermediate's 0.3578 limit, so
+    # it clamps from about two thirds closed. The distal follows the clamped
+    # intermediate (0.7508 * 0.3578 = 0.26864), short of its own 0.2775 limit.
     fully_closed = dict(zip(kin.ALL_JOINTS, kin.joint_positions([0.0] * 6)))
-    assert fully_closed["thumb_intermediate_joint"] == pytest.approx(0.8, abs=1e-12)
-    assert fully_closed["thumb_distal_joint"] == pytest.approx(0.4, abs=1e-12)
+    assert fully_closed["thumb_intermediate_joint"] == pytest.approx(0.3578, abs=1e-12)
+    assert fully_closed["thumb_distal_joint"] == pytest.approx(0.7508 * 0.3578, abs=1e-12)
+
+
+def test_the_thumb_followers_stop_moving_once_the_intermediate_clamps():
+    thumb = kin.dof_index("thumb_proximal_pitch_joint")
+    ratios = [1.0] * 6
+    ratios[thumb] = 0.1  # pitch 0.432 rad, past the clamp at 0.313
+    rates = kin.joint_velocities(ratios, [0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+    by_name = dict(zip(kin.ALL_JOINTS, rates))
+    assert by_name["thumb_intermediate_joint"] == 0.0
+    assert by_name["thumb_distal_joint"] == 0.0
+    ratios[thumb] = 0.9  # pitch 0.048 rad, well before it
+    by_name = dict(zip(kin.ALL_JOINTS, kin.joint_velocities(ratios, [0, 0, 0, 0, 1.0, 0])))
+    assert by_name["thumb_intermediate_joint"] == pytest.approx(1.1425)
+    assert by_name["thumb_distal_joint"] == pytest.approx(1.1425 * 0.7508)
 
 
 def test_the_finger_followers_stop_short_of_their_limit():
-    # 1.06399 * 1.47 - 0.04545 = 1.51862, about 2.4 deg inside the 1.56 limit.
+    # 1.1169 * 1.333 = 1.48883, about 2.2 deg inside the 1.527 limit.
     # Not a bug to "fix" by widening the multiplier: the limit is loose, and the
     # multiplier is what the linkage actually does.
     fully_closed = dict(zip(kin.ALL_JOINTS, kin.joint_positions([0.0] * 6)))
-    assert fully_closed["index_intermediate_joint"] == pytest.approx(1.51862, abs=1e-5)
+    assert fully_closed["index_intermediate_joint"] == pytest.approx(1.48883, abs=1e-5)
 
 
 def test_joint_positions_stay_within_limits_across_the_whole_range():

@@ -88,7 +88,9 @@ def test_urdf_source_has_the_corrected_physical_mount() -> None:
     )
     base_rpy = _values(base_joint.find("origin"), "rpy")
     effective = _quat_multiply(_quat_from_rpy(flange_rpy), _quat_from_rpy(base_rpy))
-    expected_hand_base = (2**-0.5, -(2**-0.5), 0.0, 0.0)
+    # The training hand's palm frame is hand_mount's (an identity base_joint),
+    # so the palm sits on the flange exactly as in the MuJoCo assets below.
+    expected_hand_base = (0.0, 0.0, 0.0, 1.0)
     assert abs(sum(a * b for a, b in zip(effective, expected_hand_base))) == pytest.approx(
         1.0, abs=1e-5
     )

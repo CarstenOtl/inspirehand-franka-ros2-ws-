@@ -32,13 +32,16 @@ its *upper* limit at the closed pose. So::
 
 Where the coupling ratios come from
 -----------------------------------
-Straight out of the vendored URDF's ``<mimic>`` tags -- they are upstream's
-numbers, not a re-derivation. Note that they are *not* what you get by assuming
-a follower reaches its limit exactly when its driver does: that assumption gives
-1.09214 for the fingers, where upstream says 1.06399. At the closed pose the
-follower therefore stops at 1.519 rad, about 2.4 deg short of its own 1.56 rad
-limit. The limits are simply a little loose; the multiplier is what the linkage
-does.
+Straight out of the vendored URDF's ``<mimic>`` tags -- the training hand's
+numbers (forgeUltra's official Tiangong 2.0 Pro URDF), not a re-derivation, and
+the ranges with them. They are *not* what you get by assuming a follower
+reaches its limit exactly when its driver does. The fingers follow at 1.1169,
+so at the closed pose (1.333 rad) the follower stops at 1.489 rad, about 2.2 deg
+short of its own 1.527 rad limit. The thumb goes the other way: its
+intermediate follows the pitch at 1.1425 and reaches its 0.3578 rad limit at
+0.313 rad of pitch, about two thirds of the way closed, and stays there. The
+thumb's distal joint follows the *intermediate* (0.7508), not the pitch, so it
+stops with it. That chain is why a :class:`Coupling` names its source joint.
 
 This is a *linear* approximation of a four-bar, so it is good enough for TF,
 RViz and collision checking, but it is not a substitute for a calibrated linkage
@@ -56,12 +59,11 @@ class Coupling(NamedTuple):
     """A follower joint: ``angle = multiplier * driver_angle + offset`` (radians).
 
     ``lower``/``upper`` are the follower's own URDF limits, and the result is
-    clamped to them. That clamp is not cosmetic: upstream rounds the thumb's
-    multipliers to 1.334 and 0.667 (rather than 4/3 and 2/3), which overshoots
-    ``thumb_intermediate_joint`` and ``thumb_distal_joint`` by 4e-4 rad at the
-    closed pose. Unclamped, TF would publish a joint fractionally outside the
-    limit the description declares, while MuJoCo would clamp it -- so the two
-    would disagree about where the thumb is.
+    clamped to them. That clamp is not cosmetic: 1.1425 times the thumb pitch
+    overshoots ``thumb_intermediate_joint``'s 0.3578 rad limit from 0.313 rad
+    of pitch on, by up to 0.19 rad at the closed pose. Unclamped, TF would
+    publish a joint outside the limit the description declares, while MuJoCo
+    would clamp it -- so the two would disagree about where the thumb is.
     """
 
     joint: str
@@ -69,6 +71,9 @@ class Coupling(NamedTuple):
     offset: float
     lower: float
     upper: float
+    source: str = ""
+    """The joint this one follows; empty means the DOF's driven joint. Must be
+    listed before this coupling in its DOF, so it is computed first."""
 
 
 class Dof(NamedTuple):
@@ -100,9 +105,9 @@ def _finger(channel: str, name: str, prefix: str) -> Dof:
         name=name,
         joint=f"{prefix}_proximal_joint",
         lower=0.0,
-        upper=1.47,
+        upper=1.333,
         couplings=(
-            Coupling(f"{prefix}_intermediate_joint", 1.06399, -0.04545, -0.04545, 1.56),
+            Coupling(f"{prefix}_intermediate_joint", 1.1169, 0.0, 0.0, 1.527),
         ),
     )
 
@@ -118,10 +123,13 @@ DOFS: Tuple[Dof, ...] = (
         name="thumb_bend",
         joint="thumb_proximal_pitch_joint",
         lower=0.0,
-        upper=0.6,
+        upper=0.48,
         couplings=(
-            Coupling("thumb_intermediate_joint", 1.334, 0.0, 0.0, 0.8),
-            Coupling("thumb_distal_joint", 0.667, 0.0, 0.0, 0.4),
+            Coupling("thumb_intermediate_joint", 1.1425, 0.0, 0.0, 0.3578),
+            Coupling(
+                "thumb_distal_joint", 0.7508, 0.0, 0.0, 0.2775,
+                source="thumb_intermediate_joint",
+            ),
         ),
     ),
     Dof(
@@ -131,7 +139,7 @@ DOFS: Tuple[Dof, ...] = (
         # the yaw axis drives a single rigid body.
         joint="thumb_proximal_yaw_joint",
         lower=0.0,
-        upper=1.308,
+        upper=1.246165,
         couplings=(),
     ),
 )
@@ -239,11 +247,15 @@ def joint_velocities(
         )
     driven = [open_ratio_to_rad(i, r) for i, r in enumerate(open_ratios)]
     rates = [float(v) for v in driven_velocities]
-    passive = [
-        follower_velocity(c, driven[i], rates[i])
-        for i, dof in enumerate(DOFS)
-        for c in dof.couplings
-    ]
+    passive = []
+    for i, dof in enumerate(DOFS):
+        angles = {dof.joint: driven[i]}
+        speeds = {dof.joint: rates[i]}
+        for c in dof.couplings:
+            source = c.source or dof.joint
+            angles[c.joint] = follower_angle(c, angles[source])
+            speeds[c.joint] = follower_velocity(c, angles[source], speeds[source])
+            passive.append(speeds[c.joint])
     return rates + passive
 
 
@@ -255,9 +267,10 @@ def joint_positions(open_ratios: Sequence[float]) -> List[float]:
     if len(open_ratios) != len(DOFS):
         raise ValueError(f"expected {len(DOFS)} open ratios, got {len(open_ratios)}")
     driven = [open_ratio_to_rad(i, r) for i, r in enumerate(open_ratios)]
-    passive = [
-        follower_angle(c, driven[i])
-        for i, dof in enumerate(DOFS)
-        for c in dof.couplings
-    ]
+    passive = []
+    for i, dof in enumerate(DOFS):
+        angles = {dof.joint: driven[i]}
+        for c in dof.couplings:
+            angles[c.joint] = follower_angle(c, angles[c.source or dof.joint])
+            passive.append(angles[c.joint])
     return driven + passive

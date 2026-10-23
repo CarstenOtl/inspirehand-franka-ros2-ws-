@@ -115,12 +115,15 @@ def generate_launch_description():
         output="both",
         condition=IfCondition(arm_and_hand),
     )
+    # The 10 mm adapter flange and the 180-degree clocking: the same transform
+    # as hand_flange_xyz/rpy in inspire_franka.urdf.xacro and the MuJoCo flange
+    # model, so hand TF sits where the simulator and training put the hand.
     hand_mount = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="inspire_hand_flange_mount",
         arguments=[
-            "--x", "0", "--y", "0", "--z", "0",
+            "--x", "0", "--y", "0", "--z", "0.010",
             "--roll", "0", "--pitch", "0", "--yaw", "3.141592653589793",
             "--frame-id", "fr3_link8", "--child-frame-id", "hand_mount",
         ],

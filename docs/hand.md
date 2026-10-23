@@ -104,12 +104,19 @@ ever disagree, so this table cannot drift from the description:
 
 | DOF            | ch | driven URDF joint          | ratio 1.0 (open) | ratio 0.0 (closed) | rad per register step |
 |----------------|----|----------------------------|------------------|--------------------|-----------------------|
-| pinky          | 1  | pinky_proximal_joint       | 0.000 rad        | 1.470 rad          | 0.00147               |
-| ring           | 2  | ring_proximal_joint        | 0.000 rad        | 1.470 rad          | 0.00147               |
-| middle         | 3  | middle_proximal_joint      | 0.000 rad        | 1.470 rad          | 0.00147               |
-| index          | 4  | index_proximal_joint       | 0.000 rad        | 1.470 rad          | 0.00147               |
-| thumb_bend     | 5  | thumb_proximal_pitch_joint | 0.000 rad        | 0.600 rad          | 0.00060               |
-| thumb_rotation | 6  | thumb_proximal_yaw_joint   | 0.000 rad        | 1.308 rad          | 0.00131               |
+| pinky          | 1  | pinky_proximal_joint       | 0.000 rad        | 1.333 rad          | 0.00133               |
+| ring           | 2  | ring_proximal_joint        | 0.000 rad        | 1.333 rad          | 0.00133               |
+| middle         | 3  | middle_proximal_joint      | 0.000 rad        | 1.333 rad          | 0.00133               |
+| index          | 4  | index_proximal_joint       | 0.000 rad        | 1.333 rad          | 0.00133               |
+| thumb_bend     | 5  | thumb_proximal_pitch_joint | 0.000 rad        | 0.480 rad          | 0.00048               |
+| thumb_rotation | 6  | thumb_proximal_yaw_joint   | 0.000 rad        | 1.246 rad          | 0.00125               |
+
+These are the training hand's ranges (forgeUltra's official Tiangong 2.0 Pro
+URDF) since 2026-10-16. Before that the description was dex-urdf's, with
+1.47 rad on the fingers, 0.6 on thumb bend and 1.308 on thumb rotation. A
+radian value recorded before that date, in a replay artifact or a homing file,
+therefore commands a different physical position now: 1.333 rad is fully closed,
+and anything above it clamps there.
 
 Two consequences worth keeping in mind. The registers are integers 0..1000, so
 the last column is the finest step the hand can be commanded to take — a

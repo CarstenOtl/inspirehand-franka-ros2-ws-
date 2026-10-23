@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -5,6 +6,7 @@ import pytest
 
 from policy_rollout import forge_osc as fo
 from policy_rollout.hardware import (
+    TRAINING_INACTIVE_FINGERS,
     GripCycleCoordinator,
     RgbdFrameSynchronizer,
     TrainingFrameAdapter,
@@ -454,16 +456,50 @@ def test_training_hand_tips_do_not_depend_on_the_arm():
         np.testing.assert_allclose(index, expected_index, atol=1e-9)
 
 
-def test_training_hand_differs_from_the_workspace_urdf():
-    """Guard the reason this class exists: the two descriptions disagree."""
+def test_the_workspace_hand_is_the_training_hand():
+    """The description TF and the simulator use must put the tips where training did.
 
+    inspire_hand_description is generated from forgeUltra's URDF, and the
+    simulator's flange model from that description, so the fingertips the
+    plant and RViz show are the policy's own. Checked through the generated
+    MJCF, which needs no xacro.
+    """
+
+    mujoco = pytest.importorskip("mujoco")
     hand = _training_hand()
-    posture = [fo.THREADING_GRASP_POSTURE[name] for name in fo.PINCH_JOINTS]
-    thumb, index = hand.tips_in_flange(posture)
-    # Measured from inspire_franka.urdf.xacro with the thumb-yaw overlay.
-    urdf_midpoint = np.array([-0.0638, -0.0422, 0.1773])
-    offset = np.linalg.norm(0.5 * (thumb + index) - urdf_midpoint)
-    assert 0.010 < offset < 0.020, f"unexpected URDF-to-training offset {offset:.4f} m"
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "src" / "inspire_franka_sim" / "mjcf" / "inspire_hand_on_flange.xml"
+    )
+    model = mujoco.MjModel.from_xml_path(str(path))
+    data = mujoco.MjData(model)
+    names = {
+        "thumb_joint_0": "thumb_proximal_yaw_joint",
+        "thumb_joint_1": "thumb_proximal_pitch_joint",
+        "thumb_joint_2": "thumb_intermediate_joint",
+        "thumb_joint_3": "thumb_distal_joint",
+        "index_joint_0": "index_proximal_joint",
+        "index_joint_1": "index_intermediate_joint",
+    }
+    grasp = [fo.THREADING_GRASP_POSTURE[name] for name in fo.PINCH_JOINTS]
+    # Thumb pitch stays below 0.31 rad, where the intermediate's limit starts
+    # to clamp it and the policy's unclamped mimic expansion stops applying.
+    for posture in (grasp, [0.0, 0.0, 0.0], [1.2, 0.3, 1.3], [0.6, 0.15, 0.7]):
+        data.qpos[:] = 0.0
+        targets = dict(zip(fo.PINCH_JOINTS, posture, strict=True))
+        targets.update(TRAINING_INACTIVE_FINGERS)
+        expanded = fo.expand_hand_mimic(targets)
+        for name, value in expanded.items():
+            if name in names:
+                data.qpos[model.jnt_qposadr[model.joint(names[name]).id]] = value
+        mujoco.mj_kinematics(model, data)
+        flange = model.body("fr3_link8").id
+        rotation = data.xmat[flange].reshape(3, 3)
+        origin = data.xpos[flange]
+        thumb, index = hand.tips_in_flange(posture)
+        for tip, expected in (("thumb_tip", thumb), ("index_tip", index)):
+            measured = rotation.T @ (data.xpos[model.body(tip).id] - origin)
+            np.testing.assert_allclose(measured, expected, atol=1e-6)
 
 
 def test_policy_tool_offset_is_the_training_grasp_midpoint():

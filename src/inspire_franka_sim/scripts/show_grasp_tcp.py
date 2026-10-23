@@ -5,8 +5,10 @@ A static demonstration: one hand-picked arm pose and the threading grip, no
 trajectory, no ROS. The orange sphere and its drawn axes are the ``grasp_tcp``
 site in ``inspire_hand_on_flange.xml``; the grey sphere at the wrist is
 ``attachment_site``, the flange ``fr3_link8``. The script also reports how far
-the site sits from the thumb/index fingertip midpoint it is meant to mark, so
-the picture is checkable rather than merely decorative.
+the site sits from the thumb/index fingertip midpoint. The site was measured
+as that midpoint on the dex-urdf hand the workspace described until
+2026-10-16, and stays fixed because recorded replays are expressed at it; on
+the training hand the two no longer coincide, and the report shows by how much.
 
     ./show_grasp_tcp.py --view              # interactive MuJoCo window
     ./show_grasp_tcp.py --out /tmp/tcp.png  # offscreen render
@@ -37,13 +39,15 @@ OPEN = {name: 0.0 for name in GRIP}
 DEMO_ARM = np.array([0.0, -0.35, 0.0, -2.2, 0.0, 1.9, 0.785])
 
 # inspire_hand_description's URDF mimic tags, so the intermediate links follow.
+# In order: the thumb's distal joint follows the intermediate, set just before.
+# No clamping, which only matters past 0.31 rad of thumb pitch.
 COUPLING = {
-    "index_intermediate_joint": ("index_proximal_joint", 1.06399, -0.04545),
-    "middle_intermediate_joint": ("middle_proximal_joint", 1.06399, -0.04545),
-    "ring_intermediate_joint": ("ring_proximal_joint", 1.06399, -0.04545),
-    "pinky_intermediate_joint": ("pinky_proximal_joint", 1.06399, -0.04545),
-    "thumb_intermediate_joint": ("thumb_proximal_pitch_joint", 1.334, 0.0),
-    "thumb_distal_joint": ("thumb_proximal_pitch_joint", 0.667, 0.0),
+    "index_intermediate_joint": ("index_proximal_joint", 1.1169, 0.0),
+    "middle_intermediate_joint": ("middle_proximal_joint", 1.1169, 0.0),
+    "ring_intermediate_joint": ("ring_proximal_joint", 1.1169, 0.0),
+    "pinky_intermediate_joint": ("pinky_proximal_joint", 1.1169, 0.0),
+    "thumb_intermediate_joint": ("thumb_proximal_pitch_joint", 1.1425, 0.0),
+    "thumb_distal_joint": ("thumb_intermediate_joint", 0.7508, 0.0),
 }
 
 

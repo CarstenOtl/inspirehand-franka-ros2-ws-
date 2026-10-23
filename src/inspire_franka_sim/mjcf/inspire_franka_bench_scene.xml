@@ -26,11 +26,11 @@
   <!--
     A combined rest pose, under a third name.
 
-    fr3.xml defines "home" for the arm's seven joints. It is wrong for this
-    combined scene because MuJoCo zero-pads it to the full model: the hand's
-    followers would be 0 instead of -0.04545 and start the sim violating its
-    own equality constraints. The combined pose therefore gets its own name
-    and the launch selects it.
+    fr3.xml defines "home" for the arm's seven joints, and MuJoCo zero-pads
+    it to the full model. With the training hand every joint is 0 at the open
+    pose, so that padding happens to be right; the combined pose still gets its
+    own name and spells the hand out, so it stays right if a coupling ever
+    gains an offset again (the dex-urdf hand's followers sat at -0.04545).
 
     Order is model order: the arm's seven joints, then the hand's twelve as
     inspire_hand_right.xml declares them (thumb yaw, thumb pitch, thumb
@@ -41,6 +41,6 @@
     <key name="start"
       qpos="0 -0.785398163 0 -2.35619449 0 1.57079633 0.785398163
             0 0 0 0
-            0 -0.04545 0 -0.04545 0 -0.04545 0 -0.04545"/>
+            0 0 0 0 0 0 0 0"/>
   </keyframe>
 </mujoco>

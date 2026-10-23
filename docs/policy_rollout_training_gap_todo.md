@@ -841,6 +841,24 @@ term is now weighted by, so the hand model is no longer only a geometry question
 and its palm shell on the bench along with the tip measurement; a scale settles this one
 outright, unlike the tip frames.
 
+2026-10-16, the workspace adopted the training model everywhere, before the bench measurement.
+`inspire_hand_description` is now generated from forgeUltra's `inspirehand_right.urdf`
+(`scripts/vendor_from_training_urdf.py`) under the workspace's joint names. TF, the MuJoCo
+plant, the ros-sim `dh` mass model and `TrainingHandKinematics` therefore agree: tips to 1e-7 m,
+0.5392 kg distal to the flange. The joint ranges came with it (1.333 / 0.48 / 1.246 rad
+against dex-urdf's 1.47 / 0.6 / 1.308), and so did the driver's open-ratio mapping. On hardware
+the policy's index command of 1.333 rad is now fully closed, where it used to be 91 % of travel,
+and every radian value recorded earlier maps to a different physical position. The hardware's
+static `fr3_link8 -> hand_mount` transform also gained the 10 mm adapter flange it was missing,
+so hand TF on the robot matches the description. The separate `hand_model:=training` plant and
+`compare_hand_models.py` are gone; there is one hand.
+
+Still open, and still the done-when: measure the real tip positions and pad separation at the
+threading grasp, weigh the hand, and close a finger fully to read its angle. If the bench
+disagrees with the training model, the fix is now one generator and a retrain question, not
+three diverging copies. The Franka Desk end-effector profile should carry 0.54 kg plus the
+adapter flange either way.
+
 ### D2. Decide the thumb-yaw overlay for policy commands  [should, bench]
 
 - [ ] done

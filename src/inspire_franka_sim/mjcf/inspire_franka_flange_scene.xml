@@ -3,8 +3,9 @@
 
        Differs from the bench scene only in binding fr3.xml's `end_effector`
        slot to the hand wrapper instead of the empty stub. The mount transform
-       lives in inspire_hand_on_flange.xml and matches the hand's 90-degree
-       clocking on the current physical installation.
+       lives in inspire_hand_on_flange.xml: 10 mm out along the flange axis
+       and clocked 180 degrees, as on the current physical installation and
+       in training.
 
        <attach> merges the hand's bodies, meshes, actuators, equality
        constraints and contact excludes into this model, and the hand keeps its
@@ -25,6 +26,6 @@
     <key name="start"
       qpos="0 -0.785398163 0 -2.35619449 0 1.57079633 0.785398163
             0 0 0 0
-            0 -0.04545 0 -0.04545 0 -0.04545 0 -0.04545"/>
+            0 0 0 0 0 0 0 0"/>
   </keyframe>
 </mujoco>

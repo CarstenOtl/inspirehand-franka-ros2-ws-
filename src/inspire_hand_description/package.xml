@@ -7,10 +7,10 @@
   <description>
     URDF/xacro description and meshes for the Inspire Robotics RH56 dexterous
     hand, in both left and right variants.
-
-    Vendored and transformed from the upstream dex-urdf model; see
-    MODEL_PROVENANCE.md. The ros2_control block here is for simulation only -
-    the real hand is driven by inspire_hand_driver over RS485.
+    Generated from the training hand: forgeUltra's official Tiangong 2.0 Pro
+    right-hand URDF, under this workspace's joint names; the left hand is its
+    mirror. See MODEL_PROVENANCE.md. The ros2_control block here is for
+    simulation only - the real hand is driven by inspire_hand_driver over RS485.
   </description>
   <maintainer email="boizbigd@gmail.com">Carsten Oertel</maintainer>
   <license>Apache-2.0</license>

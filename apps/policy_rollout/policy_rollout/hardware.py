@@ -178,25 +178,23 @@ TRAINING_INACTIVE_FINGERS = {
 class TrainingHandKinematics:
     """Fingertip frames exactly as ForgeUltra's training asset defines them.
 
-    The workspace URDF and the training asset are independent derivations of
-    the same Inspire RH56, and they disagree. At the same commanded joints
-    their ``thumb_tip``/``index_tip`` frames sit about 15 mm apart and their
-    grasp frames about 21 degrees apart, because the tips hang off parent
-    links that differ by 26 mm / 16 deg (thumb) and 12 mm / 179 deg (index)
-    and are posed by different mimic ratios. No fixed tip offset reconciles
-    them at every posture.
+    Since 2026-10-16 the workspace URDF is generated from the same training
+    URDF, so its ``thumb_tip``/``index_tip`` frames agree with these to 1e-7 m
+    at the same joints (``tests/test_hardware.py``). Until then it was dex-urdf's
+    derivation, whose tips sat about 15 mm and 21 degrees away.
 
-    The student was distilled on the training asset's frame, so the rollout
-    reconstructs that frame from the measured joints rather than reading the
-    URDF's tips out of TF. The hand is rigid on the flange, so tip positions
-    in the flange frame depend only on the three policy hand joints and the
-    arm pose cancels; TF still supplies the flange itself, where the two
-    descriptions agree.
+    The rollout still builds the tips here rather than reading them out of TF,
+    because TF is posed from the *physical* joint state and the policy works in
+    its own logical coordinates: the driver's thumb-yaw overlay moves the
+    physical thumb off the logical value, and the driver clamps the thumb's
+    followers at their limits where training's mimic expansion does not. The
+    hand is rigid on the flange, so tip positions in the flange frame depend
+    only on the three policy hand joints and the arm pose cancels; TF still
+    supplies the flange itself.
 
-    This makes the policy's observation and command frame the one it was
-    trained in. Whether the *physical* fingers then land on the nut depends on
-    which of the two hand models actually describes this workcell's hand,
-    which is still an open bench measurement.
+    Whether the *physical* fingers then land where these say depends on
+    whether the training model describes this workcell's hand, which is still
+    an open bench measurement.
     """
 
     def __init__(self) -> None:
@@ -1046,10 +1044,10 @@ def _hardware_node_class():
                 return np.array([t.x, t.y, t.z]), np.array([r.w, r.x, r.y, r.z])
 
             flange_position, flange_quaternion = lookup("fr3_link8")
-            # TF's thumb_tip/index_tip come from the workspace URDF, whose hand
-            # geometry is not the one the student was distilled on. Rebuild the
-            # tips in the training asset's geometry from the measured joints so
-            # the policy sees and commands its trained grasp frame.
+            # TF's thumb_tip/index_tip are posed from the physical joint state,
+            # not the policy's logical one (thumb-yaw overlay, clamped thumb
+            # followers). Rebuild the tips from the policy's own hand joints so
+            # it sees and commands exactly its trained grasp frame.
             # Prefer the value that came with the sample the policy is about to
             # consume, so the grasp frame and the observation share an instant.
             # Before the first sample, read the hand topic on its own.

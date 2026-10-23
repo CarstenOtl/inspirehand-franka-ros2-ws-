@@ -1,99 +1,101 @@
-# Model provenance
+Model provenance
 
-Everything under `urdf/` and `meshes/` is **generated**. The generator is
-`scripts/vendor_from_dex_urdf.py`; edit that, not its output.
+`urdf/inspire_hand_{right,left}.macro.xacro` and everything under `meshes/` are
+**generated**. The generator is `scripts/vendor_from_training_urdf.py`; edit
+that, not its output.
 
 | | |
 |---|---|
-| Model | Inspire Robotics RH56 dexterous hand, left and right |
-| Upstream | `dex-urdf` (dexsuite), whose authors derived it from the STEP files Inspire publishes at <https://www.inspire-robots.com/download/frwz/> |
-| Reached this repo via | `tiangong_infra_ws/asset/tiangong2pro` |
-| Licence | See `UPSTREAM_LICENSE.txt` |
-| Vendored on | 2026-09-06 |
+| Model | Inspire Robotics RH56 dexterous hand, as the right hand of the Tiangong 2.0 Pro humanoid |
+| Source | forgeUltra's `assets/fr3_inspirehand/urdf/inspirehand_right.urdf` (forgeUltra commit `58046e0`, "update hand asset to be official supported") |
+| Upstream of that | Open-X-Humanoid's official `TienKung_URDF`, `tiangong2pro_urdf`, commit `5c221783fb92fcc4af891ef1dc0502963caf2266`; see forgeUltra's `assets/fr3_inspirehand/OFFICIAL_HAND_SOURCE.md` |
+| Licence | No licence or notice file is present in the upstream package |
+| Vendored on | 2026-10-16 |
 
-## What the source looks like
+## Why this model
 
-Two flat, **collision-only** URDFs (`inspire_hand_{left,right}.urdf`) plus two
-disjoint mesh trees:
+It is the hand the student policy was trained on. forgeUltra extracted the
+`R_base_link` subtree of the official Tiangong URDF, renamed its links and
+joints, and added five tip frames that the task code builds its grasp frame
+from. Isaac Lab trained against exactly that file, so the fingertips this
+description puts in TF are the policy's own, to within 1e-7 m
+(`apps/policy_rollout/tests/test_hardware.py`).
 
-- `meshes/obj_meshes/inspire_hand/` — OBJ, referenced by the URDFs' `<collision>`
-  elements. Eight per side: four links share `index_proximal` and two share
-  `index_intermediate`, so there are fewer meshes than links.
-- `meshes/glb_meshes/inspire_hand/visual/` — glTF binary, referenced by nothing.
-  Nine per side; the extra one is the palm, which has no collision mesh (its
-  collision is a cylinder and seven boxes).
+Until 2026-10-16 this package carried dex-urdf's independent derivation of the
+same hand, from Inspire's STEP files. It disagreed with the training hand in
+three ways that mattered:
 
-The two sets agree: same frame, same units (metres), extents matching to well
-under a millimetre. That was checked before adopting the glTF set as the visual
-geometry.
+- **Fingertips.** At the same joint command the pads were 114 mm apart instead
+  of 58 mm, the midpoint 15 mm away and the grasp frame 21 degrees off.
+- **Mass.** 0.19 kg distal to the flange instead of 0.54 kg. Retailers list the
+  RH56DFX at 540 g.
+- **Joint ranges.** The driver maps the hand's 0-1 open ratio linearly onto
+  each driven joint's range, so the range decides where a radian command puts
+  the physical finger. dex-urdf's were 1.47 (fingers), 0.6 (thumb pitch) and
+  1.308 (thumb yaw); training's are 1.333, 0.48 and 1.246.
 
-## What the generator changes, and why
+Which of the two describes the physical hand is still a bench measurement
+(D1 in `docs/policy_rollout_training_gap_todo.md`). Adopting the training model
+makes the whole stack consistent with the policy; it does not by itself prove
+the model right.
 
-1. **Flat URDF → xacro macro.** A flat URDF cannot be instantiated twice, given a
-   prefix, or attached to a parent link — all three of which this workspace
-   needs. The macro takes `prefix` and a `parent`/`xyz`/`rpy` mount.
+## What the generator changes
 
-2. **Visuals added.** Upstream has no `<visual>` at all, so RViz would render
-   nothing. The glTF visuals are converted to **binary STL**, which RViz and
-   MuJoCo both read without argument, and one is attached to each link. The
-   conversion flattens the glTF scene graph (`trimesh.load(force='mesh')`),
-   baking in node transforms; it also discards upstream's per-part colours, so
-   the URDF paints the whole hand one dark grey. Re-materialising from the glTF
-   would mean shipping Collada instead, which RViz reads but MuJoCo does not.
-
-3. **Meshes de-duplicated and re-rooted.** The shared meshes land once each under
-   `meshes/<side>/{visual,collision}/`, and the upstream `../../meshes/...`
-   relative paths become `package://` URIs that resolve wherever the package is
-   installed. The `right_`/`left_` filename prefixes are dropped — the side is
-   the directory now.
-
-4. **`base` renamed to `hand_mount`.** A link called `base` is fine in a
-   standalone hand and a hazard in a description that also contains an arm.
-   Every other link and **every joint** keeps its upstream name, which matters:
-   the joint names are the contract between the description, the driver
-   (`inspire_hand_driver.kinematics`) and the MJCF.
-
-`<mimic>` tags are carried through unchanged.
+1. **Names.** Links and joints take the names the workspace already used
+   (`hand_base_link`, `index_proximal_joint`, `thumb_proximal_yaw_joint`, ...),
+   so the driver, controllers, `config/pids.yaml` and the sim bridge address the
+   same joints as before. The map is `LINKS`/`JOINTS` in the generator.
+2. **Mount.** A massless `hand_mount` link sits above the palm with an identity
+   joint. forgeUltra mounts the palm 10 mm out from `fr3_link8`, yawed by pi;
+   the arm description puts `hand_mount` exactly there.
+3. **Effort and velocity limits** are the workspace's placeholders (1 N m,
+   0.5 rad/s), not training's PhysX drive values (50 N m, 1 rad/s). Nothing on
+   the real hand reads them.
+4. **Meshes.** The 13 official STL files are copied byte-for-byte, renamed after
+   their link, under `meshes/right/`. Each is both the visual and the collision
+   geometry, as in the source.
+5. **Left hand.** There is no official left hand. The left macro is the exact
+   mirror of the right across the `hand_mount` XZ plane: frames conjugated by the
+   reflection so they stay right-handed, joint axes negated so a positive angle
+   still closes the finger, inertias reflected, mesh vertices reflected with
+   their winding flipped. Ranges and couplings are the right hand's.
 
 ## Twelve joints, six actuators
 
 The hand has six actuators. Each finger's `*_intermediate` joint follows its
-`*_proximal` joint through a four-bar linkage, and the thumb has two such
-followers. Upstream records this as `<mimic>`, with these values (identical for
-both hands):
+`*_proximal` joint through a linkage, and the thumb has two followers in a
+chain. The source records this as `<mimic>`:
 
-| follower | driver | multiplier | offset |
+| follower | follows | multiplier | offset |
 |---|---|---|---|
-| `*_intermediate_joint` (four fingers) | `*_proximal_joint` | 1.06399 | −0.04545 |
-| `thumb_intermediate_joint` | `thumb_proximal_pitch_joint` | 1.334 | 0 |
-| `thumb_distal_joint` | `thumb_proximal_pitch_joint` | 0.667 | 0 |
+| `*_intermediate_joint` (four fingers) | `*_proximal_joint` | 1.1169 | 0 |
+| `thumb_intermediate_joint` | `thumb_proximal_pitch_joint` | 1.1425 | 0 |
+| `thumb_distal_joint` | `thumb_intermediate_joint` | 0.7508 | 0 |
 
-A `<mimic>` is a statement, not a mechanism — nothing in ROS propagates it at
-runtime. So the same numbers appear in `inspire_hand_driver.kinematics` (which
-computes the follower angles the driver publishes) and in the MuJoCo equality
+A `<mimic>` is a statement, not a mechanism: nothing in ROS propagates it at
+runtime. So the same numbers appear in `inspire_hand_driver.kinematics`, which
+computes the follower angles the driver publishes, and in the MuJoCo equality
 constraints that `inspire_franka_sim/scripts/make_hand_mjcf.py` emits.
-`test/test_mimic_matches_driver.py` fails if the copies drift apart.
+`test/test_mimic_matches_driver.py` fails if the copies, or the driver's
+ranges and the URDF limits, drift apart.
 
 Two details worth knowing before trusting the numbers:
 
-- The finger multiplier is **not** what you get by assuming a follower reaches
-  its limit exactly when its driver does — that gives 1.09214. At the closed
-  pose the follower stops at 1.5186 rad, about 2.4° inside its own 1.56 rad
-  limit. The limits are loose; the multiplier is the linkage.
-- The thumb multipliers are rounded (1.334 and 0.667 rather than 4/3 and 2/3),
-  which *overshoots* both follower limits by 4e-4 rad at the closed pose. The
-  driver clamps to the limits, because otherwise TF would report a joint outside
-  the range the description declares while MuJoCo clamped it — and the two would
-  disagree about where the thumb is.
+- **The finger followers stop short.** At the closed pose (1.333 rad) the
+  follower reaches 1.489 rad, about 2.2 degrees inside its own 1.527 rad limit.
+- **The thumb intermediate clamps.** 1.1425 x 0.48 = 0.548 would overshoot its
+  0.3578 rad limit, so it stops at about two thirds of the pitch's travel
+  (0.313 rad) and the distal stops with it, at 0.7508 x 0.3578 = 0.269 rad.
+  The driver clamps to the limits, so TF and MuJoCo agree about where the thumb
+  is. The policy's own mimic expansion (`forge_osc.expand_hand_mimic`) does not
+  clamp, so above 0.313 rad of pitch its thumb tip and this description's part
+  ways; the threading grasp holds the pitch at 0.05 rad.
 
 ## Known gaps
 
-- **No joint dynamics.** Upstream declares no damping or friction anywhere, and
-  every joint carries `effort="1"` / `velocity="0.5"`, which are placeholders
-  rather than measurements. The simulation supplies its own; see
-  `inspire_franka_sim`.
-- **Collision meshes are not convex.** MuJoCo takes the convex hull of a mesh
-  geom automatically, so this costs nothing there, but a planner using the raw
-  meshes will see fingers slightly fatter than they are.
-- **The palm has no collision mesh**, only a cylinder and seven boxes. They are a
-  reasonable envelope, not the true shell.
+- **No joint dynamics.** The description declares no damping or friction. The
+  simulation supplies its own; see `inspire_franka_sim`.
+- **Collision meshes are not convex.** MuJoCo collides each one as its convex
+  hull, which for the palm fills the hollow the thumb's proximal segment sits
+  in; `make_hand_mjcf.py` excludes that pair. A planner using the raw meshes
+  sees the true shells.

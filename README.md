@@ -1533,8 +1533,9 @@ no error at all — just a robot that quietly does the wrong thing.
   so treat the first FCI connection as unproven. `fci_check` is the cheapest
   first step.
 - **Flange mounting.** When arm and hand are enabled together, both Xacro and
-  MuJoCo attach `hand_mount` to the flange with zero translation and a 180-degree
-  clocking angle. Their transforms must remain synchronized. On real hardware,
+  MuJoCo attach `hand_mount` to the flange 10 mm out (the adapter flange) with
+  a 180-degree clocking angle, and so does the static transform the hardware
+  launches publish. All three must remain synchronized. On real hardware,
   Franka Desk's active end-effector profile is
   the sole source of hand mass, centre of mass, and inertia; ROS does not add a
   runtime payload.

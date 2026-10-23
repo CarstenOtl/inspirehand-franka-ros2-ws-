@@ -27,13 +27,15 @@ import pytest
 # out of the macro source keeps this test free of a xacro dependency.
 URDF_DIR = Path(__file__).resolve().parents[1] / "urdf"
 
+# The training hand's couplings. The thumb's distal joint follows the
+# intermediate, not the pitch, so the "driver" column is the joint followed.
 EXPECTED = {
-    "thumb_intermediate_joint": ("thumb_proximal_pitch_joint", 1.334, 0.0),
-    "thumb_distal_joint": ("thumb_proximal_pitch_joint", 0.667, 0.0),
-    "index_intermediate_joint": ("index_proximal_joint", 1.06399, -0.04545),
-    "middle_intermediate_joint": ("middle_proximal_joint", 1.06399, -0.04545),
-    "ring_intermediate_joint": ("ring_proximal_joint", 1.06399, -0.04545),
-    "pinky_intermediate_joint": ("pinky_proximal_joint", 1.06399, -0.04545),
+    "thumb_intermediate_joint": ("thumb_proximal_pitch_joint", 1.1425, 0.0),
+    "thumb_distal_joint": ("thumb_intermediate_joint", 0.7508, 0.0),
+    "index_intermediate_joint": ("index_proximal_joint", 1.1169, 0.0),
+    "middle_intermediate_joint": ("middle_proximal_joint", 1.1169, 0.0),
+    "ring_intermediate_joint": ("ring_proximal_joint", 1.1169, 0.0),
+    "pinky_intermediate_joint": ("pinky_proximal_joint", 1.1169, 0.0),
 }
 
 
@@ -72,8 +74,36 @@ def test_driver_kinematics_agree_with_the_urdf():
     )
     urdf = _mimics("right")
     driver = {
-        coupling.joint: (dof.joint, coupling.multiplier, coupling.offset)
+        coupling.joint: (coupling.source or dof.joint, coupling.multiplier, coupling.offset)
         for dof in kinematics.DOFS
         for coupling in dof.couplings
     }
+    assert driver == pytest.approx(urdf)
+
+
+def _limits(side: str):
+    root = ET.parse(URDF_DIR / f"inspire_hand_{side}.macro.xacro").getroot()
+    out = {}
+    for joint in root.iter("joint"):
+        limit = joint.find("limit")
+        if limit is not None:
+            name = joint.get("name").replace("${prefix}", "")
+            out[name] = (float(limit.get("lower")), float(limit.get("upper")))
+    return out
+
+
+def test_driver_ranges_agree_with_the_urdf():
+    # The driver maps open ratios onto exactly these ranges, so on hardware
+    # they decide where the hand physically goes for a given joint command.
+    kinematics = pytest.importorskip(
+        "inspire_hand_driver.kinematics",
+        reason="inspire_hand_driver not on the path; run this from a built workspace",
+    )
+    urdf = _limits("right")
+    assert _limits("left") == urdf
+    driver = {}
+    for dof in kinematics.DOFS:
+        driver[dof.joint] = (dof.lower, dof.upper)
+        for coupling in dof.couplings:
+            driver[coupling.joint] = (coupling.lower, coupling.upper)
     assert driver == pytest.approx(urdf)

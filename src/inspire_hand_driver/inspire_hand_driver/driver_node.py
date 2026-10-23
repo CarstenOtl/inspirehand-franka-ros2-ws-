@@ -287,7 +287,7 @@ from .protocol import (
 
 # The commandable range, in open-ratio units. Every DOF shares it, which is
 # the point of commanding in ratios: the equivalent radian limits differ per
-# joint (1.47, 0.6, 1.308) and belong to the description, not to this wire
+# joint (1.333, 0.48, 1.246) and belong to the description, not to this wire
 # protocol. Targets outside it are rejected rather than clamped -- silently
 # clamping turned a typo into a full-travel move with no warning anywhere.
 RATIO_OPEN = 1.0

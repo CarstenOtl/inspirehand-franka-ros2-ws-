@@ -10,7 +10,7 @@ the description is re-vendored.
 Why a generator and not a hand-written model
 --------------------------------------------
 MuJoCo will import the URDF directly, and the import is good: 12 joints with the
-right ranges, 9 meshes, visual and collision geometry correctly separated. What
+right ranges, 13 meshes, visual and collision geometry correctly separated. What
 it cannot give is anything the URDF does not say, and the URDF is silent on four
 things that matter:
 
@@ -22,8 +22,8 @@ things that matter:
 2. **Actuators.** A URDF has no notion of one. Six ``<motor>`` actuators are
    added, one per driven joint.
 
-3. **Joint dynamics.** Upstream declares no damping, armature or friction
-   anywhere. Undamped, mesh-collided finger joints at 5 g apiece are a stiff
+3. **Joint dynamics.** The description declares no damping, armature or friction
+   anywhere. Undamped, mesh-collided finger links of 5 to 60 g are a stiff
    system that rings; see JOINT_DYNAMICS.
 
 The reusable hand asset intentionally has no keyframe. Keyframes remain pending
@@ -57,14 +57,17 @@ from pathlib import Path
 #     y - y0 = a0 + a1*(x - x0) + a2*(x - x0)^2 + ...
 # with y0/x0 the joints' qpos0. Both are 0 here (the URDF import sets no `ref`),
 # so an affine mimic is just polycoef = [offset, multiplier, 0, 0, 0].
+#
+# The thumb's distal joint follows the intermediate, not the pitch, as in the
+# training hand's URDF; an equality on a follower chains the way the mimic does.
 COUPLINGS = (
     # (follower, driver, multiplier, offset)
-    ("index_intermediate_joint", "index_proximal_joint", 1.06399, -0.04545),
-    ("middle_intermediate_joint", "middle_proximal_joint", 1.06399, -0.04545),
-    ("ring_intermediate_joint", "ring_proximal_joint", 1.06399, -0.04545),
-    ("pinky_intermediate_joint", "pinky_proximal_joint", 1.06399, -0.04545),
-    ("thumb_intermediate_joint", "thumb_proximal_pitch_joint", 1.334, 0.0),
-    ("thumb_distal_joint", "thumb_proximal_pitch_joint", 0.667, 0.0),
+    ("index_intermediate_joint", "index_proximal_joint", 1.1169, 0.0),
+    ("middle_intermediate_joint", "middle_proximal_joint", 1.1169, 0.0),
+    ("ring_intermediate_joint", "ring_proximal_joint", 1.1169, 0.0),
+    ("pinky_intermediate_joint", "pinky_proximal_joint", 1.1169, 0.0),
+    ("thumb_intermediate_joint", "thumb_proximal_pitch_joint", 1.1425, 0.0),
+    ("thumb_distal_joint", "thumb_intermediate_joint", 0.7508, 0.0),
 )
 
 #: The six driven joints, in the register order the driver uses.
@@ -77,14 +80,14 @@ DRIVEN = (
     "thumb_proximal_yaw_joint",
 )
 
-# Torque clamp per driven joint, N m. This is upstream's declared <limit effort>,
+# Torque clamp per driven joint, N m. This is the description's <limit effort>,
 # which is a placeholder rather than a measurement - but it is at least the right
 # order of magnitude: the RH56 manages roughly 10 N at a fingertip on a ~50 mm
 # lever, so ~0.5 N m, and 1.0 leaves headroom for the PIDs to accelerate through.
 ACTUATOR_TORQUE = 1.0
 
 # Unidentified stabilisers, not measurements. The description declares no joint
-# dynamics at all, and an undamped chain of 5 g links on mesh contacts rings
+# dynamics at all, and an undamped chain of 5 to 60 g links on mesh contacts rings
 # badly. These are the smallest values found to hold a curl steady at a 2 ms
 # timestep without visibly slowing the finger down; retune them if you ever
 # characterise the real hand.
@@ -103,21 +106,20 @@ JOINT_DYNAMICS = dict(damping=0.1, armature=0.002, frictionloss=0.005)
 # so the two simulators agree, not a claim about the hardware.
 CONTACT_FRICTION = (0.75, 0.005, 0.0001)
 
-# Body pairs whose collision geometry overlaps no matter what the joints do, so
-# a contact between them is always an artefact of the coarse geometry rather
-# than the hand touching itself.
+# Body pairs whose collision geometry overlaps at rest, so a contact between them
+# is an artefact of the coarse geometry rather than the hand touching itself.
 #
-# There is exactly one, and it is the palm's fault. `hand_base_link` has no
-# collision mesh - upstream gives it a cylinder and seven boxes, an envelope
-# rather than the true shell - and one of those boxes swallows the thumb's
-# proximal segment. Measured by sweeping all six driven joints across their full
-# range (3000 random in-range poses): this pair sits at -12.1 mm at every one of
-# them, including the rest pose, while every other overlap varies with the pose
-# and bottoms out only where the thumb is genuinely driven into the index
-# finger. Those are real self-collisions and are left alone.
+# There is exactly one, and it is the palm's fault. MuJoCo collides a mesh as
+# its convex hull, and the hull of the palm shell fills the hollow the thumb's
+# proximal segment sits in. Measured by sweeping all six driven joints across
+# their full range (1500 random in-range poses plus the open pose): this pair
+# overlaps by 3.5 mm at the open pose and by up to 7.2 mm elsewhere, and only
+# clears by 3 mm at the far end of the thumb's travel. Every other overlap is
+# the thumb genuinely driven into the index finger -- 44 mm apart or more at
+# the open pose -- and is left alone.
 #
-# Re-run that sweep if the model is ever re-vendored; a finer palm mesh would
-# make this entry unnecessary.
+# Re-run that sweep if the model is ever re-vendored; a convex decomposition of
+# the palm would make this entry unnecessary.
 SPURIOUS_PAIRS = (("hand_base_link", "thumb_proximal"),)
 
 MESH_SUBDIR = "assets_hand"
@@ -172,12 +174,11 @@ def build(spec, side: str) -> None:
     # except when the parent belongs to the world weld, which is exactly the
     # case for a hand standing on a bench: every joint from `world` down to
     # `hand_base_link` is fixed, so the palm IS the world body as far as the
-    # filter is concerned. Without these excludes the palm's collision
-    # primitives (a cylinder and seven boxes, a coarse envelope rather than the
-    # true shell) intersect every finger root by 11-14 mm at the OPEN pose. The
-    # fingers then start the simulation jammed: they close sluggishly against a
-    # constraint force of order the entire actuator budget, and will not reopen
-    # at all.
+    # filter is concerned. Without these excludes the palm's collision hull (the
+    # convex hull of its shell, which fills the hollows the fingers sit in)
+    # intersects the finger roots it carries. The fingers then start the
+    # simulation jammed: they close sluggishly against a constraint force of
+    # order the entire actuator budget, and may not reopen at all.
     #
     # Every direct parent/child pair is excluded, not just the palm's, so the
     # model behaves identically whether it is bolted to the arm's flange (where
@@ -195,7 +196,7 @@ def build(spec, side: str) -> None:
             continue
         exclude_pair(parent.name, body.name)
 
-    # The palm's coarse envelope also engulfs a body that is not its direct
+    # The palm's hull also engulfs a body that is not its direct
     # child, which the loop above therefore misses. See SPURIOUS_PAIRS.
     for first, second in SPURIOUS_PAIRS:
         exclude_pair(first, second)
@@ -277,16 +278,17 @@ def main(argv=None) -> int:
 
     # The saved XML has to find its meshes relative to itself, not relative to
     # wherever the description happened to be when this ran. The mesh elements
-    # already carry `<side>/<kind>/<name>` paths from the import, so copying
-    # that structure under assets_hand/ and pointing meshdir there keeps them
-    # valid without rewriting every element.
+    # already carry `<side>/<name>` paths from the import, so copying that
+    # structure under assets_hand/ and pointing meshdir there keeps them valid
+    # without rewriting every element. The side's directory is replaced
+    # whole, so meshes from an earlier model do not linger.
     assets = mjcf_dir / MESH_SUBDIR
-    for kind in ("visual", "collision"):
-        source = description / "meshes" / args.side / kind
-        target = assets / args.side / kind
-        target.mkdir(parents=True, exist_ok=True)
-        for mesh in sorted(source.glob("*")):
-            shutil.copy2(mesh, target / mesh.name)
+    target = assets / args.side
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
+    for mesh in sorted((description / "meshes" / args.side).glob("*")):
+        shutil.copy2(mesh, target / mesh.name)
     spec.meshdir = MESH_SUBDIR
 
     # to_xml() opens each mesh to re-derive its path, and resolves meshdir

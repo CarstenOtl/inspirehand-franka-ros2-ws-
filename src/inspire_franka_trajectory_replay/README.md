@@ -311,7 +311,7 @@ ros2 run inspire_franka_trajectory_replay replay_trajectory \
 ```
 
 Closing the support fingers is the default whenever the hand is commanded:
-pinky, ring, and middle are held at their fully closed `1.47 rad` limits in the
+pinky, ring, and middle are held at their fully closed `1.333 rad` limits in the
 homing command and at every replay waypoint. It changes only the hand -- it
 never changes or retargets an FR3 joint. Pass `--no-close-support-fingers` when
 the trajectory's recorded support-finger motion should be preserved;

@@ -24,6 +24,6 @@
        inspire_hand_on_flange.xml makes MuJoCo unable to namespace it safely. -->
   <keyframe>
     <key name="open"
-      qpos="0 0 0 0 0 -0.04545 0 -0.04545 0 -0.04545 0 -0.04545"/>
+      qpos="0 0 0 0 0 0 0 0 0 0 0 0"/>
   </keyframe>
 </mujoco>

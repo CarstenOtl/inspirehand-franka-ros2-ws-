@@ -36,10 +36,10 @@ Everything the hardware backend talks to is here, under the same names:
 What it does not model: the FR3's own dynamics (the controller runs on DH
 kinematics with no coriolis term, and gravity is off in the scene in place of
 libfranka's compensation), RealSense depth noise, and the hand's RS485 timing.
-The nut now has contact geometry and a thread, but the hand's own fingertip
-geometry is this workspace's RH56 model rather than training's, and the two
-disagree by 2x on tip separation (D1 in docs/policy_rollout_training_gap_todo.md)
--- so where the pads land on the nut is not yet the training answer.
+The hand is the training hand (inspire_hand_description is generated from
+forgeUltra's URDF), so the simulated pads land where training's did. Whether
+the physical pads do is still a bench measurement (D1 in
+docs/policy_rollout_training_gap_todo.md).
 """
 
 from pathlib import Path
@@ -55,18 +55,7 @@ import yaml
 
 CONTROLLER = "trajectory_replay_controller"
 CARTESIAN_CONTROLLER = "cartesian_trajectory_replay_controller"
-#: Which hand description the simulated plant uses. The workspace carries two
-#: independent derivations of the same Inspire RH56 and they disagree about the
-#: thumb by roughly 15 degrees of carry, which is the difference between a
-#: 12 mm pinch and a 55 mm gap at the joint angles the policy commands.
-#: "workspace" is the dex-urdf hand this rig has always simulated; "training"
-#: is the geometry the student was distilled on, and the one bench rollouts say
-#: is closer to the physical hand. See
-#: apps/policy_rollout/utils/compare_hand_models.py.
-SCENES = {
-    "workspace": "inspire_franka_policy_scene.xml",
-    "training": "inspire_franka_policy_training_scene.xml",
-}
+SCENE = "inspire_franka_policy_scene.xml"
 MJCF_CAMERA = "policy_d415"
 
 
@@ -112,7 +101,7 @@ def launch_setup(context, *args, **kwargs):
             "arm_command_interface": "none",
             "hand_command_interface": "position_direct",
             "controllers_config_path": controllers_yaml,
-            "mjcf": SCENES[arg("hand_model")],
+            "mjcf": SCENE,
             "camera_publish_rate": arg("camera_rate"),
             "sim_speed_factor": arg("sim_speed"),
         }.items(),
@@ -229,14 +218,6 @@ def generate_launch_description():
                 "paces the policy on /clock, so below 1 the policy keeps its trained "
                 "15 Hz in simulated time while inference, rendering and the viewers "
                 "share this 4-core CPU. 1.0 is real time.",
-            ),
-            DeclareLaunchArgument(
-                "hand_model",
-                default_value="training",
-                choices=sorted(SCENES),
-                description="Which Inspire RH56 description the plant simulates. 'training' is "
-                "ForgeUltra's geometry, which the student was distilled on; 'workspace' is the "
-                "dex-urdf one. They disagree about the thumb by about 15 degrees.",
             ),
             DeclareLaunchArgument(
                 "camera_view",
