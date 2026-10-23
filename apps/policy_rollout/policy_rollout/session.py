@@ -100,6 +100,7 @@ class PolicyRolloutSession:
         process_phase: str | None = None,
         sample_time_s: float | None = None,
         task_signals: dict[str, object] | None = None,
+        extras: dict[str, object] | None = None,
     ) -> PolicyStep:
         previous = self.action_filter.previous_filtered
         if previous is None:
@@ -149,6 +150,7 @@ class PolicyRolloutSession:
                 depth=prepared.depth,
                 valid_mask=prepared.valid_mask,
                 task_signals=task_signals,
+                extras=extras,
             )
         return result
 

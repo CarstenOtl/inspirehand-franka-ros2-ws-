@@ -19,25 +19,31 @@ THUMB_ABDUCTION_DOF = kinematics.dof_index(THUMB_ABDUCTION_JOINT)
 THUMB_ABDUCTION_ZERO_OPEN_RATIO = 0.25
 
 
-def apply_open_ratio_overlay(index: int, open_ratio: float) -> float:
-    """Apply final per-DOF calibration while preserving the command convention."""
+def apply_open_ratio_overlay(index: int, open_ratio: float, enabled: bool = True) -> float:
+    """Apply final per-DOF calibration while preserving the command convention.
+
+    ``enabled=False`` turns the overlay off (the driver's
+    ``thumb_abduction_overlay`` parameter): the command passes through
+    unchanged, which is what a simulated hand with the training geometry needs,
+    since there the bottom of the thumb's range is not unusable.
+    """
     ratio = float(open_ratio)
-    if index == THUMB_ABDUCTION_DOF:
+    if enabled and index == THUMB_ABDUCTION_DOF:
         zero = THUMB_ABDUCTION_ZERO_OPEN_RATIO
         return zero + (1.0 - zero) * ratio
     return ratio
 
 
-def invert_open_ratio_overlay(index: int, open_ratio: float) -> float:
+def invert_open_ratio_overlay(index: int, open_ratio: float, enabled: bool = True) -> float:
     """Recover the command that :func:`apply_open_ratio_overlay` would map here.
 
     The hand reports its true physical pose, so anything comparing feedback
     against a pre-overlay command needs one side moved onto the other. Prefer
     applying the overlay forward to the command; this exists for the cases that
-    only hold the physical value.
+    only hold the physical value. With ``enabled=False`` it is the identity.
     """
     ratio = float(open_ratio)
-    if index == THUMB_ABDUCTION_DOF:
+    if enabled and index == THUMB_ABDUCTION_DOF:
         zero = THUMB_ABDUCTION_ZERO_OPEN_RATIO
         return (ratio - zero) / (1.0 - zero)
     return ratio

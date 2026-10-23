@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -34,9 +35,22 @@ from policy_rollout.mujoco_threading_env import (  # noqa: E402
     seed_action_history,
 )
 from utils.camera_calibration import load_camera_calibration  # noqa: E402
+from utils.data_collection import create_rollout_dir  # noqa: E402
 
-DEFAULT_CHECKPOINT = APP_ROOT / "checkpoints" / "sequential_threading_cycle10_hybrid_teacher_d415_20ep" / "checkpoint.pt"
-DEFAULT_EPISODE = APP_ROOT / "checkpoints" / "reference_episode" / "episode_000_sequential_threading.npz"
+# The deployed checkpoint (run_policy_rollout.DEFAULT_CHECKPOINT), so this backend
+# runs the same policy as `hardware` and `ros-sim` by default.
+DEFAULT_CHECKPOINT = (
+    APP_ROOT
+    / "checkpoints/fr3_offline_flow_matching_parallel_vision_13102026"
+    / "m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013-135143-648368"
+    / "nn/checkpoint.pt"
+)
+DEFAULT_RECORDING_ROOT = APP_ROOT.parents[1] / "logs" / "policy_rollout"
+# forge_ultra/tasks/forge_franka_threading_v2/config/reset_pose_m24.yaml
+# held_asset_spawn.yaw_deg: the nut's spawn yaw in the training world. The
+# reference episode's first sample carries the same quaternion
+# (make_ros_sim_scene.TRAINING_NUT_QUATERNION).
+TRAINING_NUT_YAW_DEG = 30.0
 RESET_HAND_POSTURE = {
     **fo.THREADING_GRASP_POSTURE,
     "middle_joint_0": 1.333,
@@ -50,10 +64,19 @@ def main(argv=None) -> int:
         prog="run_policy_rollout.py mujoco", description=__doc__
     )
     parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
-    parser.add_argument("--episode", default=str(DEFAULT_EPISODE), help="reference episode (nut spawn pose)")
+    parser.add_argument(
+        "--episode",
+        default=None,
+        help="reference episode whose first nut pose spawns the nut; without it the "
+        f"nut spawns at the trained yaw ({TRAINING_NUT_YAW_DEG:g} deg)",
+    )
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=1500)
-    parser.add_argument("--output-dir", default=str(DEFAULT_EPISODE.parent / "student_rollout"))
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help=f"recording directory (default: a timestamped mujoco-* run under {DEFAULT_RECORDING_ROOT})",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--integration-steps", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
@@ -64,6 +87,14 @@ def main(argv=None) -> int:
     parser.add_argument("--video-size", default="960x540")
     parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--dead-zone", choices=["none", "default"], default="none")
+    parser.add_argument(
+        "--arm-friction-scale",
+        type=float,
+        default=0.0,
+        help="arm joint dry friction and damping as a multiple of MuJoCo Menagerie's FR3 "
+        "values (0 = the training asset's frictionless arm, 1 = the physical arm's "
+        "stiction as far as the MJCF ever modelled it; see mujoco_threading_env)",
+    )
     args = parser.parse_args(argv)
     if args.integration_steps < 1:
         parser.error("--integration-steps must be positive")
@@ -76,9 +107,16 @@ def main(argv=None) -> int:
     from utils.data_collection import RolloutDataCollector
 
     profile = load_camera_calibration()
-    episode = np.load(args.episode, allow_pickle=False)
-    nut_quat0 = episode["nut_quat"][0].astype(float)
-    scene = ThreadingScene(nut_quat_wxyz=nut_quat0, camera=lambda spec: add_policy_camera(spec, profile))
+    if args.episode is None:
+        nut_quat0 = fo.quat_from_euler_xyz(0.0, 0.0, math.radians(TRAINING_NUT_YAW_DEG))
+    else:
+        episode = np.load(args.episode, allow_pickle=False)
+        nut_quat0 = episode["nut_quat"][0].astype(float)
+    scene = ThreadingScene(
+        nut_quat_wxyz=nut_quat0,
+        camera=lambda spec: add_policy_camera(spec, profile),
+        arm_friction_scale=args.arm_friction_scale,
+    )
     width, height = profile.source_intrinsics.width, profile.source_intrinsics.height
     renderer = mujoco.Renderer(scene.model, height, width)
     video_renderer = None
@@ -93,8 +131,12 @@ def main(argv=None) -> int:
         integration_steps=args.integration_steps,
         seed=args.seed,
     )
-    output = Path(args.output_dir)
-    output.mkdir(parents=True, exist_ok=True)
+    if args.output_dir is None:
+        output = create_rollout_dir(DEFAULT_RECORDING_ROOT, "mujoco")
+    else:
+        output = Path(args.output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+    print(f"recording to {output}", flush=True)
     metadata = runner.metadata()
     collector = RolloutDataCollector(
         output,
@@ -106,7 +148,11 @@ def main(argv=None) -> int:
             "policy_device": metadata["device"],
             "camera_profile": str(profile.source_path),
             "collection_mode": "mujoco_closed_loop_student",
-            "reference_episode": str(args.episode),
+            "reference_episode": None if args.episode is None else str(args.episode),
+            "nut_spawn_quat_wxyz": [float(v) for v in nut_quat0],
+            "seed": args.seed,
+            "dead_zone": args.dead_zone,
+            "arm_friction_scale": args.arm_friction_scale,
         },
         record_rgbd=args.record_rgbd,
     )
@@ -147,7 +193,11 @@ def main(argv=None) -> int:
     previews = []
     start_wall = time.perf_counter()
     status = "step_budget"
-    print(f"reset grasp frame {reset_grasp.pos.round(4)} hand {reset_hand.round(3)} nut yaw0 {nut_quat0.round(4)}", flush=True)
+    print(
+        f"reset grasp frame {reset_grasp.pos.round(4)} hand {reset_hand.round(3)} "
+        f"nut yaw0 {nut_quat0.round(4)} arm friction scale {scene.arm_friction_scale:g}",
+        flush=True,
+    )
     for step in range(args.max_steps):
         rgb, depth = render()
         q10 = scene.q(POLICY_JOINTS)

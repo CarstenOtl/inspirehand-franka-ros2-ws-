@@ -105,6 +105,76 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--max-frame-skew", type=float, default=0.04)
     parser.add_argument("--max-home-delta", type=float, default=0.01)
     parser.add_argument(
+        "--max-home-grasp-error",
+        type=float,
+        default=0.002,
+        metavar="METRES",
+        help=(
+            "how far the live grasp frame may sit from the trained reset grasp after "
+            "homing (default 2 mm; the return gate is 5 mm). Homing is retried "
+            "--home-attempts times before the run is refused."
+        ),
+    )
+    parser.add_argument("--home-attempts", type=int, default=3)
+    parser.add_argument("--home-settle-s", type=float, default=1.0)
+    parser.add_argument(
+        "--hand-start",
+        choices=["release", "grasp"],
+        default="release",
+        help=(
+            "'release' (default) opens thumb and index to training's release posture "
+            "and commands the grasp just before the first policy sample, as training's "
+            "first observation shows the hand closing; 'grasp' starts from the hand "
+            "resting at the grasp."
+        ),
+    )
+    parser.add_argument(
+        "--thumb-overlay",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help=(
+            "whether the hand driver runs its thumb-yaw overlay, so feedback is "
+            "inverted into the policy's logical coordinate: 'auto' is on for hardware "
+            "and off for ros-sim (sim_policy.launch.py starts the mock driver without it)."
+        ),
+    )
+    parser.add_argument(
+        "--expected-load-mass-kg",
+        type=float,
+        default=None,
+        help=(
+            "refuse to run unless the load configured in Franka Desk (FrankaRobotState "
+            "inertia_load) is within 0.1 kg of this; without it the mass is only logged."
+        ),
+    )
+    parser.add_argument(
+        "--min-fingertip-separation",
+        type=float,
+        default=0.030,
+        metavar="METRES",
+        help=(
+            "the grasp-yaw proxy may not fire the release while the fingertips are "
+            "closer than this (an empty, collapsed pinch; the nut is 36 mm across flats)"
+        ),
+    )
+    parser.add_argument(
+        "--max-proxy-step-deg",
+        type=float,
+        default=20.0,
+        help="the proxy may not fire the release on a tick where it moved more than this",
+    )
+    parser.add_argument(
+        "--turn-log-period",
+        type=float,
+        default=1.0,
+        metavar="SECONDS",
+        help=(
+            "print the nut turn, the grasp-yaw proxy, the release gate, fingertip "
+            "separation and index joint every this many seconds (0 disables). The "
+            "same values stream every tick on /fr3_policy_rollout/turn."
+        ),
+    )
+    parser.add_argument(
         "--debug-viz",
         action="store_true",
         help=(
@@ -220,6 +290,12 @@ def _resolve_execution(args):
     return device
 
 
+def resolve_thumb_overlay(choice: str, sim: bool) -> bool:
+    """Whether the hand driver this backend talks to runs the thumb-yaw overlay."""
+
+    return {"auto": not sim, "on": True, "off": False}[choice]
+
+
 def _run_hardware(argv, sim: bool = False) -> int:
     args = _hardware_parser(sim).parse_args(argv)
     _resolve_execution(args)
@@ -238,6 +314,11 @@ def _run_hardware(argv, sim: bool = False) -> int:
         raise ValueError("hand tolerance and max home delta must be non-negative")
     if args.viewer_depth_max <= 0 or args.viewer_hz <= 0:
         raise ValueError("--viewer-depth-max and --viewer-hz must be positive")
+    if args.max_home_grasp_error < 0 or args.home_attempts < 1 or args.home_settle_s < 0:
+        raise ValueError("--max-home-grasp-error, --home-attempts and --home-settle-s must be valid")
+    if args.min_fingertip_separation < 0 or args.max_proxy_step_deg <= 0:
+        raise ValueError("--min-fingertip-separation and --max-proxy-step-deg must be valid")
+    args.thumb_overlay_enabled = resolve_thumb_overlay(args.thumb_overlay, sim)
 
     from policy_rollout.hardware import assess_hardware_readiness, run_hardware_rollout
     from utils.camera_calibration import load_camera_calibration

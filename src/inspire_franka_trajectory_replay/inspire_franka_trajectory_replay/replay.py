@@ -381,11 +381,17 @@ def _check_home(home_arm, first, home_path, tolerance):
 class HandReplayMixin:
     """The hand's position link shared by the hardware and legacy sim clients."""
 
-    def __init__(self, config, hand_topic, hand_state_topic):
+    #: Whether the driver on the hand topic runs its thumb-yaw overlay (its
+    #: ``thumb_abduction_overlay`` parameter); the physical driver does.
+    thumb_abduction_overlay = True
+
+    def __init__(self, config, hand_topic, hand_state_topic, thumb_abduction_overlay=True):
         super().__init__(
             config,
             node_name="inspire_franka_trajectory_replay",
         )
+        # Decides what physical pose a radian command is waited for at.
+        self.thumb_abduction_overlay = bool(thumb_abduction_overlay)
         self._hand_publisher = self.create_publisher(JointState, hand_topic, 10)
         self._hand_lock = threading.Lock()
         self._hand_position = None
@@ -442,7 +448,9 @@ class HandReplayMixin:
         # abduction onto its calibrated travel; feedback is compared with that
         # effective physical target so homing does not wait for an intentionally
         # unreachable pre-overlay position.
-        effective_target = scale_thumb_abduction(target)
+        effective_target = (
+            scale_thumb_abduction(target) if self.thumb_abduction_overlay else target
+        )
 
         def arrived():
             with self._hand_lock:

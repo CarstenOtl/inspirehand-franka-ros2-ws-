@@ -48,6 +48,8 @@ TASK_SIGNAL_DEFAULTS: dict[str, tuple[np.dtype, float | int]] = {
 }
 
 _SAFE_RUN_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
+_EXTRA_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+_CAMERA_FIELDS = ("head_rgb", "head_depth", "depth_valid")
 
 
 def _numpy(value: Any) -> np.ndarray:
@@ -170,7 +172,12 @@ class RolloutDataCollector:
         }
         self._rows.update({name: [] for name in TASK_SIGNAL_DEFAULTS})
         if self.record_rgbd:
-            self._rows.update({"head_rgb": [], "head_depth": [], "depth_valid": []})
+            self._rows.update({name: [] for name in _CAMERA_FIELDS})
+        # Per-sample diagnostics the runner measures alongside the policy's own
+        # inputs and outputs (grasp pose, fingertip separation, controller
+        # poses, return residuals). Fixed on the first sample: every later
+        # sample must carry the same names with the same widths.
+        self._extra_widths: dict[str, int] | None = None
         self._clock_origin_s: float | None = None
         self._last_source_time_s: float | None = None
         self._artifact: RolloutArtifact | None = None
@@ -195,6 +202,7 @@ class RolloutDataCollector:
         depth: Any | None = None,
         valid_mask: Any | None = None,
         task_signals: Mapping[str, Any] | None = None,
+        extras: Mapping[str, Any] | None = None,
     ) -> None:
         """Append one policy-rate sample after validating every channel."""
 
@@ -292,9 +300,33 @@ class RolloutDataCollector:
                 }
             )
 
+        values.update(self._validated_extras(extras))
+
         for name, value in values.items():
             self._rows[name].append(value)
         self._last_source_time_s = source_time
+
+    def _validated_extras(self, extras: Mapping[str, Any] | None) -> dict[str, np.ndarray]:
+        given = {str(name): value for name, value in (extras or {}).items()}
+        reserved = set(REQUIRED_FIELDS) | set(TASK_SIGNAL_DEFAULTS) | set(_CAMERA_FIELDS)
+        result: dict[str, np.ndarray] = {}
+        for name, value in given.items():
+            if not _EXTRA_NAME.match(name) or name in reserved:
+                raise ValueError(f"invalid extra signal name: {name!r}")
+            array = _numpy(value).astype(np.float64, copy=False).reshape(-1)
+            if array.size == 0 or not np.isfinite(array).all():
+                raise ValueError(f"extra signal {name!r} must be a non-empty finite vector")
+            result[name] = array
+        widths = {name: int(array.shape[0]) for name, array in result.items()}
+        if self._extra_widths is None:
+            self._extra_widths = widths
+            self._rows.update({name: [] for name in widths})
+        elif widths != self._extra_widths:
+            raise ValueError(
+                "extra signals must keep the names and widths of the first sample: "
+                f"expected {self._extra_widths}, got {widths}"
+            )
+        return result
 
     def close(self) -> RolloutArtifact:
         """Persist data and metadata once; repeated calls are idempotent."""
@@ -322,6 +354,7 @@ class RolloutDataCollector:
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "sample_count": self.sample_count,
             "record_rgbd": self.record_rgbd,
+            "extra_signals": sorted(self._extra_widths or {}),
             "time_axis": "elapsed monotonic seconds from first recorded sample",
             "fields": fields,
         }
@@ -437,7 +470,13 @@ def load_rollout(path: str | Path) -> LoadedRollout:
     for name in TASK_SIGNAL_DEFAULTS:
         if name in arrays and arrays[name].shape != (sample_count,):
             raise ValueError(f"{name} must have shape ({sample_count},)")
-    camera_fields = {"head_rgb", "head_depth", "depth_valid"}
+    for name in metadata.get("extra_signals", ()):
+        if name not in arrays:
+            raise ValueError(f"rollout is missing the recorded extra signal {name!r}")
+        extra = arrays[name]
+        if extra.ndim != 2 or extra.shape[0] != sample_count or not np.isfinite(extra).all():
+            raise ValueError(f"extra signal {name!r} must be a finite ({sample_count}, width) array")
+    camera_fields = set(_CAMERA_FIELDS)
     present_camera_fields = camera_fields.intersection(arrays)
     if present_camera_fields and present_camera_fields != camera_fields:
         raise ValueError("RGB-D recording must contain all three camera fields")

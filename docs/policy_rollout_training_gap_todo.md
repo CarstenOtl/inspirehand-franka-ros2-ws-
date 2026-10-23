@@ -397,6 +397,134 @@ A1b's effect on the joint-5 excursion is NOT established; the spread is run-to-r
 
 ---
 
+## Status, 2026-10-18: the arm's joint friction decides what the policy does
+
+The deployed 26-D checkpoint (`m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013`) was
+run through the MuJoCo-only backend for the first time (`run_policy_rollout.py mujoco`, which
+now defaults to that checkpoint and needs no reference episode: nut at the trained 30 deg yaw,
+recordings under `logs/policy_rollout/mujoco-*`). Three seeds, 16 flow steps, CUDA.
+
+- Frictionless arm (the E2 experiment, `fr3.xml` with damping and friction zeroed; also what
+  `ThreadingScene` applied): identical to ros-sim. Same filtered actions as
+  `ros_sim-20261016-101819-860712` to within 0.05 per channel until step 28, index driven open
+  and held at 0, descent to z 0.11-0.14 with the yaw sweep, lift at 3.1-3.3 s, then static for
+  the rest of the run. 0 cycles, nut twist -3.5 / +8.7 / -2.3 deg (the open hand brushing it).
+  So the ROS layer (camera relay lag, mock driver, thumb overlay, bridge) is not what opens the
+  index; the plant and the start state are.
+- Arm joint dry friction restored to MuJoCo Menagerie's FR3 values (`--arm-friction-scale 1.0`:
+  frictionloss 1.137 Nm on joints 1-4, 0.763 / 0.44 / 0.248 on 5-7, damping 0.21): the rollout
+  reproduces the HARDWARE run `hardware-20261016-135034-394484` instead. Joint 1 pinned at
+  -0.52 for 4 s (hardware -0.53), joints 5 and 7 at 2.16 / -2.28 at step 50 (hardware
+  1.90 / -2.04; frictionless 2.60 / -2.25), filtered actions within 0.1 of the hardware trace
+  on all nine channels through step 55, and the index closes on the nut at 3.0-3.7 s
+  (0.20 -> 0.56 rad at steps 45-55; hardware 0.20 -> 0.51). The grasp then turns the nut a clean
+  +55-58 deg by 3.7-4.4 s (`release_started` at steps 50-92 across seeds and scales), which
+  neither ros-sim nor hardware ever did.
+- Scan: scale 0.1 behaves like the frictionless arm (no grasp, -19 deg loosening brush,
+  lift); 0.25, 0.5 and 1.0 all grasp and turn. Friction only (0.5, damping 0) grasps and
+  turns; damping only (0.5 and 2.0, friction 0) does not. Coulomb stiction is the lever, not
+  viscous damping.
+- The return gate then fails at every friction level: `return_failed` with the grasp frame
+  5.4-17.5 mm and 5.5-14 deg from the reset reference after the 16 s timeout. The OSC law has
+  no integral term, so stiction leaves a steady offset (5.4 mm at friction 0.5 without damping,
+  15 mm at 1.0). That is the signature of the hardware run (9-12 mm short of its own goal for
+  the whole return). `--dead-zone default` adds its own 5 N / 565 N/m = 8.8 mm, and its
+  "completed cycle" on seed 0 is an artefact: the open hand dragged the nut 56 deg round by
+  contact at 1.4-2.2 s (the thread pair has 0.002 Nm of Coulomb torque), index still at 0.
+
+What this settles. The policy is a function of the arm's joint-space trajectory under its own
+Cartesian commands: with stiction the redundancy stays put and the policy plays the segment it
+learned (reach, close, turn); without it the joints swing to the limits and the policy plays
+"lift and hold". Hardware has the stiction for free, which is why it got further than
+ros-sim; what stopped hardware is the chain below the grasp (pads closing past the nut, the
+proxy firing on a collapsed frame, the return gate's reference and the controller's hold
+error), each now addressed in the runner.
+
+2026-10-19, the training arm USD read (`fr3_no_hand.usd`, LFS object
+d3deaab8..., fetched through the GitHub LFS API since git-lfs is not installed here; dump in
+the session scratch): the Isaac arm has NO joint friction and NO armature. Every
+`fr3_joint*` authors `physxJoint:jointFriction = 0.0`, no `physxJoint:armature` attribute
+exists (PhysX default 0), the USD drive gains (stiffness 1400, damping 50/20) are zeroed by
+the env at reset (`forge_franka_env.py` `write_joint_stiffness_to_sim` /
+`write_joint_damping_to_sim` on the arm ids), and `robot.py` sets armature and friction for
+the hand joints only. So the "frictionless to match training" reading of E2 was right about
+friction, and the hypothesis above that Isaac's arm has stiction is wrong. What the USD does
+differ in from `fr3.xml`:
+
+- armature: 0 in the USD, Menagerie's 0.195 (joints 1-4) / 0.074 (5-7) kept in the MJCF.
+  With armature 0 and no damping the MuJoCo arm blows up under the OSC at 120 Hz
+  (`armature x0`: grasp 1 m from the bolt by 3 s on both seeds), which Isaac's TGS solver
+  (192 position iterations, `terminate_on_explosion` guards at 50 rad/s) survives. Scaled
+  armature (seed 0, friction 0): x0.25 hovers at z 0.24 for 4 s, descends by 7 s, loosens
+  the nut 49 deg, and only at 73 s drags it to a +60 deg "release"; x0.1 and x0.05 wander
+  0.3-0.4 m off the bolt before coming back and dragging the nut 78-98 deg with an open
+  hand. Every armature value gives a different trajectory and none of them is the reach,
+  close and turn the friction-1.0 plant and the hardware show, so the MuJoCo arm without
+  Menagerie's rotor inertia is not an Isaac stand-in either: with zero drive gains and zero
+  friction the joint dynamics are set by armature and the link inertias, and those are the
+  two numbers the MJCF does not share with PhysX;
+- link inertia tensors: `physics:diagonalInertia` is unauthored on every link, so PhysX derives
+  them from the collision geometry at the authored masses (2.927, 2.936, 2.245, 2.616, 2.327,
+  1.817, 0.627 kg, equal to Menagerie's); the MJCF uses Menagerie's measured tensors. The
+  OSC's mass-weighted nullspace and the free redundancy motion both run on M, so this is an
+  unquantified difference until the training machine reports `root_physx_view.get_inertias()`;
+- solver: PhysX TGS, 192 position / 1 velocity iterations, dt 1/120 (decimation 8), material
+  friction 1.0/1.0; MuJoCo implicitfast at 1/480 with hand-collision friction 0.75.
+
+Identical: joint limits (USD 157.2 / 102.2 / 166.2 / -174.3..-8.7 / 160.8 / 31.2..258.8 /
+172.8 deg are `fr3.xml`'s 2.7437 / 1.7837 / 2.9007 / -3.0421..-0.1518 / 2.8065 / 0.5445..4.5169
+/ 3.0159 rad, so the joint 5/7 limits the ros-sim arm sits on are training's too), effort
+limits 87 / 12 Nm, max joint velocity 150 / 301 deg/s (no recorded run of any stack exceeds
+0.75 rad/s on any joint), masses.
+
+Hand, from `robot.py` (official profile) and the env: pinch drives stiffness 30 and damping
+3 (0.1 k), effort 20 (`frozen_hand_*`), inactive fingers 4.76 / 0.21 / 1.864, PhysX joint
+friction coefficient 0.07456 (proximal) / 0.01276 (distal) / 0.132 (thumb 0 and 1), armature
+0.00265 / 0.0006 / 0.0032, max joint velocity 1.0 rad/s from the URDF (training row 0's index
+closes at 0.97 rad/s, i.e. on that clamp; the ros-sim hand closed at 1.3 rad/s). The two
+local sims give the hand different joint dynamics from each other and from this: the
+MuJoCo-only backend's hand joints carry the replay MJCF's `official_hand` class (damping 1,
+frictionloss 0.5 Nm, no armature), ros-sim's `inspire_hand_right.xml` damping 0.1,
+frictionloss 0.005, armature 0.002, and neither clamps the joint velocity at 1 rad/s.
+
+Runner changes (uncommitted, tests in `apps/policy_rollout/tests`, driver and replay tests):
+
+- `GripCycleCoordinator` refuses a proxy-gated `release_started` while the fingertips are
+  closer than 30 mm (`--min-fingertip-separation`; the collapsed frame of 2026-10-16 had them
+  at 7.9 mm with the index at 0.66 rad, so "index closed" is not a guard) or when the proxy
+  moved more than 20 deg in one tick (`--max-proxy-step-deg`; it jumped -22 -> +74 deg in four
+  ticks). Vetoes are counted in the report. The measured nut twist (ros-sim) is not guarded.
+- The return gate is measured against the trained reset grasp (`trained_reset_grasp`: FK of
+  `FRANKA_ARM_RESET_JOINTS_M24` and the grasp posture through the training asset, base frame
+  (0.6171, -0.0017, 0.2641); the workspace URDF gives the same point to 0.00 mm), not the pose
+  the arm homed to. Homing is checked against it (`--max-home-grasp-error`, 2 mm, up to
+  `--home-attempts` re-gotos) and the residual is in the report; the 2026-10-16 run would have
+  been refused at 12.6 mm.
+- The Franka Desk load is read from `FrankaRobotState.inertia_load` at preflight and logged
+  (`configured_load` in the report); `--expected-load-mass-kg` makes it a gate.
+- The driver has a `thumb_abduction_overlay` parameter; `sim_policy.launch.py` starts the mock
+  driver without it, and `--thumb-overlay auto` inverts feedback only on hardware (D2 for sim).
+- `--hand-start release` (default) opens thumb and index to waypoint1's posture
+  (1.093 / 0.0001 / 0.03) and commands the grasp just before the first policy sample (C2).
+- Every tick records the grasp pose, fingertip separation, controller measured and target
+  points, the three return residuals and the proxy (`extra_signals` in the recording).
+
+First ros-sim run with these changes, `ros_sim-20261018-170217-826034` (`--record-rgbd`,
+CUDA, 16 flow steps, 0 missed deadlines at 10-14 ms per tick with frames recorded): homing
+residual 0.01 mm against the trained reset grasp, overlay off, the first sample shows the hand
+closing from the release posture (thumb yaw 1.156, index 0.099 rad at +1.3 rad/s), and every
+extra signal is in the recording. The behaviour is the known one (frictionless plant: index
+held open, fingertips never closer than 60 mm, lift at 3.3 s, nut twist 0.0 deg, 0 cycles),
+which is the expected result until E2 gives `fr3.xml` the training arm's friction. The MuJoCo
+friction-1.0 recording with frames, `mujoco-20261018-165852-371140`, is the sim side for the
+Step 3 swap tests once a hardware recording with frames exists.
+
+Still open: the hardware run with these changes (and `--record-rgbd`), the USD friction value
+(E2), and the controller's hold error under friction, which no gate fix removes: either a
+small integral/offset term for the return phase or a return tolerance that matches the plant.
+
+---
+
 ## Layer A: arm controller law
 
 Training executes Forge's operational-space controller
@@ -775,6 +903,10 @@ Change. In `run_hardware_rollout`, home the hand to the row-0 posture, command t
 posture, and take the first policy sample on the first hand-state message after that command
 instead of after `wait_for_hand`. Same for the reset in `utils/mujoco_student_rollout.py`.
 
+2026-10-18: the runner side is in (`--hand-start release`, default; `grasp` keeps the old
+behaviour for the A/B). The hand opens to waypoint1's posture after preflight, the grasp is
+commanded, and the loop starts on the next sample. The MuJoCo-only reset is unchanged.
+
 Done when. The first recorded proprio row matches the training row-0 hand state to about
 0.05 rad and shows a non-zero index velocity.
 
@@ -872,6 +1004,13 @@ Change. Check on the bench whether the training posture (1.185 rad thumb yaw in 
 model) is physically reachable. If it is, bypass the overlay for policy commands in
 `publish_hand_target` and drop the inversion in `physical_hand_state_to_policy`; if not, the
 retrain in D1 has to include the reachable range.
+
+2026-10-18: the switch exists. The driver parameter `thumb_abduction_overlay` turns the
+overlay off, `sim_policy.launch.py` starts the mock driver without it (the simulated hand is
+the training hand, so the logical command is the pose), and the runner's `--thumb-overlay`
+(auto: on for hardware, off for ros-sim) decides whether feedback is inverted. Recordings
+carry `thumb_abduction_overlay` so `analyze_rollout_motion` rebuilds the right physical pose.
+The bench question for hardware stands.
 
 Done when. Commanded and reported thumb yaw agree without an inversion step.
 
@@ -993,7 +1132,7 @@ Two bugs the attempts found, both fixed:
   presents as a thread that refuses to clamp. `ThreadPairClient` now publishes TRANSIENT_LOCAL.
 - `mujoco_plugins` is a nested parameter, not a list (see the gotchas above).
 
-### E2. Pin the FR3 joint dynamics to the training asset and commit the choice  [minor]
+### E2. Pin the FR3 joint dynamics to the training asset and commit the choice  [blocking]
 
 - [ ] done
 
@@ -1004,11 +1143,28 @@ is a git-lfs pointer in the local checkout, so its joint armature and friction c
 read; `robot.py`'s ArticulationCfg leaves the arm values at the USD defaults. The MuJoCo-only
 loop zeroes damping and friction and keeps armature too.
 
-Change. Read the arm joint properties from the USD on the training machine, set `fr3.xml`
-and `assets/fr3_inspirehand/fr3_inspirehand_replay.xml` to the same values, and commit with
-the numbers in the comment.
+2026-10-18: promoted from minor to blocking. With the friction zeroed the MuJoCo-only
+rollout of the deployed checkpoint reproduces ros-sim (index open, lift, 0 cycles); with
+Menagerie's dry friction restored (`run_policy_rollout.py mujoco --arm-friction-scale 1.0`)
+it reproduces the hardware trace and grasps and turns the nut. The threshold is between 0.1
+and 0.25 of Menagerie's values and damping alone does nothing (see the 2026-10-18 status).
 
-Done when. `git status` is clean and both MJCFs cite the USD values.
+2026-10-19: the USD was read (status of 2026-10-19). `physxJoint:jointFriction = 0.0` on all
+seven joints, no armature attribute, drive gains zeroed by the env: the training arm is
+frictionless and armature-free, so the "zero friction" half of the experiment was right and
+the MJCF's remaining difference is the Menagerie armature (0.195 / 0.074) and the inertia
+tensors (unauthored in the USD; PhysX derives them from the collision meshes). With armature
+0 the MuJoCo arm is numerically unstable under the OSC; the armature scan is in the status.
+
+Change. Set `fr3.xml` and `assets/fr3_inspirehand/fr3_inspirehand_replay.xml` to the USD's
+values where MuJoCo can take them (friction 0, damping 0, the smallest armature that keeps
+the implicitfast step stable, or a finer physics step), get the PhysX-derived link inertias
+from the training machine (`task_env._robot.root_physx_view.get_inertias()`) and author
+them in the MJCF, and commit with the numbers in the comment. Then rerun the MuJoCo-only
+rollout and diff its first-60-step joint trace against the Isaac trace of Step 2.
+
+Done when. `git status` is clean, both MJCFs cite the USD values, and the MuJoCo-only
+rollout's first-60-step joint trace matches Isaac's for the deployed checkpoint.
 
 ---
 

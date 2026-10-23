@@ -328,6 +328,86 @@ def test_cycle_coordinator_ignores_a_proxy_spike_when_the_nut_has_not_turned():
     assert coordinator.last_proxy_turn_rad > np.deg2rad(90.0)
 
 
+def test_cycle_coordinator_refuses_the_proxy_on_a_collapsed_pinch():
+    """The 2026-10-16 hardware release: fingertips 7.9 mm apart, proxy +74 deg.
+
+    The index was at 0.66 rad, so "index closed" would not have caught it; the
+    pinch width and the proxy's jump rate do. The guard only applies while the
+    proxy is what gates the release.
+    """
+
+    reset_q = _reset_grasp_quaternion()
+    coordinator = GripCycleCoordinator(
+        rate_hz=15.0,
+        max_cycles=1,
+        reset_position=np.zeros(3),
+        reset_quaternion=reset_q,
+        reset_hand=np.zeros(3),
+        min_fingertip_separation_m=0.030,
+        max_proxy_step_rad=np.deg2rad(20.0),
+    )
+    turned = _turned_about_world_z(reset_q, -74.0)
+    event, progress = coordinator.update(
+        position=np.zeros(3), quaternion=turned, hand=np.zeros(3), fingertip_separation_m=0.0079
+    )
+    assert event is None
+    assert progress > np.deg2rad(55.0)
+    assert coordinator.proxy_vetoes == 1
+    assert "7.9 mm" in coordinator.last_veto
+    # A wide-open pinch but the proxy jumped 74 deg in one tick: still refused.
+    coordinator = GripCycleCoordinator(
+        rate_hz=15.0,
+        max_cycles=1,
+        reset_position=np.zeros(3),
+        reset_quaternion=reset_q,
+        reset_hand=np.zeros(3),
+        max_proxy_step_rad=np.deg2rad(20.0),
+    )
+    event, _ = coordinator.update(
+        position=np.zeros(3), quaternion=turned, hand=np.zeros(3), fingertip_separation_m=0.055
+    )
+    assert event is None
+    assert "in one tick" in coordinator.last_veto
+    # The measured nut twist is not subject to the proxy guards.
+    event, _ = coordinator.update(
+        position=np.zeros(3),
+        quaternion=turned,
+        hand=np.zeros(3),
+        measured_turn_progress=np.deg2rad(56.0),
+        fingertip_separation_m=0.0079,
+    )
+    assert event == "release_started"
+
+
+def test_cycle_coordinator_accepts_a_gradual_turn_with_a_full_pinch():
+    reset_q = _reset_grasp_quaternion()
+    coordinator = GripCycleCoordinator(
+        rate_hz=15.0,
+        max_cycles=1,
+        reset_position=np.zeros(3),
+        reset_quaternion=reset_q,
+        reset_hand=np.zeros(3),
+        min_fingertip_separation_m=0.030,
+        max_proxy_step_rad=np.deg2rad(20.0),
+    )
+    event = None
+    for degrees in range(-4, -60, -4):
+        event, _ = coordinator.update(
+            position=np.zeros(3),
+            quaternion=_turned_about_world_z(reset_q, degrees),
+            hand=np.zeros(3),
+            fingertip_separation_m=0.040,
+        )
+        if event is not None:
+            break
+    assert event == "release_started"
+    assert coordinator.proxy_vetoes == 0
+    errors = coordinator.return_errors(np.array([0.004, 0.0, 0.0]), reset_q, np.zeros(3))
+    assert errors[0] == pytest.approx(0.004)
+    assert errors[1] == pytest.approx(0.0, abs=1e-6)
+    assert errors[2] == pytest.approx(0.0)
+
+
 def test_cycle_completion_rebases_without_retriggering_release():
     reset_q = _reset_grasp_quaternion()
     coordinator = _coordinator(reset_q, max_cycles=2)
@@ -419,6 +499,63 @@ def test_training_hand_reproduces_the_distilled_grasp_midpoint():
     assert np.linalg.norm(index - thumb) == pytest.approx(
         TRAINING_TIP_SEPARATION_M, abs=1e-4
     )
+
+
+def test_trained_reset_grasp_is_the_training_reset_frame_in_the_base():
+    """The return gate's reference: the grasp frame of the reset joints and posture.
+
+    Checked against the same quantity measured the way the rollout measures it
+    live (tips in the flange from the pinch posture, flange from the arm), and
+    against the training world's bolt geometry: the student starts 0.26 m above
+    the table, x 0.58 in the world, just behind the bolt at x 0.61.
+    """
+
+    from policy_rollout.hardware import TrainingFrameAdapter, trained_reset_grasp
+
+    hand = _training_hand()
+    frame = TrainingFrameAdapter()
+    position, quaternion, pinch = trained_reset_grasp(hand, frame)
+    np.testing.assert_allclose(
+        pinch, [fo.THREADING_GRASP_POSTURE[name] for name in fo.PINCH_JOINTS]
+    )
+    assert np.linalg.norm(quaternion) == pytest.approx(1.0)
+    world_position, world_quaternion = frame.pose_base_to_world(position, quaternion)
+    # mujoco_student_rollout prints this frame at reset: [0.5829 0.0017 0.2641]
+    # (the frictionless arm drifts ~2 mm from it during the 0.25 s settle).
+    np.testing.assert_allclose(world_position, [0.5829, 0.0017, 0.2641], atol=1e-3)
+    z_axis = fo.matrix_from_quat(world_quaternion)[:, 2]
+    assert np.degrees(np.arccos(-z_axis[2])) < 10.0
+    # Live measurement path: flange pose + tips in the flange.
+    flange_position, flange_quaternion, thumb, index = hand.frames_in_world(
+        fo.FRANKA_ARM_RESET_JOINTS_M24, pinch
+    )
+    thumb_flange, index_flange = hand.tips_in_flange(pinch)
+    rotation = fo.matrix_from_quat(flange_quaternion)
+    np.testing.assert_allclose(flange_position + rotation @ thumb_flange, thumb, atol=1e-9)
+    np.testing.assert_allclose(flange_position + rotation @ index_flange, index, atol=1e-9)
+    np.testing.assert_allclose(world_position, 0.5 * (thumb + index), atol=1e-9)
+
+
+def test_physical_hand_feedback_passes_through_without_the_overlay():
+    """ros-sim runs the driver without the thumb-yaw overlay: nothing to invert."""
+
+    from policy_rollout.hardware import HAND_JOINTS, physical_hand_state_to_policy
+
+    positions = np.zeros(len(HAND_JOINTS))
+    velocities = np.zeros(len(HAND_JOINTS))
+    columns = {name: index for index, name in enumerate(HAND_JOINTS)}
+    positions[columns["thumb_proximal_yaw_joint"]] = 1.185
+    velocities[columns["thumb_proximal_yaw_joint"]] = 0.3
+    positions[columns["index_proximal_joint"]] = 0.2147
+    q, dq = physical_hand_state_to_policy(positions, velocities, thumb_overlay=False)
+    np.testing.assert_allclose(q, [1.185, 0.0, 0.2147])
+    np.testing.assert_allclose(dq, [0.3, 0.0, 0.0])
+    # With the overlay on, the same logical 1.185 rad is the physical 0.889 rad
+    # (physical = 0.75 x logical, the open pose being 0 rad).
+    positions[columns["thumb_proximal_yaw_joint"]] = 0.75 * 1.185
+    q_on, dq_on = physical_hand_state_to_policy(positions, velocities, thumb_overlay=True)
+    assert q_on[0] == pytest.approx(1.185, abs=1e-6)
+    assert dq_on[0] == pytest.approx(0.3 / 0.75)
 
 
 def test_training_hand_tips_do_not_depend_on_the_arm():
@@ -628,3 +765,32 @@ def test_hand_joint_state_to_arrays_rejects_a_partial_hand():
     )
     with pytest.raises(RuntimeError, match="all driven RH56 joints"):
         hand_joint_state_to_arrays(message)
+
+
+def test_turn_monitor_values_are_degrees_in_field_order_and_nan_without_a_nut():
+    import math
+
+    from policy_rollout.hardware import TURN_MONITOR_FIELDS, turn_monitor_values
+
+    sim = turn_monitor_values(
+        nut_turn_rad=math.radians(30.0),
+        proxy_turn_rad=math.radians(45.0),
+        gate_turn_rad=math.radians(30.0),
+        fingertip_separation_m=0.0412,
+        index_rad=0.6,
+        phase="follow_waypoints",
+    )
+    assert len(sim) == len(TURN_MONITOR_FIELDS)
+    np.testing.assert_allclose(sim, [30.0, 45.0, 30.0, 41.2, 0.6, 1.0])
+
+    # Hardware has no nut-angle topic and may not have a tip separation yet.
+    hardware = turn_monitor_values(
+        nut_turn_rad=None,
+        proxy_turn_rad=0.0,
+        gate_turn_rad=0.0,
+        fingertip_separation_m=None,
+        index_rad=0.0,
+        phase="policy",
+    )
+    assert math.isnan(hardware[0]) and math.isnan(hardware[3])
+    assert hardware[5] == 0.0

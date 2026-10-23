@@ -269,9 +269,21 @@ MUJOCO_GL=glfw python3 apps/policy_rollout/run_policy_rollout.py mujoco
 
 The simulator runs the same student policy at 15 Hz and executes native OSC
 actions through the ported Forge control path at 120 Hz. It models the cyclic
-release/return coordinator and records both policy data and simulation state.
+release/return coordinator and records both policy data and simulation state
+under `logs/policy_rollout/mujoco-<stamp>/`. It defaults to the deployed
+checkpoint and spawns the nut at the trained 30 deg yaw; `--episode` spawns it
+from a reference episode instead.
 Use `python3 apps/policy_rollout/run_policy_rollout.py mujoco --help` for output,
 preview, video, cycle, and step-limit options.
+
+`--arm-friction-scale` sets the arm's joint dry friction and damping as a
+multiple of MuJoCo Menagerie's FR3 values (default 0, the frictionless
+training-asset reading of E2 in `docs/policy_rollout_training_gap_todo.md`).
+With the deployed checkpoint, 0 reproduces the ros-sim behaviour (index held
+open, lift at 3 s) and 1.0 the physical arm's (index closes on the nut at
+3-4 s, a 55 deg turn, then a return that holds short of the 5 mm gate), so it
+is the knob for reproducing either stack's failure offline; see the 2026-10-18
+status in that document.
 
 ## Camera contract
 

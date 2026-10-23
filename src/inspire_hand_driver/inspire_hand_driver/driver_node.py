@@ -348,6 +348,7 @@ class InspireHandNode(Node):
         self.declare_parameter("hand_id", 1)
         self.declare_parameter("protocol", "modbus")
         self.declare_parameter("mock", False)
+        self.declare_parameter("thumb_abduction_overlay", True)
         self.declare_parameter("publish_rate_hz", 50.0)
         self.declare_parameter("serial_timeout_sec", 0.25)
         # Prefixed onto every joint name published and accepted, so a two-handed
@@ -430,6 +431,7 @@ class InspireHandNode(Node):
         self.declare_parameter("compliance_return_rate", compliance.DEFAULT_RETURN_RATE)
 
         self._mock = bool(self.get_parameter("mock").value)
+        self._thumb_overlay = bool(self.get_parameter("thumb_abduction_overlay").value)
         self._prefix = str(self.get_parameter("joint_prefix").value)
         self._max_failures = int(self.get_parameter("max_read_failures").value)
         self._failures = 0
@@ -1552,7 +1554,9 @@ class InspireHandNode(Node):
             except KeyError:
                 unknown.append(str(name))
                 continue
-            ratio = command_overlays.apply_open_ratio_overlay(index, float(value))
+            ratio = command_overlays.apply_open_ratio_overlay(
+                index, float(value), self._thumb_overlay
+            )
             angles[index] = open_ratio_to_angle(ratio)
             touched = True
 

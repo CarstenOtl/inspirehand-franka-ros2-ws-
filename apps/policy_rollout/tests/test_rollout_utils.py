@@ -151,6 +151,80 @@ def test_absent_turn_signal_records_nan_without_aborting_the_run(tmp_path):
         )
 
 
+def _sample(collector, index, **kwargs):
+    position = np.arange(10, dtype=np.float32) + index * 0.1
+    velocity = np.full(10, index * 0.2, dtype=np.float32)
+    action = np.linspace(-0.5, 0.5, 9, dtype=np.float32)
+    collector.record(
+        sample_time_s=10.0 + index * 0.1,
+        joint_position=position,
+        joint_velocity=velocity,
+        proprio=np.concatenate((position, velocity[:7], np.zeros(9))),
+        policy_action=action,
+        filtered_native_action=action,
+        clipped_elements=0,
+        **kwargs,
+    )
+
+
+def test_collector_records_per_sample_extra_signals(tmp_path):
+    """The runner's per-tick diagnostics ride along as fixed-width float vectors."""
+
+    collector = RolloutDataCollector(tmp_path / "run")
+    for index in range(3):
+        _sample(
+            collector,
+            index,
+            extras={
+                "grasp_position": np.array([0.6, 0.0, 0.25 + 0.01 * index]),
+                "fingertip_separation_m": [0.05],
+                "return_error_m_deg_rad": (0.004, 1.5, 0.02),
+            },
+        )
+    artifact = collector.close()
+    loaded = load_rollout(artifact.run_dir)
+    assert loaded.metadata["extra_signals"] == [
+        "fingertip_separation_m",
+        "grasp_position",
+        "return_error_m_deg_rad",
+    ]
+    assert loaded.arrays["grasp_position"].shape == (3, 3)
+    assert loaded.arrays["fingertip_separation_m"].shape == (3, 1)
+    np.testing.assert_allclose(loaded.arrays["grasp_position"][:, 2], [0.25, 0.26, 0.27])
+    assert loaded.metadata["fields"]["return_error_m_deg_rad"]["shape"] == [3, 3]
+
+
+def test_collector_rejects_inconsistent_or_reserved_extra_signals(tmp_path):
+    collector = RolloutDataCollector(tmp_path / "run")
+    _sample(collector, 0, extras={"grasp_position": np.zeros(3)})
+    with pytest.raises(ValueError, match="names and widths"):
+        _sample(collector, 1, extras={"grasp_position": np.zeros(4)})
+    with pytest.raises(ValueError, match="names and widths"):
+        _sample(collector, 1, extras={})
+    with pytest.raises(ValueError, match="invalid extra signal name"):
+        RolloutDataCollector(tmp_path / "run2").record(
+            sample_time_s=0.0,
+            joint_position=np.zeros(10),
+            joint_velocity=np.zeros(10),
+            proprio=np.zeros(26),
+            policy_action=np.zeros(9),
+            filtered_native_action=np.zeros(9),
+            clipped_elements=0,
+            extras={"joint_position": np.zeros(10)},
+        )
+    with pytest.raises(ValueError, match="finite vector"):
+        RolloutDataCollector(tmp_path / "run3").record(
+            sample_time_s=0.0,
+            joint_position=np.zeros(10),
+            joint_velocity=np.zeros(10),
+            proprio=np.zeros(26),
+            policy_action=np.zeros(9),
+            filtered_native_action=np.zeros(9),
+            clipped_elements=0,
+            extras={"proxy_turn_rad": [float("nan")]},
+        )
+
+
 def test_collector_rejects_non_monotonic_time_and_unknown_task_signal(tmp_path):
     collector = RolloutDataCollector(tmp_path / "run")
     values = {

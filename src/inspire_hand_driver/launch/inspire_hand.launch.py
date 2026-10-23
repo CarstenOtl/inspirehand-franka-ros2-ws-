@@ -35,6 +35,9 @@ NODE_ARGS = (
     ("hand_id", "1", int, "Configured hand ID on the RS485 bus."),
     ("protocol", "modbus", str, "Wire protocol: 'modbus' or 'legacy'."),
     ("mock", "false", bool, "Run against a simulated hand instead of hardware."),
+    ("thumb_abduction_overlay", "true", bool, "Remap thumb-rotation commands onto the "
+     "physically usable top 75 percent of the range (command_overlays). Off for a "
+     "simulated hand with the training geometry, whose whole range is usable."),
     ("publish_rate_hz", "50.0", float, "State publish rate."),
     ("state_extras_divisor", "1", int, "Read current and force once per N publishes. "
      "Raise it to free RS485 bandwidth for a command stream."),

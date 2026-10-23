@@ -59,6 +59,17 @@ THREAD_AXIAL_ARMATURE = 5.0      # kg, see _add_thread_pair
 THREAD_TWIST_ARMATURE = 0.001    # kg m^2, keeps the hold equality stiff
 CONTACT_FRICTION = 0.75
 
+# MuJoCo Menagerie's FR3 joint dry friction and viscous damping (the fr3.xml
+# values before the 2026-09-30 "friction experiment" zeroed them to match the
+# training asset's zero drive gains). The training arm's own joint friction is
+# unknown (gap doc E2); ``ThreadingScene(arm_friction_scale=...)`` scales these
+# so the policy can be rolled out against a plant with the physical arm's
+# stiction. At 1.0 the MuJoCo-only rollout reproduces the hardware trace
+# (joint 1 pinned, index closing on the nut at 3-4 s); at 0.0 it reproduces
+# ros-sim's (every joint swinging, index held open, lift at 3 s).
+MENAGERIE_ARM_FRICTIONLOSS = (1.137, 1.137, 1.137, 1.137, 0.763, 0.44, 0.248)
+MENAGERIE_ARM_DAMPING = (0.21, 0.21, 0.21, 0.21, 0.21, 0.21, 0.21)
+
 # Hand drives (ThreadingRobotControllerCfg).
 PINCH_STIFFNESS, PINCH_DAMPING, PINCH_EFFORT = 30.0, 3.0, 20.0
 INACTIVE_STIFFNESS, INACTIVE_DAMPING, INACTIVE_EFFORT = 4.76, 0.21, 1.864
@@ -82,7 +93,7 @@ def _mimic_follower_targets(leaders: dict) -> dict:
 class ThreadingScene:
     """Compiled MuJoCo scene with the FR3, Inspire hand, camera, and threaded nut."""
 
-    def __init__(self, *, nut_quat_wxyz, mjcf=None, camera=None):
+    def __init__(self, *, nut_quat_wxyz, mjcf=None, camera=None, arm_friction_scale=0.0):
         import mujoco
 
         self.mujoco = mujoco
@@ -99,6 +110,12 @@ class ThreadingScene:
         self.qadr = {n: m.jnt_qposadr[j] for n, j in self.jid.items()}
         self.vadr = {n: m.jnt_dofadr[j] for n, j in self.jid.items()}
         self.arm_dofs = [self.vadr[n] for n in ARM_JOINTS]
+        self.arm_friction_scale = float(arm_friction_scale)
+        if not np.isfinite(self.arm_friction_scale) or self.arm_friction_scale < 0.0:
+            raise ValueError("arm_friction_scale must be a non-negative finite number")
+        for i, dof in enumerate(self.arm_dofs):
+            m.dof_frictionloss[dof] = self.arm_friction_scale * MENAGERIE_ARM_FRICTIONLOSS[i]
+            m.dof_damping[dof] = self.arm_friction_scale * MENAGERIE_ARM_DAMPING[i]
         self.aid = {m.actuator(a).name: a for a in range(m.nu)}
         self.flange = m.body("fr3_link8").id
         self.thumb_tip = m.body("thumb_tip").id

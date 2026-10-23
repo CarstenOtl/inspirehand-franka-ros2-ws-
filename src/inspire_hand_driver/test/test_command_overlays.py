@@ -71,3 +71,15 @@ def test_thumb_abduction_identity_is_resolved_from_the_kinematics_table():
         "thumb_proximal_yaw_joint"
     )
     assert kinematics.DOFS[command_overlays.THUMB_ABDUCTION_DOF].channel == "6"
+
+
+def test_the_overlay_can_be_switched_off_for_a_hand_with_the_full_range():
+    """A simulated training hand uses its whole thumb range: identity both ways."""
+
+    dof = command_overlays.THUMB_ABDUCTION_DOF
+    for ratio in (0.0, 0.3, 1.0):
+        assert command_overlays.apply_open_ratio_overlay(dof, ratio, enabled=False) == ratio
+        assert command_overlays.invert_open_ratio_overlay(dof, ratio, enabled=False) == ratio
+    assert command_overlays.apply_open_ratio_overlay(dof, 0.0, enabled=True) == (
+        command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO
+    )

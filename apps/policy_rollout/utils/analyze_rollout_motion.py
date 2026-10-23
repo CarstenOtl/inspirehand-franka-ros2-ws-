@@ -99,14 +99,21 @@ class UrdfKinematics:
         return transform
 
 
-def physical_positions(q10) -> dict:
-    """Recorded policy coordinates -> URDF joint positions (overlay re-applied)."""
+def physical_positions(q10, thumb_overlay: bool = True) -> dict:
+    """Recorded policy coordinates -> URDF joint positions (overlay re-applied).
+
+    ``thumb_overlay`` is the recording's ``thumb_abduction_overlay`` metadata:
+    ros-sim runs the driver without it, so there the logical thumb yaw is the
+    physical one.
+    """
 
     from inspire_hand_driver import command_overlays, kinematics as kin
 
     positions = {f"fr3_joint{i + 1}": float(v) for i, v in enumerate(q10[:7])}
     dof = kin.dof_index(command_overlays.THUMB_ABDUCTION_JOINT)
-    ratio = command_overlays.apply_open_ratio_overlay(dof, kin.rad_to_open_ratio(dof, float(q10[7])))
+    ratio = command_overlays.apply_open_ratio_overlay(
+        dof, kin.rad_to_open_ratio(dof, float(q10[7])), thumb_overlay
+    )
     positions["thumb_proximal_yaw_joint"] = kin.open_ratio_to_rad(dof, ratio)
     positions["thumb_proximal_pitch_joint"] = float(q10[8])
     positions["index_proximal_joint"] = float(q10[9])
@@ -115,6 +122,12 @@ def physical_positions(q10) -> dict:
 
 def analyze(run_dir: Path):
     data = np.load(run_dir / "data" / "rollout_data.npz")
+    metadata_path = run_dir / "data" / "metadata.json"
+    thumb_overlay = True
+    if metadata_path.is_file():
+        import json
+
+        thumb_overlay = bool(json.loads(metadata_path.read_text()).get("thumb_abduction_overlay", True))
     q = data["joint_position"]
     actions = data["filtered_native_action"]
     t = data["sample_time_s"] - data["sample_time_s"][0]
@@ -133,7 +146,7 @@ def analyze(run_dir: Path):
     z_transport = None
     reference_quaternion = None
     for k in range(len(q)):
-        positions = physical_positions(q[k])
+        positions = physical_positions(q[k], thumb_overlay)
         flange = kinematics.pose("fr3_link8", positions)
         thumb_flange, index_flange = training_hand.tips_in_flange(q[k][7:10])
         thumb = world(flange[:3, 3] + flange[:3, :3] @ thumb_flange)
