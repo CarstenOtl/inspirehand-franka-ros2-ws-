@@ -1,11 +1,14 @@
 schema_version: 1
 name: fr3_dp3_policy_reset
 description: >
-  The distilled threading student's reset: FR3 M24 reset joints and the
-  training grasp posture (forge_osc.THREADING_GRASP_POSTURE with the support
-  fingers closed, utils/mujoco_student_rollout.RESET_HAND_POSTURE). The hand
-  values are the policy's logical radians; the driver applies the thumb-yaw
-  overlay to commands and the rollout inverts it on feedback.
+  The distilled threading student's reset: FR3 M24 reset joints and the pinch
+  Isaac's cyclic teacher captured at threading entry and returns to
+  (forge_osc.ISAAC_ENTRY_PINCH; thumb yaw 1.0717, thumb pitch 0.0246, index
+  0.2147), with the support fingers closed. The closed grasp the pinch actions
+  are decoded about (forge_osc.THREADING_GRASP_POSTURE, thumb yaw 1.185, pitch
+  0.0506) is a different posture. The hand values are the policy's logical
+  radians; the driver applies the thumb-yaw overlay to commands and the
+  rollout inverts it on feedback.
   apps/traj_replay/demo_trajs/traj_2/homing.yaml has the same arm but a
   different hand (thumb yaw 1.086, thumb pitch 0.0002), which starts the policy
   about 0.1 rad away from its training reset.
@@ -37,5 +40,5 @@ positions:
   - 1.333
   - 1.333
   - 0.214675498
-  - 0.050614548
-  - 1.185078562
+  - 0.0246
+  - 1.0717

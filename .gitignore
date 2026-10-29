@@ -31,3 +31,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .vscode
+
+# Debug images and plots generated while investigating runs.
+/debug/

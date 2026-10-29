@@ -8,8 +8,10 @@
        inspire_franka_trajectory_replay's sim_policy.launch.py. Poses are the
        training world's converted into fr3_link0: bench top at z = 0, the M24
        bolt, and the calibrated D415 colour camera with its exact pinhole
-       matrix. The nut rides ForgeUltra's simplified thread pair (an axial
-       slide coupled to a twist hinge), so it can be gripped and turned.
+       matrix. The table is forgeUltra's threading_v2 tabletop as the policy
+       camera saw it in training: in front of the robot, legless walnut. The
+       nut rides ForgeUltra's simplified thread pair (an axial slide coupled
+       to a twist hinge), so it can be gripped and turned.
 
        Careful with comments in here: a double hyphen is illegal inside an XML
        comment, and ament_xmllint rejects the whole file for one. -->
@@ -22,8 +24,10 @@
       width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true"
       texrepeat="2 2" reflectance="0.05"/>
-    <material name="table_top" rgba="0.93 0.93 0.91 1" roughness="0.55"/>
-    <material name="table_leg" rgba="0.13 0.14 0.15 1" roughness="0.35" metallic="0.65"/>
+    <!-- forgeUltra assets/table/author_lab_bench_table.py: the walnut albedo
+         at 3 repeats per metre, roughness 0.34. -->
+    <texture type="2d" name="walnut" file="assets/forge_table/walnut_albedo.png"/>
+    <material name="table_top" texture="walnut" texuniform="true" texrepeat="3 3" roughness="0.34"/>
     <material name="forge_bolt" rgba="0.055 0.055 0.065 1"/>
     <material name="forge_nut" rgba="0.84 0.84 0.88 1"/>
     <mesh name="forge_m24_nut" file="forge_m24/m24_nut.stl"/>
@@ -47,16 +51,8 @@
     <camera name="policy_d415" pos="0.0320246253 0.551417144 0.490333222" quat="-0.295082433 -0.180969334 0.526231145 0.776696363" resolution="640 480" sensorsize="0.00384 0.00288" focal="0.00361230981 0.00360416052" principal="7.21470337e-05 1.243396e-05"/>
 
     <body name="table" pos="0.865 1.05931948e-16 0">
-      <geom name="table_top" type="box" pos="0 0 -0.015" size="0.4 0.3 0.015"
+      <geom name="table_top" type="box" pos="0 0 -0.015" size="0.4 0.6 0.015"
         material="table_top" contype="0" conaffinity="0"/>
-      <geom name="table_leg_0" type="cylinder" pos="0.35 0.25 -0.39" size="0.015 0.36"
-        material="table_leg" contype="0" conaffinity="0"/>
-      <geom name="table_leg_1" type="cylinder" pos="0.35 -0.25 -0.39" size="0.015 0.36"
-        material="table_leg" contype="0" conaffinity="0"/>
-      <geom name="table_leg_2" type="cylinder" pos="-0.35 0.25 -0.39" size="0.015 0.36"
-        material="table_leg" contype="0" conaffinity="0"/>
-      <geom name="table_leg_3" type="cylinder" pos="-0.35 -0.25 -0.39" size="0.015 0.36"
-        material="table_leg" contype="0" conaffinity="0"/>
     </body>
     <!-- Visual only, as in the training asset: the thread coupling, not a
          contact, is what holds the nut on the bolt. -->

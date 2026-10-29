@@ -35,8 +35,8 @@ namespace inspire_franka_sim
 ///   Without this the rollout has to infer the turn from the grasp frame's own
 ///   yaw, a proxy that cannot tell a nut turn from the wrist yaw of the
 ///   descent -- and that fires spuriously when the fingertips converge. The
-///   policy's own lifecycle releases on 55 degrees of turn, so it needs the
-///   real angle.
+///   policy's own lifecycle releases 5 degrees before each cycle's turn
+///   target, so it needs the real angle.
 /// - **holding the thread.** Isaac clamps the thread for the whole
 ///   release/return transition, so the nut cannot unwind while the fingers let
 ///   go of it (`_update_solver_thread_state`). The MuJoCo-only loop does it in
@@ -52,8 +52,15 @@ namespace inspire_franka_sim
 ///   /thread_hold    std_msgs/Bool            true clamps, false releases
 ///   /reset_thread   std_srvs/Trigger         back to the start pose on the bolt
 ///
+/// The hold and the reset are applied in `pre_step`, on the physics thread:
+/// `update` runs on the control thread with a snapshot of mjData, so an
+/// `eq_active` or qpos written there never reaches the simulation. (Writing
+/// them there once left the coupling flattened through model->eq_data, which
+/// is shared, with the twist pin lost in the snapshot: every "hold" let the
+/// nut spin free.) `update` only publishes the state.
+///
 /// A scene without a thread pair (every other MJCF in this package) loads the
-/// plugin harmlessly: `init` says so once and `update` returns immediately.
+/// plugin harmlessly: `init` says so once and the hooks return immediately.
 class ThreadPairPlugin : public mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase
 {
 public:
@@ -62,6 +69,8 @@ public:
 
   bool init(rclcpp::Node::SharedPtr node, const mjModel * model, mjData * data) override;
   void update(const mjModel * model, mjData * data) override;
+  void pre_step(mjData * data) override;
+  void on_reset(mjData * data) override;
   void cleanup() override;
 
 private:
@@ -73,6 +82,8 @@ private:
   void reset_thread(const mjModel * model, mjData * data);
 
   rclcpp::Node::SharedPtr node_;
+  /// pre_step() gets only the live mjData.
+  const mjModel * model_{nullptr};
   rclcpp::Logger logger_{rclcpp::get_logger("ThreadPairPlugin")};
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr hold_subscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
@@ -80,7 +91,7 @@ private:
   std::unique_ptr<realtime_tools::RealtimePublisher<sensor_msgs::msg::JointState>>
   state_publisher_;
 
-  /// False when the scene has no thread pair; update() then does nothing.
+  /// False when the scene has no thread pair; the hooks then do nothing.
   bool present_{false};
 
   int axial_qpos_{-1};
@@ -94,9 +105,10 @@ private:
   mjtNum start_offset_{0.0};
   mjtNum coupling_slope_{0.0};
 
-  // Written by ROS executor threads, read in update().
+  // Written by ROS executor threads, read in pre_step().
   std::atomic_bool hold_requested_{false};
   std::atomic_bool reset_requested_{false};
+  // Physics thread only.
   bool hold_engaged_{false};
 
   double publish_period_{0.01};

@@ -39,6 +39,123 @@ POLICY_HAND_JOINTS = (
     "index_proximal_joint",
 )
 
+# A force-observing student's pad forces, [thumb, index]. ros-sim's
+# FingertipForcePlugin publishes them already projected the way ForgeUltra does,
+# in N, under ForgeUltra's channel names; the RH56 driver's ~/grip_force carries
+# raw FORCE_ACT registers in grams under its channel ids, thumb_bend = "5" and
+# index = "4".
+FINGERTIP_FORCE_CHANNELS = (
+    "thumb_flexion_extension_force",
+    "index_flexion_extension_force",
+)
+RH56_FORCE_CHANNELS = ("5", "4")
+GRAM_FORCE_N = 9.80665e-3
+
+# A force-observing student's seven arm torques. Training reads PhysX's
+# projected joint-reaction torque with the robot's gravity off. Which FR3 signal
+# matches it best is still being measured, so every candidate the backend has is
+# recorded on every step, and --arm-torque-source picks the one the policy sees:
+#
+# - external:  libfranka's tau_ext_hat_filtered (tau_J minus the model's
+#              gravity and dynamics), ForgeUltra's recommendation;
+# - measured:  link-side tau_J minus the model's gravity, i.e. contact plus the
+#              motion torques PhysX's transmitted torque also contains (the
+#              controller low-passes tau_J at 1 kHz and publishes both);
+# - desired:   libfranka's tau_J_d, the commanded torque without gravity;
+# - commanded: the law's tau_task + tau_nullspace (no coriolis feed-forward,
+#              which ForgeUltra's OSC does not have).
+#
+# external and desired come from franka_robot_state_broadcaster's convenience
+# topics (100 Hz in controllers_policy.yaml); ros-sim has no broadcaster, and
+# there measured is MuJoCo's applied actuator torque (gravity is off).
+FRANKA_TORQUE_TOPICS = {
+    "external": "/franka_robot_state_broadcaster/external_joint_torques",
+    "desired": "/franka_robot_state_broadcaster/desired_joint_states",
+}
+ARM_TORQUE_SOURCES = ("auto", "external", "measured", "desired", "commanded")
+#: First-order low-pass on the broadcaster torques before the 15 Hz sample:
+#: about one 100 Hz message's worth of smoothing against aliasing. The
+#: controller applies the same time constant to tau_J.
+ARM_TORQUE_LOWPASS_S = 0.02
+
+
+def arm_torque_candidates(*, sim: bool) -> tuple[str, ...]:
+    """The torque candidates a backend records: all four on hardware, two in ros-sim."""
+
+    return ("measured", "commanded") if sim else ("external", "measured", "desired", "commanded")
+
+
+def resolve_arm_torque_source(source: str, *, sim: bool) -> str:
+    """``auto`` is the external estimate on hardware and the law's torque in ros-sim."""
+
+    if source not in ARM_TORQUE_SOURCES:
+        raise ValueError("arm torque source must be one of " + ", ".join(ARM_TORQUE_SOURCES))
+    if source == "auto":
+        return "commanded" if sim else "external"
+    if source not in arm_torque_candidates(sim=sim):
+        raise ValueError(
+            f"arm torque source {source!r} needs franka_robot_state_broadcaster, "
+            "which ros-sim does not run"
+        )
+    return source
+
+
+def arm_torque_candidates_from_controller(cartesian) -> dict[str, np.ndarray]:
+    """``measured`` and ``commanded`` from one CartesianReplayState, N m."""
+
+    if not hasattr(cartesian, "tau_measured_filtered"):
+        raise RuntimeError(
+            "CartesianReplayState has no tau_measured_filtered; rebuild "
+            "franka_forge_cartesian_impedance_msgs and franka_forge_cartesian_impedance"
+        )
+    return {
+        "measured": np.asarray(cartesian.tau_measured_filtered, dtype=float)
+        - np.asarray(cartesian.tau_gravity, dtype=float),
+        "commanded": np.asarray(cartesian.tau_task, dtype=float)
+        + np.asarray(cartesian.tau_nullspace, dtype=float),
+    }
+
+
+def external_joint_torque_message_to_array(message) -> np.ndarray:
+    """The seven FR3 efforts of a broadcaster JointState in ARM_JOINTS order, N m."""
+
+    efforts = dict(zip(message.name, message.effort))
+    if any(name not in efforts for name in ARM_JOINTS):
+        raise RuntimeError("external joint torque message does not contain all FR3 joints")
+    torque = np.array([efforts[name] for name in ARM_JOINTS], dtype=float)
+    if not np.isfinite(torque).all():
+        raise RuntimeError("external joint torque message contains non-finite values")
+    return torque
+
+
+class TorqueLowPass:
+    """First-order low-pass over irregularly timed samples (``time_constant_s`` 0: none)."""
+
+    def __init__(self, time_constant_s: float = ARM_TORQUE_LOWPASS_S) -> None:
+        if not np.isfinite(time_constant_s) or time_constant_s < 0.0:
+            raise ValueError("low-pass time constant must be a non-negative number")
+        self.time_constant_s = float(time_constant_s)
+        self.value: np.ndarray | None = None
+        self._time_s: float | None = None
+
+    def update(self, value, time_s: float) -> np.ndarray:
+        value = np.asarray(value, dtype=float)
+        if self.value is None or self.time_constant_s == 0.0:
+            self.value = value.copy()
+        else:
+            dt = max(float(time_s) - self._time_s, 0.0)
+            alpha = 1.0 - np.exp(-dt / self.time_constant_s)
+            self.value = self.value + alpha * (value - self.value)
+        self._time_s = float(time_s)
+        return self.value.copy()
+
+
+#: How far past either end of the overlaid range the thumb-yaw feedback may
+#: read, as a logical open ratio, before it counts as a fault: 30 register
+#: counts, about 0.037 rad. 20 was too tight: on 2026-10-29 a thumb held at its
+#: yaw limit settled 22.7 counts past it and ended two runs after 20 steps.
+THUMB_FEEDBACK_SLACK_OPEN_RATIO = 0.03
+
 
 def physical_hand_state_to_policy(
     hand_position, hand_velocity, *, thumb_overlay: bool = True
@@ -79,10 +196,18 @@ def physical_hand_state_to_policy(
     logical_ratio = command_overlays.invert_open_ratio_overlay(
         thumb_dof, physical_ratio
     )
-    if not -1.0e-3 <= logical_ratio <= 1.0 + 1.0e-3:
+    # A thumb driven onto the end of its range can settle a few register
+    # counts (1/1000 each) past it: 2026-10-26 the student commanded 1.27 rad
+    # against the RH56's 1.246 rad yaw limit and the feedback overshot the
+    # overlay's zero. That is the limit, not a mapping fault; anything further
+    # out still is.
+    slack = THUMB_FEEDBACK_SLACK_OPEN_RATIO
+    if not -slack <= logical_ratio <= 1.0 + slack:
         raise ValueError(
-            "physical thumb-yaw feedback is outside the overlaid policy range"
+            "physical thumb-yaw feedback is outside the overlaid policy range "
+            f"(logical open ratio {logical_ratio:.4f})"
         )
+    logical_ratio = min(max(logical_ratio, 0.0), 1.0)
     q_policy[0] = kin.open_ratio_to_rad(thumb_dof, logical_ratio)
     travel_scale = 1.0 - command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO
     dq_policy[0] /= travel_scale
@@ -99,6 +224,27 @@ def hand_joint_state_to_arrays(message) -> tuple[np.ndarray, np.ndarray]:
     return (
         np.array([positions[name] for name in HAND_JOINTS], dtype=float),
         np.array([velocities.get(name, 0.0) for name in HAND_JOINTS], dtype=float),
+    )
+
+
+def fingertip_force_message_to_newtons(message) -> tuple[np.ndarray, bool]:
+    """``[thumb, index]`` force in N from either source, and whether it is raw.
+
+    Raw means the driver's untared FORCE_ACT, whose zero moves after a heavy
+    load; the caller subtracts a zero captured with the pads free.
+    """
+
+    efforts = dict(zip(message.name, message.effort))
+    if all(name in efforts for name in FINGERTIP_FORCE_CHANNELS):
+        return np.array([efforts[name] for name in FINGERTIP_FORCE_CHANNELS], dtype=float), False
+    if all(name in efforts for name in RH56_FORCE_CHANNELS):
+        grams = np.array([efforts[name] for name in RH56_FORCE_CHANNELS], dtype=float)
+        return GRAM_FORCE_N * grams, True
+    raise RuntimeError(
+        "fingertip force message has neither "
+        + "/".join(FINGERTIP_FORCE_CHANNELS)
+        + " nor the RH56 channels "
+        + "/".join(RH56_FORCE_CHANNELS)
     )
 
 
@@ -273,20 +419,43 @@ class TrainingHandKinematics:
         )
 
 
+#: How far the homing goal may be shifted from the reset joints to cancel a
+#: steady-state residual, per joint. The 2026-10-26 residual peaked at
+#: 0.056 rad (joint 7); a larger one is a fault, not friction to lean on.
+MAX_HOME_PRECOMPENSATION_RAD = 0.1
+
+
+def next_home_command(command, home_arm, joint_residual) -> np.ndarray:
+    """The next homing goal: the last one shifted against the residual it left.
+
+    ``joint_residual`` is measured minus ``home_arm``. Each retry moves the goal
+    by that amount the other way, so a PD controller held off the reset pose by
+    friction or an unmodelled load comes to rest on it. The total shift from
+    ``home_arm`` is clipped to MAX_HOME_PRECOMPENSATION_RAD per joint.
+    """
+
+    home_arm = np.asarray(home_arm, dtype=float)
+    shifted = np.asarray(command, dtype=float) - np.asarray(joint_residual, dtype=float)
+    offset = np.clip(shifted - home_arm, -MAX_HOME_PRECOMPENSATION_RAD, MAX_HOME_PRECOMPENSATION_RAD)
+    return home_arm + offset
+
+
 def trained_reset_grasp(training_hand, frame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The grasp frame the student was reset to, in the FR3 base frame.
 
     ``(position, quaternion_wxyz, pinch_positions)``: forward kinematics of
-    ``forge_osc.FRANKA_ARM_RESET_JOINTS_M24`` and the threading grasp posture
-    through the training asset, built exactly as the environment builds its
-    grasp frame at reset (world-down approach orthogonalised against
-    thumb->index). This is what the student steers back to in
-    ``return_to_reset`` and what the return gate must be measured against; the
-    pose the arm actually homed to is a measurement of the homing, not the
-    reference (the 2026-10-16 hardware run homed 12.6 mm below it).
+    ``forge_osc.FRANKA_ARM_RESET_JOINTS_M24`` and Isaac's live entry pinch
+    (``forge_osc.ISAAC_ENTRY_PINCH``) through the training asset, built exactly
+    as the environment builds its grasp frame at reset (world-down approach
+    orthogonalised against thumb->index). This is what the student steers back
+    to in ``return_to_reset`` and what the return gate must be measured
+    against; the pose the arm actually homed to is a measurement of the
+    homing, not the reference (the 2026-10-16 hardware run homed 12.6 mm below
+    it). Until 2026-10-26 it used the closed THREADING_GRASP_POSTURE, which
+    sits 3.9 mm / 6.7 deg from where the teacher actually returns.
     """
 
-    pinch = np.array([fo.THREADING_GRASP_POSTURE[name] for name in fo.PINCH_JOINTS])
+    pinch = np.asarray(fo.ISAAC_ENTRY_PINCH, dtype=float)
     flange_position, flange_quaternion, thumb, index = training_hand.frames_in_world(
         fo.FRANKA_ARM_RESET_JOINTS_M24, pinch
     )
@@ -504,12 +673,19 @@ class GripCycleCoordinator:
 
     The physical workcell has no nut-angle topic. While the nut is grasped its
     directional turn is observable as grasp-frame yaw, so that signal drives
-    the same 55-degree transition threshold as the simulator. It is recorded as
-    a proxy and is never promoted to task-success evidence.
+    the same transition threshold as the simulator. It is recorded as a proxy
+    and is never promoted to task-success evidence.
 
     In ros-sim the nut's real twist IS available (``ThreadPairClient``), and
     ``update`` then gates on that instead; the proxy is still advanced and
     recorded alongside it.
+
+    The release fires ``fo.RELEASE_MARGIN_RAD`` (5 deg) before the cycle's turn
+    target. Training aims every turn after the first at the next 60 deg step of
+    the nut's total turn (``fo.next_cycle_target_turn_rad``), which needs that
+    total at the cycle boundary: ros-sim measures it, the proxy cannot (the
+    wrist yaw returns to zero with the hand), so on hardware every cycle keeps
+    the 60 deg target and releases at 55 deg.
     """
 
     def __init__(
@@ -554,6 +730,13 @@ class GripCycleCoordinator:
         self.gated_on_measured_turn = False
         self.proxy_vetoes = 0
         self.last_veto = None
+        self.target_turn_rad = fo.THETA_MAX_RAD
+
+    @property
+    def release_turn_rad(self) -> float:
+        """The turn at which this cycle's release fires."""
+
+        return self.target_turn_rad - fo.RELEASE_MARGIN_RAD
 
     def process_phase(self) -> str:
         if not self.active:
@@ -601,6 +784,7 @@ class GripCycleCoordinator:
         quaternion,
         hand,
         measured_turn_progress=None,
+        measured_total_turn=None,
         fingertip_separation_m=None,
     ) -> tuple[str | None, float]:
         # The proxy is always advanced and recorded, even when it is not what
@@ -631,6 +815,11 @@ class GripCycleCoordinator:
                     self.phase_steps = 0
                     self.wait_steps = 0
                     self._cycle_yaw_origin = self._unwrapped_yaw
+                    self.target_turn_rad = (
+                        fo.THETA_MAX_RAD
+                        if measured_total_turn is None
+                        else fo.next_cycle_target_turn_rad(float(measured_total_turn))
+                    )
                     event = "cycle_completed"
                 else:
                     self.wait_steps += 1
@@ -643,7 +832,7 @@ class GripCycleCoordinator:
             and not self.active
             and not self.failed
             and self.completed_cycles < self.max_cycles
-            and progress >= math.radians(55.0)
+            and progress >= self.release_turn_rad
         ):
             veto = None if self.gated_on_measured_turn else self._proxy_veto(fingertip_separation_m)
             if veto is not None:
@@ -658,7 +847,7 @@ class GripCycleCoordinator:
         return event, progress
 
     def _proxy_veto(self, fingertip_separation_m) -> str | None:
-        """Why the proxy's 55 deg must not be believed this tick, or None."""
+        """Why the proxy's release turn must not be believed this tick, or None."""
 
         if (
             self.min_fingertip_separation_m is not None
@@ -769,6 +958,15 @@ class ThreadPairClient:
             return None
         return fo.THREADING_DIRECTION_SIGN * (twist - reference)
 
+    def total_turn_rad(self):
+        """Turn since the run started, training's sign: the reset puts the nut at 0."""
+
+        with self._lock:
+            twist = self._twist_rad
+        if twist is None:
+            return None
+        return fo.THREADING_DIRECTION_SIGN * twist
+
     def rebase(self) -> None:
         """Start a new cycle's turn count here, as ``rebase_turn_reference`` does."""
 
@@ -832,7 +1030,7 @@ def turn_monitor_values(
     phase input. ``nut_turn_rad`` is the simulated nut's measured turn (None on
     hardware, published as NaN), ``proxy_turn_rad`` the grasp-frame yaw that
     hardware has to use instead, and ``gate_turn_rad`` whichever of the two
-    the coordinator actually compared with 55 deg.
+    the coordinator actually compared with its release turn.
     """
 
     def degrees(value):
@@ -866,6 +1064,17 @@ class LiveSample:
     controller_position_clipped: bool
     controller_orientation_clipped: bool
     sample_time_s: float
+    # A force-observing student's inputs: the arm torque (the low-passed
+    # external-torque estimate on hardware; in ros-sim the law's own task plus
+    # nullspace torque, without the coriolis feed-forward ForgeUltra's OSC does
+    # not have, gravity off as training's asset has it), and the zeroed pad
+    # forces when a force topic is subscribed.
+    arm_joint_torque_nm: np.ndarray | None = None
+    fingertip_force_n: np.ndarray | None = None
+    # Every recorded torque candidate by name (arm_torque_candidates), and the
+    # model gravity the measured one had subtracted.
+    arm_torque_candidates_nm: dict[str, np.ndarray] | None = None
+    arm_torque_gravity_nm: np.ndarray | None = None
 
 
 def _hardware_node_class():
@@ -885,6 +1094,10 @@ def _hardware_node_class():
             max_frame_skew_s,
             use_sim_time=False,
             thumb_overlay=True,
+            fingertip_force_topic=None,
+            arm_torque_source=None,
+            arm_torque_topics=None,
+            arm_torque_lowpass_s=ARM_TORQUE_LOWPASS_S,
         ):
             from control_msgs.msg import JointTrajectoryControllerState
             from diagnostic_msgs.msg import DiagnosticArray
@@ -934,7 +1147,34 @@ def _hardware_node_class():
             self._lock = threading.Lock()
             self._arm = self._hand = None
             self._camera_info = self._cartesian = self._controller_status = None
+            self._fingertip_force = None
             self._receive_time = {}
+            # Subtracted from a raw (driver) force reading; see tare_fingertip_force.
+            self.fingertip_force_zero_n = np.zeros(2)
+            self.fingertip_force_topic = fingertip_force_topic
+            if fingertip_force_topic:
+                self.create_subscription(
+                    JointState,
+                    fingertip_force_topic,
+                    lambda message: self._put("fingertip_force", message),
+                    qos_profile_sensor_data,
+                )
+            # None: a student without force inputs, which records no torques.
+            # Otherwise the broadcaster candidates in arm_torque_topics are
+            # subscribed, and the controller ones come with ~/cartesian_state.
+            self.arm_torque_source = arm_torque_source
+            self.arm_torque_topics = dict(arm_torque_topics or {})
+            self._arm_torques = {name: None for name in self.arm_torque_topics}
+            self._arm_torque_filters = {
+                name: TorqueLowPass(arm_torque_lowpass_s) for name in self.arm_torque_topics
+            }
+            for name, topic in self.arm_torque_topics.items():
+                self.create_subscription(
+                    JointState,
+                    topic,
+                    lambda message, name=name: self._put_arm_torque(name, message),
+                    qos_profile_sensor_data,
+                )
             self.create_subscription(
                 JointTrajectoryControllerState,
                 controller + "/controller_state",
@@ -974,6 +1214,15 @@ def _hardware_node_class():
             with self._lock:
                 setattr(self, "_" + name, message)
                 self._receive_time[name] = self.now_s()
+
+        def _put_arm_torque(self, name, message):
+            # Filter every message, not the 15 Hz samples, so the low-pass sees
+            # the stream's own rate.
+            torque = external_joint_torque_message_to_array(message)
+            received = self.now_s()
+            with self._lock:
+                self._arm_torques[name] = self._arm_torque_filters[name].update(torque, received)
+                self._receive_time["torque_" + name] = received
 
         def _put_rgbd(self, message):
             received = self.now_s()
@@ -1033,6 +1282,8 @@ def _hardware_node_class():
                             self._controller_status,
                         )
                     )
+                    and (not self.fingertip_force_topic or self._fingertip_force is not None)
+                    and all(value is not None for value in self._arm_torques.values())
                 )
 
         def wait_ready(self, timeout_s: float) -> None:
@@ -1059,8 +1310,12 @@ def _hardware_node_class():
                         "cartesian",
                         "hand",
                         "camera_info",
+                        *(("fingertip_force",) if self.fingertip_force_topic else ()),
                     )
                 }
+                messages.update(
+                    {"torque_" + name: value for name, value in self._arm_torques.items()}
+                )
                 receive = dict(self._receive_time)
                 if pair is not None:
                     messages["rgb"], messages["depth"] = pair[:2]
@@ -1073,7 +1328,15 @@ def _hardware_node_class():
                 raise RuntimeError("missing live inputs: " + ", ".join(missing))
             stale = [
                 name
-                for name in ("arm", "cartesian", "hand", "rgb", "depth")
+                for name in (
+                    "arm",
+                    "cartesian",
+                    "hand",
+                    "rgb",
+                    "depth",
+                    *(("fingertip_force",) if self.fingertip_force_topic else ()),
+                    *("torque_" + name for name in self.arm_torque_topics),
+                )
                 if now - receive[name] > self.max_state_age_s
             ]
             if stale:
@@ -1121,6 +1384,21 @@ def _hardware_node_class():
                 ],
                 dtype=float,
             )
+            cartesian = messages["cartesian"]
+            arm_torque_candidates = None
+            arm_joint_torque = None
+            if self.arm_torque_source is not None:
+                arm_torque_candidates = arm_torque_candidates_from_controller(cartesian)
+                for name in self.arm_torque_topics:
+                    arm_torque_candidates[name] = messages["torque_" + name]
+                arm_joint_torque = arm_torque_candidates[self.arm_torque_source]
+            fingertip_force = None
+            if self.fingertip_force_topic:
+                fingertip_force, raw = fingertip_force_message_to_newtons(
+                    messages["fingertip_force"]
+                )
+                if raw:
+                    fingertip_force = fingertip_force - self.fingertip_force_zero_n
             controller_measured_pose = messages["cartesian"].measured
             controller_measured_position = np.array(
                 [
@@ -1156,6 +1434,14 @@ def _hardware_node_class():
                     messages["cartesian"].orientation_clipped
                 ),
                 sample_time_s=now,
+                arm_joint_torque_nm=arm_joint_torque,
+                fingertip_force_n=fingertip_force,
+                arm_torque_candidates_nm=arm_torque_candidates,
+                arm_torque_gravity_nm=(
+                    None
+                    if arm_torque_candidates is None
+                    else np.asarray(cartesian.tau_gravity, dtype=float)
+                ),
             )
             # The grasp frame is rebuilt from these logical hand joints rather
             # than read from TF, so keep the latest ones for _hand_frames.
@@ -1182,6 +1468,33 @@ def _hardware_node_class():
                 "fresh policy inputs did not arrive"
                 + ("" if last_error is None else f": {last_error}")
             )
+
+        def tare_fingertip_force(self, samples: int = 15, timeout_s: float = 5.0) -> np.ndarray | None:
+            """Zero a raw (driver) pad force reading; call with the pads touching nothing.
+
+            Training's sensor reads exactly zero out of contact. The RH56's does
+            not: its zero moves after a heavy load (inspire_hand_driver's
+            driver_node docstring has -11 g before, +219 g after). Returns the
+            zero in N, or None when the source is already projected (ros-sim).
+            """
+
+            readings = []
+            deadline = time.monotonic() + timeout_s
+            last_stamp = None
+            while len(readings) < samples:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("fingertip force did not arrive for the tare")
+                with self._lock:
+                    message = self._fingertip_force
+                if message is not None and _stamp_seconds(message) != last_stamp:
+                    last_stamp = _stamp_seconds(message)
+                    value, raw = fingertip_force_message_to_newtons(message)
+                    if not raw:
+                        return None
+                    readings.append(value)
+                time.sleep(0.01)
+            self.fingertip_force_zero_n = np.mean(readings, axis=0)
+            return self.fingertip_force_zero_n
 
         def controller_status(self) -> dict[str, str]:
             with self._lock:
@@ -1409,6 +1722,27 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
     if np.max(np.abs(home_arm - fo.FRANKA_ARM_RESET_JOINTS_M24)) > args.max_home_delta:
         raise ValueError("home arm pose does not match the policy's M24 reset pose")
 
+    # Only a force-observing student subscribes, so the others run without a
+    # force source. ros-sim's plugin publishes the projected channels; hardware
+    # reads the RH56 driver.
+    fingertip_force_topic = None
+    if runner.config.force_observation == "included":
+        fingertip_force_topic = getattr(args, "fingertip_force_topic", None) or (
+            "/fingertip_force" if sim else "/inspire_hand/grip_force"
+        )
+    arm_torque_source = resolve_arm_torque_source(
+        str(getattr(args, "arm_torque_source", "auto")), sim=sim
+    )
+    arm_torque_topics = {}
+    if runner.config.force_observation == "included":
+        arm_torque_topics = {
+            name: topic
+            for name, topic in FRANKA_TORQUE_TOPICS.items()
+            if name in arm_torque_candidates(sim=sim)
+        }
+    else:
+        arm_torque_source = None
+    arm_torque_lowpass_s = float(getattr(args, "arm_torque_lowpass_s", ARM_TORQUE_LOWPASS_S))
     metadata = runner.metadata()
     run_dir = create_rollout_dir(args.recording_root, "ros_sim" if sim else "hardware")
     collector = RolloutDataCollector(
@@ -1418,9 +1752,18 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "checkpoint_sha256": metadata["sha256"],
             "checkpoint_weight_source": metadata["weight_source"],
             "flow_integration_steps": metadata["integration_steps"],
+            "temporal_ensemble_decay": metadata["temporal_ensemble_decay"],
             "policy_device": metadata["device"],
             "camera_profile": str(calibration.source_path),
             "hand_velocity_observation": runner.config.hand_velocity_observation,
+            "force_observation": runner.config.force_observation,
+            "fingertip_force_topic": fingertip_force_topic,
+            "arm_joint_torque_source": arm_torque_source,
+            "arm_torque_candidates": (
+                None if arm_torque_source is None else list(arm_torque_candidates(sim=sim))
+            ),
+            "arm_torque_topics": arm_torque_topics,
+            "arm_torque_lowpass_s": arm_torque_lowpass_s,
             "collection_mode": (
                 "ros_sim_closed_loop_student" if sim else "physical_closed_loop_student"
             ),
@@ -1436,7 +1779,13 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
     session = PolicyRolloutSession(runner, calibration, collector=collector)
     frame = TrainingFrameAdapter()
 
-    rclpy.init(args=None)
+    # No rclpy signal handlers: with them, Ctrl-C shuts the ROS context down
+    # before the handlers below run, so the abort never reaches the controller
+    # and the recording is never written. Ctrl-C is then a plain
+    # KeyboardInterrupt that the loop catches with ROS still up.
+    from rclpy.signals import SignalHandlerOptions
+
+    rclpy.init(args=None, signal_handler_options=SignalHandlerOptions.NO)
     home_client = CoordinatedReplayClient(
         config, args.hand_topic, args.hand_state_topic, thumb_abduction_overlay=thumb_overlay
     )
@@ -1450,6 +1799,10 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         max_frame_skew_s=args.max_frame_skew,
         use_sim_time=sim,
         thumb_overlay=thumb_overlay,
+        fingertip_force_topic=fingertip_force_topic,
+        arm_torque_source=arm_torque_source,
+        arm_torque_topics=arm_torque_topics,
+        arm_torque_lowpass_s=arm_torque_lowpass_s,
     )
     debug_viz = None
     if getattr(args, "debug_viz", False):
@@ -1519,6 +1872,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             "quaternion_wxyz": [float(v) for v in trained_quaternion],
         }
         max_attempts = max(1, int(getattr(args, "home_attempts", 1)))
+        home_command = np.asarray(home_arm, dtype=float).copy()
         for attempt in range(1, max_attempts + 1):
             z_transport = node.wait_for_grasp_z_transport(args.input_timeout)
             achieved_position, achieved_quaternion, _ = node.wait_for_grasp_pose(
@@ -1537,14 +1891,19 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             )
             if home_residual_m <= args.max_home_grasp_error or attempt == max_attempts:
                 break
-            # Re-command the same pose: the joint controller's final approach
-            # is what leaves the residual, and a second goto from rest closes
-            # most of it. Settle before measuring again.
-            home_client.goto(home_arm)
+            # The joint-impedance homing is a PD law: it settles where its error
+            # torque balances static friction and any gravity the Desk load does
+            # not compensate, and re-sending the same goal from rest lands on
+            # the same spot (2026-10-26: 12.3 mm on all three attempts, joint 7
+            # 0.056 rad short at 12.5 N m/rad). Shift the goal by the residual
+            # instead, so the balance point is the reset pose.
+            home_command = next_home_command(home_command, home_arm, joint_residual)
+            home_client.goto(home_command)
             time.sleep(float(getattr(args, "home_settle_s", 1.0)))
         details["home_grasp_residual_m"] = home_residual_m
         details["home_grasp_residual_deg"] = home_residual_deg
         details["home_joint_residual_rad"] = [float(v) for v in joint_residual]
+        details["home_command_offset_rad"] = [float(v) for v in home_command - home_arm]
         details["achieved_home_grasp_base"] = {
             "position": [float(v) for v in achieved_position],
             "quaternion_wxyz": [float(v) for v in achieved_quaternion],
@@ -1585,11 +1944,15 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 load = details["configured_load"]
                 if load is None:
                     raise Rejected("no FrankaRobotState to check the configured load mass against")
-                if abs(load["load_mass_kg"] - float(expected_mass)) > 0.1:
+                # libfranka compensates the total: Desk may carry the hand as the
+                # end-effector profile or as an extra load, and both are right.
+                if abs(load["total_mass_kg"] - float(expected_mass)) > 0.1:
                     raise Rejected(
-                        f"Franka Desk load mass is {load['load_mass_kg']:.3f} kg, expected "
-                        f"{float(expected_mass):.3f} kg (--expected-load-mass-kg): configure "
-                        "the hand's mass and centre of mass in Desk before running the policy"
+                        f"Franka Desk mass beyond the flange is {load['total_mass_kg']:.3f} kg "
+                        f"(end effector {load['end_effector_mass_kg']:.3f} + load "
+                        f"{load['load_mass_kg']:.3f}), expected {float(expected_mass):.3f} kg "
+                        "(--expected-load-mass-kg): configure the hand's mass and centre of "
+                        "mass in Desk before running the policy"
                     )
         arm_client.ensure_active(print)
         parameters = arm_client.controller_parameters()
@@ -1691,6 +2054,8 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 process_phase=(
                     "policy" if runner.config.cyclic_process_phase_conditioning else None
                 ),
+                fingertip_force_n=sample.fingertip_force_n,
+                arm_joint_torque_nm=sample.arm_joint_torque_nm,
             )
             # The gate has to measure the tick the loop will actually run, not a
             # cheaper one: --debug-viz renders and publishes inside the loop, so
@@ -1748,10 +2113,44 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 args.hand_tolerance,
                 lambda: node.publish_hand_target(RELEASE_START_PINCH),
             )
+            if fingertip_force_topic:
+                # Open, the pads touch nothing: the one moment training's zero holds.
+                zero = node.tare_fingertip_force()
+                details["fingertip_force_zero_n"] = None if zero is None else zero.tolist()
+                if zero is not None:
+                    print(
+                        f"fingertip force zero (thumb, index): {np.array2string(zero, precision=3)} N",
+                        flush=True,
+                    )
+            if arm_torque_source is not None:
+                # At rest and touching nothing, training's reading is zero; what
+                # each candidate shows here is its bias (payload/model error). It
+                # is logged, not subtracted: training sees no such tare.
+                from .observation import FR3_ARM_EFFORT_LIMITS_NM
+
+                rest = node.wait_for_fresh_sample(args.input_timeout).arm_torque_candidates_nm
+                details["arm_torque_at_rest_nm"] = {
+                    name: value.tolist() for name, value in rest.items()
+                }
+                limits = np.asarray(FR3_ARM_EFFORT_LIMITS_NM)
+                for name, value in rest.items():
+                    print(
+                        f"{name} torque at rest, normalized"
+                        f"{' (policy input)' if name == arm_torque_source else ''}: "
+                        + np.array2string(value / limits, precision=3),
+                        flush=True,
+                    )
             node.publish_hand_target(trained_hand)
             print(
                 "hand start: opened to the release posture, grasp commanded; the first "
                 "policy sample sees it closing",
+                flush=True,
+            )
+        elif fingertip_force_topic and not sim:
+            print(
+                "WARNING: --hand-start grasp leaves the RH56 pad forces untared (the "
+                "hand never opens before the first sample); their drifting zero goes "
+                "straight into the policy",
                 flush=True,
             )
 
@@ -1768,10 +2167,30 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             f"{1.0e3 * float(np.linalg.norm(sample.controller_measured_position - grasp_position)):.1f} mm",
             flush=True,
         )
-        # Match the reset contract used by training and the MuJoCo rollout.
-        # Pose-derived seeding here made the last nine proprioception values
-        # strongly out of distribution before the first physical command.
-        session.reset(previous_filtered_native_action=np.zeros(9), seed=args.seed)
+        # Isaac's reset seeds prev_actions from the live pose (ForgeTg2Env._reset_idx),
+        # and the dataset builder takes each sample's previous action from the
+        # EMA-filtered stream that starts there, so training's episodes open with
+        # it -- native z about 3.3 at the entry grasp, not 0. Zeros (the start
+        # before 2026-10-26, matched to an earlier dataset) is kept for comparison.
+        prev_action_seed = str(getattr(args, "prev_action_seed", "pose"))
+        details["prev_action_seed"] = prev_action_seed
+        if prev_action_seed == "pose":
+            world_position, world_quaternion = frame.pose_base_to_world(
+                grasp_position, grasp_quaternion
+            )
+            first_previous_action = seed_action_history(
+                fo.GraspFrameState(
+                    world_position, world_quaternion, np.zeros(3), np.zeros(3), np.zeros((6, 7))
+                )
+            )
+        else:
+            first_previous_action = np.zeros(9)
+        print(
+            f"cycle-1 previous action ({prev_action_seed}): "
+            f"{np.array2string(first_previous_action, precision=3)}",
+            flush=True,
+        )
+        session.reset(previous_filtered_native_action=first_previous_action, seed=args.seed)
         coordinator = GripCycleCoordinator(
             rate_hz=args.rate,
             max_cycles=args.cycles,
@@ -1871,6 +2290,13 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 ),
                 "proxy_turn_rad": [coordinator.last_proxy_turn_rad],
             }
+            if fingertip_force_topic:
+                extras["fingertip_force_n"] = sample.fingertip_force_n
+                extras["arm_joint_torque_nm"] = sample.arm_joint_torque_nm
+            if sample.arm_torque_candidates_nm is not None:
+                for name, value in sample.arm_torque_candidates_nm.items():
+                    extras[f"arm_torque_{name}_nm"] = value
+                extras["arm_torque_gravity_nm"] = sample.arm_torque_gravity_nm
             phase = coordinator.process_phase()
             progress = min(
                 1.0,
@@ -1892,6 +2318,8 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                     phase if runner.config.cyclic_process_phase_conditioning else None
                 ),
                 sample_time_s=tick_started,
+                fingertip_force_n=sample.fingertip_force_n,
+                arm_joint_torque_nm=sample.arm_joint_torque_nm,
                 task_signals={
                     "completed_cycles": coordinator.completed_cycles,
                     "watchdog_stop": False,
@@ -1937,6 +2365,9 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 quaternion=grasp_quaternion,
                 hand=q_hand,
                 measured_turn_progress=nut_turn,
+                measured_total_turn=(
+                    None if thread_pair is None else thread_pair.total_turn_rad()
+                ),
                 fingertip_separation_m=tip_separation_m,
             )
             # Live view of the turn the release gates on (the policy's only
@@ -1957,7 +2388,8 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 print(
                     f"t={tick_started - start:6.2f}s step {steps:4d} {phase:16s} "
                     f"nut {nut_deg:7.1f} deg  proxy {proxy_deg:7.1f} deg  "
-                    f"gate {math.degrees(turn_progress):7.1f}/55 deg  "
+                    f"gate {math.degrees(turn_progress):7.1f}/"
+                    f"{math.degrees(coordinator.release_turn_rad):.1f} deg  "
                     f"tips {separation_mm:5.1f} mm  index {index_rad:.2f} rad",
                     flush=True,
                 )
@@ -1972,7 +2404,12 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 print(
                     f"policy event: {event}; cycles={coordinator.completed_cycles}, "
                     f"{source}={math.degrees(turn_progress):.1f} deg "
-                    f"(proxy={math.degrees(coordinator.last_proxy_turn_rad):.1f} deg)",
+                    f"(proxy={math.degrees(coordinator.last_proxy_turn_rad):.1f} deg)"
+                    + (
+                        f"; next release at {math.degrees(coordinator.release_turn_rad):.1f} deg"
+                        if event == "cycle_completed"
+                        else ""
+                    ),
                     flush=True,
                 )
             if thread_pair is not None and event is not None:
@@ -1996,8 +2433,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                             np.zeros(3),
                             np.zeros(3),
                             np.zeros((6, 7)),
-                        ),
-                        q_hand,
+                        )
                     )
                 )
             if coordinator.failed:
@@ -2031,17 +2467,17 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
         raise
     finally:
         # Stop accepting live policy motion before tearing down the ROS graph.
-        # The controller ramps its phase clock to zero and then holds.
-        node.abort()
-        time.sleep(0.6)
-        artifact = collector.close() if collector.sample_count else None
-        setup_executor.shutdown()
-        executor.shutdown()
-        setup_thread.join(timeout=5.0)
-        spin_thread.join(timeout=5.0)
-        for item in (node, arm_client, home_client):
-            item.destroy_node()
-        rclpy.shutdown()
+        # The controller ramps its phase clock to zero and then holds. Every
+        # step is guarded, and a second Ctrl-C only skips the wait: the
+        # recording and the report must survive any of them failing.
+        _shutdown_step("abort", node.abort)
+        _shutdown_step("abort ramp", lambda: time.sleep(0.6))
+        artifact = None
+        if collector.sample_count:
+            try:
+                artifact = collector.close()
+            except Exception as exc:  # keep the report even if the data fails
+                error = error or f"recording failed: {type(exc).__name__}: {exc}"
         report = _rollout_report(
             status=status,
             error=error,
@@ -2058,7 +2494,23 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             **details,
         )
         (run_dir / "report.json").write_text(json.dumps(report, indent=2))
+        _shutdown_step("setup executor", setup_executor.shutdown)
+        _shutdown_step("executor", executor.shutdown)
+        setup_thread.join(timeout=5.0)
+        spin_thread.join(timeout=5.0)
+        for item in (node, arm_client, home_client):
+            _shutdown_step("destroy node", item.destroy_node)
+        _shutdown_step("rclpy", rclpy.shutdown)
     return report
+
+
+def _shutdown_step(name: str, action) -> None:
+    """Run one teardown action, reporting instead of raising (Ctrl-C included)."""
+
+    try:
+        action()
+    except (Exception, KeyboardInterrupt) as exc:
+        print(f"warning: shutdown step {name!r} failed: {type(exc).__name__}: {exc}", flush=True)
 
 
 def _configured_load(arm_client, timeout_s: float, log) -> dict | None:
@@ -2140,6 +2592,7 @@ def _rollout_report(
 
 __all__ = [
     "HardwareReadiness",
+    "MAX_HOME_PRECOMPENSATION_RAD",
     "RgbdFrameSynchronizer",
     "TrainingFrameAdapter",
     "assess_hardware_readiness",
@@ -2154,6 +2607,7 @@ __all__ = [
     "POLICY_TOOL_OFFSET_XYZ",
     "TrainingHandKinematics",
     "RELEASE_START_PINCH",
+    "next_home_command",
     "trained_reset_grasp",
     "policy_goal_base",
     "policy_tool_offset_config",

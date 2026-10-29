@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the distilled DP3 policy on either hardware or MuJoCo."""
+"""Run the distilled vision policy on hardware, ros-sim or MuJoCo."""
 
 from __future__ import annotations
 
@@ -17,14 +17,10 @@ import numpy as np
 
 APP_ROOT = Path(__file__).resolve().parent
 WORKSPACE_ROOT = APP_ROOT.parents[1]
-DEFAULT_CHECKPOINT = (
-    APP_ROOT
-    / "checkpoints/fr3_offline_flow_matching_parallel_vision_13102026"
-    / "m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013-135143-648368"
-    / "nn/checkpoint.pt"
-)
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
+
+from policy_rollout import DEFAULT_CHECKPOINT  # noqa: E402
 
 
 def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
@@ -70,9 +66,29 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
             "with on CUDA, 2 on CPU so the 15 Hz period still fits)."
         ),
     )
+    parser.add_argument(
+        "--temporal-ensemble-decay",
+        type=float,
+        default=0.5,
+        help=(
+            "weight of a chunk proposal per policy tick of age when overlapping chunks "
+            "are blended (default 0.5, Isaac's evaluate_flow default; 0 executes only "
+            "the newest chunk's first action)"
+        ),
+    )
     parser.add_argument("--cycles", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=1500)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--prev-action-seed",
+        choices=["pose", "zeros"],
+        default="pose",
+        help=(
+            "cycle 1's previous-action input: 'pose' (default) encodes the live grasp "
+            "frame and wrist angles like Isaac's reset, which is how training's episodes "
+            "start; 'zeros' is the start used before 2026-10-26."
+        ),
+    )
     parser.add_argument("--yes", "-y", action="store_true")
     parser.add_argument("--recording-root", default="logs/policy_rollout")
     parser.set_defaults(sim=sim)
@@ -98,6 +114,38 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     )
     parser.add_argument("--hand-topic", default="/inspire_hand/command")
     parser.add_argument("--hand-state-topic", default="/inspire_hand/joint_states")
+    parser.add_argument(
+        "--fingertip-force-topic",
+        default=None,
+        help=(
+            "pad forces for a force-observing student (default: /fingertip_force, "
+            "inspire_franka_sim's projected channels in N, in ros-sim; the RH56 "
+            "driver's /inspire_hand/grip_force in grams, zeroed at the release "
+            "posture, on hardware)"
+        ),
+    )
+    parser.add_argument(
+        "--arm-torque-source",
+        choices=["auto", "external", "measured", "desired", "commanded"],
+        default="auto",
+        help=(
+            "which arm torque a force-observing student sees; every candidate the "
+            "backend has is recorded either way (arm_torque_<name>_nm). 'external': "
+            "libfranka's tau_ext_hat_filtered; 'measured': tau_J minus the model's "
+            "gravity; 'desired': tau_J_d; 'commanded': the controller's tau_task + "
+            "tau_nullspace. 'auto' (default) is external on hardware and commanded in "
+            "ros-sim, which has measured and commanded only"
+        ),
+    )
+    parser.add_argument(
+        "--arm-torque-lowpass-s",
+        type=float,
+        default=0.02,
+        help=(
+            "first-order low-pass time constant on the broadcaster torques (default "
+            "0.02 s; 0 off); the controller's measured_torque_lowpass_s filters tau_J"
+        ),
+    )
     parser.add_argument("--hand-timeout", type=float, default=20.0)
     parser.add_argument("--hand-tolerance", type=float, default=0.08)
     parser.add_argument("--input-timeout", type=float, default=15.0)
@@ -143,8 +191,9 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "refuse to run unless the load configured in Franka Desk (FrankaRobotState "
-            "inertia_load) is within 0.1 kg of this; without it the mass is only logged."
+            "refuse to run unless the mass Franka Desk configures beyond the flange "
+            "(FrankaRobotState inertia_total: end effector plus load) is within 0.1 kg "
+            "of this; without it the mass is only logged."
         ),
     )
     parser.add_argument(
@@ -178,7 +227,7 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         "--debug-viz",
         action="store_true",
         help=(
-            "publish the DP3 cloud, control frames and camera-view overlay "
+            "publish the policy's point cloud, control frames and camera-view overlay "
             "(/fr3_policy_rollout/dp3_overlay, for rqt_image_view). Its cost is "
             "inside the policy period, so the preflight gate measures it too."
         ),
@@ -337,6 +386,7 @@ def _run_hardware(argv, sim: bool = False) -> int:
         args.checkpoint,
         device=args.device,
         integration_steps=args.integration_steps,
+        temporal_ensemble_decay=args.temporal_ensemble_decay,
     )
     calibration.assert_checkpoint_compatible(runner.config.to_dict())
     warm_up_s = _warm_up_runner(runner, calibration, args.seed)

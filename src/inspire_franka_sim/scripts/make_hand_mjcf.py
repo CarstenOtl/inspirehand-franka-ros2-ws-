@@ -227,6 +227,11 @@ ISAAC_JOINT_FRICTION = {
 #: robot.py _HAND_VELOCITY_LIMITS (the official URDF's <limit velocity>), rad/s.
 ISAAC_VELOCITY_LIMIT = 1.0
 
+#: The training URDF's <material> colour (assets/fr3_inspirehand/urdf/
+#: inspirehand_right.urdf: rgba 1 1 1 1 on every link). The policy sees the
+#: hand in its camera, so the rehearsal scene renders it the same white.
+ISAAC_HAND_RGBA = (1.0, 1.0, 1.0, 1.0)
+
 
 #: The hand-written flange wrapper (tool sites, adapter frame); the Isaac variant
 #: is the same file pointed at the Isaac hand, so the two cannot drift apart.
@@ -309,6 +314,8 @@ def build(spec, side: str, isaac: bool = False) -> None:
         if geom.contype != 0 or geom.conaffinity != 0:
             geom.group = 3
             geom.friction = list(CONTACT_FRICTION)
+        if isaac:
+            geom.rgba = list(ISAAC_HAND_RGBA)
 
     # Restore the parent/child contact filter by hand.
     #

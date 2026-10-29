@@ -1,4 +1,4 @@
-# FR3 DP3 policy rollout
+# FR3 student policy rollout
 
 This app runs the distilled threading policy through one launcher and three
 backends:
@@ -8,13 +8,160 @@ backends:
 - `mujoco`: the closed-loop MuJoCo threading scene.
 
 The policy runtime is independent of Isaac Lab. It implements the checkpoint's
-RGB point-cloud DP3 encoder, native-OSC proprioception, conditional-flow
-action sampling, action filtering, and cyclic process-phase conditioning.
-Proprioception is `q10 + dq + the previous action`, so it is 29 values wide for
-a checkpoint shown the three hand velocities and 26 for one trained without
-them; the checkpoint's own `hand_velocity_observation` picks the layout and the
-runner refuses a checkpoint whose width disagrees with it. The
-Flow Matching runtime is vendored under `third_party/flow_matching`.
+vision head (the RGB point-cloud DP3 encoder, or the two-channel RGB-D
+encoder), native-OSC proprioception, conditional-flow action sampling, action
+filtering, and cyclic process-phase conditioning. The checkpoint's own
+`vision_encoder_config` picks the head. Proprioception is
+`q10 + dq + the previous action`, so it is 29 values wide for a checkpoint
+shown the three hand velocities and 26 for one trained without them; the
+checkpoint's own `hand_velocity_observation` picks the layout and the runner
+refuses a checkpoint whose width disagrees with it. The Flow Matching runtime
+is vendored under `third_party/flow_matching`.
+
+Every backend and diagnostic tool defaults to `policy_rollout.DEFAULT_CHECKPOINT`;
+pass `--checkpoint` to run another.
+
+## The deployed checkpoint
+
+`checkpoints/m24-dp3-nominal-da-force-nohv-s0-20261029-113811-885629/nn/checkpoint.pt`
+(2026-10-29, epoch 100, EMA weights; details in `checkpoints/README.md`). DP3
+point-cloud vision, no hand velocities, and force inputs: proprioception is
+35-D, `q10 + arm dq7 + previous action + [thumb, index] pad force / 20 N +
+seven FR3 torques / [87, 87, 87, 87, 12, 12, 12] N m` clipped to 1. Its
+training scene is threading_v2's table in front of the robot (forgeUltra
+35373e0), which both simulators now reproduce.
+
+Where the force inputs come from:
+
+| backend | pad force | arm torque (default) |
+|---|---|---|
+| `mujoco` | contact forces on the pad links, projected like ForgeUltra | applied actuator torque |
+| `ros-sim` | `/fingertip_force` (`FingertipForcePlugin`) | controller `tau_task + tau_nullspace` |
+| `hardware` | RH56 `/inspire_hand/grip_force`, grams to N, zeroed with the hand open | `tau_ext_hat_filtered`, low-passed 0.02 s |
+
+Training's torque is PhysX's projected joint-reaction torque with the robot's
+gravity off. Which FR3 signal matches it best is still being measured, so the
+runner records every candidate on every step, and `--arm-torque-source` picks
+the one the policy sees:
+
+| candidate | source | contains |
+|---|---|---|
+| `external` | `/franka_robot_state_broadcaster/external_joint_torques` | libfranka's estimate: `tau_J` minus the model's gravity and dynamics |
+| `measured` | `~/cartesian_state` `tau_measured_filtered - tau_gravity` | `tau_J` minus the model's gravity, so it keeps the motion torques PhysX's transmitted torque also has |
+| `desired` | `/franka_robot_state_broadcaster/desired_joint_states` | libfranka's `tau_J_d`, the command without gravity |
+| `commanded` | `~/cartesian_state` `tau_task + tau_nullspace` | the law's own torque, without the coriolis feed-forward |
+
+ros-sim has `measured` (MuJoCo's applied actuator torque, gravity off) and
+`commanded` only. The recordings hold them as `arm_torque_<name>_nm`, plus
+`arm_torque_gravity_nm`. The controller low-passes `tau_J` at 1 kHz
+(`measured_torque_lowpass_s`, 0.02 s), and the runner low-passes the
+broadcaster topics with the same time constant (`--arm-torque-lowpass-s`).
+`measured` needs the rebuilt `franka_forge_cartesian_impedance(_msgs)`.
+
+`external`, `measured` and `desired` depend on the end-effector mass configured
+in Desk, so run hardware with `--expected-load-mass-kg`. With the hand open at
+the start, the runner prints every candidate at rest, and records them as
+`arm_torque_at_rest_nm` in `report.json`. Training reads zero there, so a large
+value is a payload or model error. Compare runs, and optionally a training
+episode with force columns:
+
+```bash
+python3 apps/policy_rollout/utils/compare_torque_candidates.py \
+  logs/policy_rollout/hardware-<stamp> [...] [--reference EPISODE.npz]
+```
+
+To see what the DP3 encoder got in a recorded run (`--record-rgbd`), next to
+where training's nut sits in the same camera view and, through the
+calibration, in the base frame:
+
+```bash
+python3 apps/policy_rollout/utils/render_policy_view.py logs/policy_rollout/hardware-<stamp> --times 0,4,10
+```
+
+## The 2026-10-25 RGB-D student (history)
+
+`checkpoints/fr3_offline_flow_matching_force_obs_25102026/nn/checkpoint.pt`
+(2026-10-25, epoch 100, EMA weights). It was distilled from the force-observation
+teacher on twenty 10-cycle sequential-threading episodes
+(`sequential-threading-dual-supervision-20261025-100347-893694`). Isaac's
+closed-loop check completed all 10 cycles in 15 of 16 environments.
+
+- **No force or torque input.** The *teacher* observes the two fingertip pad
+  forces and the seven FR3 joint torques. ForgeUltra has not yet added them to
+  the student vectors (`docs/distillation_observation_action_reference.md`
+  there), and the weights confirm it: proprioception is 29-D
+  (`q10 + dq10 + previous action`) and the condition is 128 proprio + 64 vision
+  features. The rollout therefore reads no force or torque signal.
+- **Vision: the two-channel RGB-D encoder** (`policy_rollout/rgbd_encoder.py`),
+  not DP3. ResNet-18 stems on RGB (ImageNet-normalised) and on log depth plus
+  validity, RGB<->depth cross-attention, and a learned pooling query. It sees
+  the whole 320x180 view, not a cropped point cloud, so the rendered or real
+  background now reaches the policy. Same camera matrix and crop as before.
+  The trunk is rebuilt without torchvision. On the checkpoint's own weights it
+  matches ForgeUltra's implementation to 4e-7.
+- **Hand velocities are inputs again** (29-D, `hand_velocity_observation:
+  included`). The previous 26-D checkpoint left them out.
+- **Release rule.** Each cycle aims at the next 60 deg step of the nut's total
+  turn and releases 5 deg before it, which is 55 deg on the first cycle
+  (`forge_osc.next_cycle_target_turn_rad`, from ForgeUltra 304d4d9). ros-sim
+  measures the total turn; hardware's grasp-yaw proxy cannot, so hardware
+  keeps 55 deg for every cycle.
+- **Cost.** On the laptop CPU with 2 flow steps, almost all of it the encoder:
+  47 ms per action in `tests/benchmark_policy_inference.py`, and 85-120 ms of
+  wall time in the live preflight with the simulator sharing the CPU. That
+  does not fit the 60 ms preflight at 15 Hz in real time, so on CPU run ros-sim
+  at `sim_speed:=0.4`. GPU cost is not measured yet (the host's NVIDIA driver
+  was down on 2026-10-25).
+
+First ros-sim runs (2026-10-25, CPU, `sim_speed:=0.4`, seed 0): the student
+closes the index on the nut, turns it 56-60 deg and releases. Earlier students
+never turned the nut in ros-sim. It then returns to a pose 7.5-8 mm / 7-8 deg
+from the trained reset grasp, outside the 5 mm / 5 deg gate, and the run ends
+`return_failed` after the 16 s timeout. The arm tracks its goal to 1-3 mm; the
+goal itself is off. The MuJoCo-only backend shows the same: 11.3 mm / 6.5 deg.
+
+2026-10-26 follow-up. The thumb was not the problem. Isaac's cyclic teacher
+returns to the pinch it captured live at threading entry, not to the closed
+grasp posture. Its own return command (unified pinch -0.091 / -0.083 / 0 in
+the training episode) puts that entry pinch at about
+`forge_osc.ISAAC_ENTRY_PINCH` = [1.072, 0.025, 0.215], and the student returns
+the hand there. The return gate and the homing now use that pinch. The
+student's position and rotation command is still off, by the same amount in
+every run: 9.3-9.5 mm (-6 mm x, -7 mm z in the base frame) from the teacher's
+return goal. The controller tracks it to 1-3 mm / 1-2 deg. Our bolt frame
+and decoder reproduce the teacher's entry pose to 0.4 mm / 0.8 deg, so the
+offset is in the student's raw output. Offline input swaps leave it unchanged
+for arm joints, joint velocities, hand joints, progress and an earlier camera
+frame; only the previous-action input moves it, closing about half the gap.
+
+That input also started wrong. Isaac's reset seeds `prev_actions` from the
+live pose: the grasp relative to the bolt tip over the 5 cm bounds (native z
+about 3.3 at the entry grasp), the wrist angles, and a pinch of 0. The dataset
+builder takes each sample's previous action from the filtered stream that
+starts there, so every training episode opens with that seed. The rollout
+started cycle 1 from zeros, and seeded the pinch from the live hand at cycle
+boundaries. Both now follow Isaac (`seed_action_history`);
+`--prev-action-seed zeros` restores the old cycle-1 start for comparison.
+
+The camera, measured on a training episode
+(`checkpoints/reference_episode/`, copied from the training machine). Isaac's
+return is a 15-tick ramp and an 8-tick hold at the entry command. On Isaac's
+own hold inputs the student holds the teacher's command (x -0.176 vs -0.177);
+on ros-sim's it holds -0.144. Swapping one input at a time puts about 60 % of
+that on the camera frame and 40 % on the previous action, which feeds the
+student's own output back in; joints, velocities and progress move it by
+nothing. The ros-sim scene did not look like the training scene:
+forgeUltra's cyclic-threading environment (threading_v2) slides the bench
+under the FR3 base, so the bolt stands 6 cm inside its far edge with floor
+beyond, and renders it walnut on light metal legs; the hand is the training
+URDF's white; and the camera clips depth at (0.01, 5.0) m, writing zero
+beyond. `make_ros_sim_scene.py`, `make_hand_mjcf.py --isaac` and
+`prepare_rgbd` now do the same. Rendered offline at the failed return, those
+changes move the held command from -0.145 to -0.156. The rest of the image
+effect is training's visual randomization (HDRI lighting, random table, floor
+and nut/bolt textures, image backgrounds beyond 1.5 m), which a fixed scene
+cannot match. The depth clip applies on hardware too: training never saw a
+valid depth beyond 5 m.
 
 ## Run on hardware
 
@@ -77,8 +224,9 @@ Nothing else in this app changes between the two variants. Outside Docker,
 `requirements-cpu.txt` and `requirements-gpu.txt` install the matching torch.
 
 Measured on the development laptop (i7-12700H, RTX 3060 Laptop 6 GB) with
-`tests/benchmark_policy_inference.py`, on the deployed 26-D checkpoint with
-320x180 frames, on 2026-10-15:
+`tests/benchmark_policy_inference.py`, on the then-deployed 26-D DP3 checkpoint
+with 320x180 frames, on 2026-10-15 (the RGB-D student's encoder is much
+heavier; see "The deployed checkpoint"):
 
 | flow steps | CUDA mean / max | CPU mean / max |
 |---|---|---|
@@ -160,6 +308,16 @@ policy commands, mock hand driver and `/camera/camera/rgbd`.
 ```bash
 ros2 launch inspire_franka_trajectory_replay sim_policy.launch.py
 python3 apps/policy_rollout/run_policy_rollout.py ros-sim --yes
+```
+
+Without a GPU the RGB-D student needs a slower simulator so that its CPU pass
+(85-120 ms of wall time next to the simulator) fits the 15 Hz period in
+simulated time. Headless:
+
+```bash
+ros2 launch inspire_franka_trajectory_replay sim_policy.launch.py \
+  headless:=true camera_view:=false sim_speed:=0.4
+python3 apps/policy_rollout/run_policy_rollout.py ros-sim --yes --record-rgbd
 ```
 
 The launch opens two windows. One is the MuJoCo viewer, which starts on a free
@@ -302,11 +460,13 @@ status in that document.
 
 ## Camera contract
 
-DP3 consumes aligned colour/depth at 320x180. The profile crops the live
-640x480 stream to the training view and checks the live `CameraInfo` against
-the checkpoint intrinsics. Depth may be `16UC1`
-millimetres or `32FC1` metres. Non-positive and invalid values are excluded by
-the DP3 valid mask.
+Both vision heads consume aligned colour/depth at 320x180. The profile crops
+the live 640x480 stream to the training view and checks the live `CameraInfo`
+against the checkpoint intrinsics. Depth may be `16UC1`
+millimetres or `32FC1` metres. Non-finite values and depths outside the
+training camera's clipping range, (0.01, 5.0) m, are excluded by the valid
+mask, as Isaac zeroed them; the RGB-D encoder also feeds that mask to the
+network as a channel.
 
 No depth post-processing is enabled: the driver's spatial, temporal,
 hole-filling and decimation filters are all off by default and none of the

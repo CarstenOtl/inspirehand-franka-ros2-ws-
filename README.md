@@ -405,6 +405,17 @@ ros2 launch realsense2_camera rs_launch.py \
   enable_sync:=true align_depth.enable:=true enable_rgbd:=true
 ```
 
+Every ROS process in the container must use the Fast DDS profile
+`docker/fastdds_large_shm.xml`; `docker-compose.yml` sets
+`FASTRTPS_DEFAULT_PROFILES_FILE` to it. With Fast DDS's default transports
+the driver publishes 29.8 Hz but other processes receive only 7-12 Hz, with
+gaps of up to a second (longer than the policy's 0.5 s freshness limit),
+because each 1-2 MB image is fragmented between processes. The profile's
+64 MB shared-memory segment carries each image whole: 29.5 Hz received, no gap
+over one frame. A container created before this setting needs recreating
+(`docker compose up -d --force-recreate`), and a process started without the
+variable receives nothing from one started with it.
+
 It runs as `/camera/camera` and publishes, among others:
 
 ```text

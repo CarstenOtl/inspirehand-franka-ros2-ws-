@@ -1,4 +1,4 @@
-"""Single source of truth for the DP3 camera and RGB-D input conversion."""
+"""Single source of truth for the policy camera and RGB-D input conversion."""
 
 from __future__ import annotations
 
@@ -9,6 +9,16 @@ from typing import Any
 
 import numpy as np
 import yaml
+
+
+# Vision heads whose input is this profile's policy view: the DP3 point cloud,
+# and the two-channel RGB-D encoder (rgbd_custom_encoder is its older name).
+# Kept here rather than imported, so the camera preflight needs no torch.
+CAMERA_ENCODER_TYPES = (
+    "rgb_pointcloud_dp3_encoder",
+    "two_channel_rgbd_encoder",
+    "rgbd_custom_encoder",
+)
 
 
 def _tuple(values: Any, width: int, label: str) -> tuple[float, ...]:
@@ -275,8 +285,11 @@ class CameraCalibrationProfile:
             raise ValueError("rollout requires a vision checkpoint")
         vision = checkpoint_config.get("vision_encoder_config") or {}
         encoder = vision.get("encoder", {})
-        if encoder.get("type") != "rgb_pointcloud_dp3_encoder":
-            raise ValueError("rollout requires the RGB point-cloud DP3 encoder")
+        encoder_type = encoder.get("type")
+        if encoder_type not in CAMERA_ENCODER_TYPES:
+            raise ValueError(
+                f"rollout has no camera contract for vision encoder {encoder_type!r}"
+            )
         input_config = vision.get("input", {})
         expected_shape = self.policy_shape
         if tuple(input_config.get("image_shape", ())) != expected_shape:
@@ -290,6 +303,9 @@ class CameraCalibrationProfile:
             raise ValueError(
                 "checkpoint camera matrix does not match calibration profile"
             )
+        if encoder_type != "rgb_pointcloud_dp3_encoder":
+            # The RGB-D head sees the whole policy view; it has no crop box.
+            return
         point_cloud = encoder.get("point_cloud", {})
         for key in (
             "crop_min_m",
@@ -431,6 +447,14 @@ def load_camera_calibration(path: str | Path | None = None) -> CameraCalibration
     )
 
 
+#: The training camera's clipping range, metres: forgeUltra's
+#: make_pinhole_camera_cfg (assets/cameras/head_camera/calibration.py) with
+#: depth_clipping_behavior="zero", so no training frame ever held a valid depth
+#: outside it. MuJoCo's floor and the real D415 do report farther surfaces;
+#: they are invalid here, as they were in training.
+TRAINING_DEPTH_RANGE_M = (0.01, 5.0)
+
+
 def _nearest_resize(image: np.ndarray, height: int, width: int) -> np.ndarray:
     source_height, source_width = image.shape[:2]
     rows = np.minimum(
@@ -485,7 +509,8 @@ def prepare_rgbd(
         depth_m = depth.astype(np.float32)
     else:
         raise ValueError("depth_units must be 'metres' or 'millimetres'")
-    valid = np.isfinite(depth_m) & (depth_m > 0.0)
+    near, far = TRAINING_DEPTH_RANGE_M
+    valid = np.isfinite(depth_m) & (depth_m >= near) & (depth_m <= far)
     depth_m = np.where(valid, depth_m, 0.0).astype(np.float32, copy=False)
     return PreparedRgbd(
         rgb=np.ascontiguousarray(rgb_float.transpose(2, 0, 1)),
@@ -500,6 +525,7 @@ __all__ = [
     "CameraPose",
     "CropRectangle",
     "PreparedRgbd",
+    "TRAINING_DEPTH_RANGE_M",
     "default_profile_path",
     "load_camera_calibration",
     "prepare_rgbd",

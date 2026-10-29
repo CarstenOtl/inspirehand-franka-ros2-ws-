@@ -20,6 +20,10 @@
 # training hand: follower targets from leader targets, the 1 rad/s joint
 # velocity limit and PhysX joint friction (configured by the scene's
 # isaac_hand/* custom fields).
+#
+# fingertip_force publishes the pad forces a force-observing student sees, on
+# /fingertip_force, which the runner reads in place of the RH56 driver's
+# ~/grip_force.
 /**:
   ros__parameters:
     mujoco_plugins:
@@ -27,6 +31,8 @@
         type: inspire_franka_sim/ThreadPairPlugin
       isaac_hand:
         type: inspire_franka_sim/IsaacHandPlugin
+      fingertip_force:
+        type: inspire_franka_sim/FingertipForcePlugin
 
 controller_manager:
   ros__parameters:

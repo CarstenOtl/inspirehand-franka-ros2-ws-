@@ -1,14 +1,17 @@
 """Build the ForgeUltra FR3 threading scene in MuJoCo from the replay MJCF.
 
 The workspace's ``fr3_inspirehand_replay.xml`` was authored for the
-pre-2026-09-09 Isaac scene and for kinematic nut replay. Two corrections make
-it match the scene that produced the student's training data:
+pre-2026-09-09 Isaac scene and for kinematic nut replay. Three corrections
+make it match the scene that produced the student's training data:
 
 - the FR3 base plate sits on the tabletop at world z = 0 (the MJCF keeps it
   0.333 m lower);
 - the ``thumb_tip``/``index_tip`` frames that define the grasp frame follow
   the official Inspire URDF (``inspirehand_right.urdf``: ``thumb_tip_fixed``
-  and ``index_tip_fixed`` joints), not the MJCF's hand-authored offsets.
+  and ``index_tip_fixed`` joints), not the MJCF's hand-authored offsets;
+- the table is threading_v2's (forgeUltra 35373e0,
+  ``relative_pose_table_in_front.yaml``): a legless 0.8 x 1.2 m walnut top
+  centred at x = 0.335, not the MJCF's 0.8 x 0.6 m white bench on legs.
 
 Everything else (hand mount at +10 mm with a half-turn, official mimic
 coupling, M24 bolt at (0.61, 0, 0.05)) already agrees with the training asset.
@@ -24,6 +27,13 @@ import numpy as np
 URDF_THUMB_TIP_OFFSET = (0.002144443, 0.017899759, -0.00745)
 URDF_INDEX_TIP_OFFSET = (0.015744429, 0.031656168, -0.00605)
 
+# threading_v2's tabletop half extents (depth along x, width along y, 3 cm
+# thick) and its walnut albedo at 3 repeats per metre
+# (author_lab_bench_table.py). Training moves the top per reset; its eval and
+# this scene keep it at the nominal centre the MJCF already uses.
+TRAINING_TABLE_HALF_SIZE = (0.4, 0.6, 0.015)
+TRAINING_TABLE_TEXREPEAT = (3.0, 3.0)
+
 
 def default_replay_mjcf() -> Path:
     return Path(__file__).resolve().parents[3] / "assets" / "fr3_inspirehand" / "fr3_inspirehand_replay.xml"
@@ -34,6 +44,7 @@ def training_scene_spec(
     *,
     base_plate_z: float = 0.0,
     urdf_tip_frames: bool = True,
+    training_table: bool = True,
 ):
     """Return an ``MjSpec`` of the replay scene with the training corrections."""
 
@@ -45,6 +56,15 @@ def training_scene_spec(
     if urdf_tip_frames:
         spec.body("thumb_tip").pos = list(URDF_THUMB_TIP_OFFSET)
         spec.body("index_tip").pos = list(URDF_INDEX_TIP_OFFSET)
+    if training_table:
+        top = spec.geom("table_top")
+        top.size = list(TRAINING_TABLE_HALF_SIZE)
+        top.pos = [0.0, 0.0, -TRAINING_TABLE_HALF_SIZE[2]]
+        top.material = "forge_table"
+        spec.material("forge_table").texrepeat = list(TRAINING_TABLE_TEXREPEAT)
+        for geom in list(spec.body("table").geoms):
+            if geom.name.startswith("table_leg"):
+                spec.delete(geom)
     return spec
 
 

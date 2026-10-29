@@ -5,8 +5,10 @@
 torque scene (FR3 + Inspire hand, gravity off) placed in the student's training
 environment instead of ``scene_common.xml``:
 
-- the bench top at fr3_link0 z = 0 and the floor 0.75 m below it, as in the
-  corrected training scene (``policy_rollout/mujoco_scene.py``);
+- the table top at fr3_link0 z = 0 and the floor 0.75 m below it, as in the
+  corrected training scene (``policy_rollout/mujoco_scene.py``), with the
+  table where the cyclic-threading environment puts it (in front of the FR3,
+  see TRAINING_TABLE_CENTER): the legless 0.8 x 1.2 m walnut top;
 - the M24 bolt at the training pose and the nut at its first recorded pose,
   both converted from the training world (FR3 base at (1.2, 0, 0) yawed by pi)
   into fr3_link0;
@@ -67,6 +69,18 @@ CAMERA_NAME = "policy_d415"
 KEYFRAME_NAME = "policy_home"
 MESH_SOURCE = WORKSPACE_ROOT / "assets" / "fr3_inspirehand" / "forge_nut_bolt" / "m24"
 MESH_SUBDIR = "forge_m24"
+TEXTURE_SOURCE = WORKSPACE_ROOT / "assets" / "fr3_inspirehand" / "textures" / "forge"
+TEXTURE_SUBDIR = "forge_table"
+
+# The cyclic-threading (threading_v2) environment loads forgeUltra's
+# forge_franka_threading_v2/config/relative_pose_table_in_front.yaml (35373e0,
+# the layout the m24-dp3-nominal students' data was collected in): a legless
+# 0.8 m deep x 1.2 m wide walnut top in front of the FR3, its near ledge
+# 46.5 cm from the robot axis and the bolt 12.5 cm inside it. Training moves the
+# top per reset (+-5 cm along, +-10 cm across, +-2.5 deg); its eval, and this
+# scene, keep it at the nominal centre. Training world, metres.
+TRAINING_TABLE_CENTER = (0.335, 0.0, 0.0)
+TABLE_HALF_SIZE = (0.4, 0.6, 0.015)
 
 # First sample of checkpoints/reference_episode/episode_000_sequential_threading.npz
 # (nut_pos, nut_quat wxyz) in the training world. Kept literal: the episode is
@@ -249,7 +263,7 @@ def isaac_hand_custom_xml() -> str:
 def scene_xml(profile, keyframe: str = "") -> str:
     bolt, _ = training_world_to_link0(fo.BOLT_BASE_POSITION, (1.0, 0.0, 0.0, 0.0))
     bolt_quat = fo.quat_from_euler_xyz(0.0, 0.0, math.pi)
-    table, _ = training_world_to_link0((0.335, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0))
+    table, _ = training_world_to_link0(TRAINING_TABLE_CENTER, (1.0, 0.0, 0.0, 0.0))
     width = int(profile.source_intrinsics.width)
     height = int(profile.source_intrinsics.height)
     return f"""<mujoco model="{SCENE_NAME.removesuffix('.xml')}">
@@ -262,8 +276,10 @@ def scene_xml(profile, keyframe: str = "") -> str:
        inspire_franka_trajectory_replay's sim_policy.launch.py. Poses are the
        training world's converted into fr3_link0: bench top at z = 0, the M24
        bolt, and the calibrated D415 colour camera with its exact pinhole
-       matrix. The nut rides ForgeUltra's simplified thread pair (an axial
-       slide coupled to a twist hinge), so it can be gripped and turned.
+       matrix. The table is forgeUltra's threading_v2 tabletop as the policy
+       camera saw it in training: in front of the robot, legless walnut. The
+       nut rides ForgeUltra's simplified thread pair (an axial slide coupled
+       to a twist hinge), so it can be gripped and turned.
 
        Careful with comments in here: a double hyphen is illegal inside an XML
        comment, and ament_xmllint rejects the whole file for one. -->
@@ -276,8 +292,10 @@ def scene_xml(profile, keyframe: str = "") -> str:
       width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true"
       texrepeat="2 2" reflectance="0.05"/>
-    <material name="table_top" rgba="0.93 0.93 0.91 1" roughness="0.55"/>
-    <material name="table_leg" rgba="0.13 0.14 0.15 1" roughness="0.35" metallic="0.65"/>
+    <!-- forgeUltra assets/table/author_lab_bench_table.py: the walnut albedo
+         at 3 repeats per metre, roughness 0.34. -->
+    <texture type="2d" name="walnut" file="assets/{TEXTURE_SUBDIR}/walnut_albedo.png"/>
+    <material name="table_top" texture="walnut" texuniform="true" texrepeat="3 3" roughness="0.34"/>
     <material name="forge_bolt" rgba="0.055 0.055 0.065 1"/>
     <material name="forge_nut" rgba="0.84 0.84 0.88 1"/>
     <mesh name="forge_m24_nut" file="{MESH_SUBDIR}/m24_nut.stl"/>
@@ -301,16 +319,8 @@ def scene_xml(profile, keyframe: str = "") -> str:
     {camera_element(profile)}
 
     <body name="table" pos="{_fmt(table)}">
-      <geom name="table_top" type="box" pos="0 0 -0.015" size="0.4 0.3 0.015"
+      <geom name="table_top" type="box" pos="0 0 {-TABLE_HALF_SIZE[2]:g}" size="{_fmt(TABLE_HALF_SIZE)}"
         material="table_top" contype="0" conaffinity="0"/>
-      <geom name="table_leg_0" type="cylinder" pos="0.35 0.25 -0.39" size="0.015 0.36"
-        material="table_leg" contype="0" conaffinity="0"/>
-      <geom name="table_leg_1" type="cylinder" pos="0.35 -0.25 -0.39" size="0.015 0.36"
-        material="table_leg" contype="0" conaffinity="0"/>
-      <geom name="table_leg_2" type="cylinder" pos="-0.35 0.25 -0.39" size="0.015 0.36"
-        material="table_leg" contype="0" conaffinity="0"/>
-      <geom name="table_leg_3" type="cylinder" pos="-0.35 -0.25 -0.39" size="0.015 0.36"
-        material="table_leg" contype="0" conaffinity="0"/>
     </body>
     <!-- Visual only, as in the training asset: the thread coupling, not a
          contact, is what holds the nut on the bolt. -->
@@ -386,6 +396,10 @@ def generate(profile_path=None, output_dir: Path = SIM_MJCF_DIR) -> str:
     for mesh in ("m24_nut.stl", "m24_bolt.stl"):
         if not (mesh_dir / mesh).exists():
             shutil.copyfile(MESH_SOURCE / mesh, mesh_dir / mesh)
+    texture_dir = output_dir / "assets" / TEXTURE_SUBDIR
+    texture_dir.mkdir(parents=True, exist_ok=True)
+    if not (texture_dir / "walnut_albedo.png").exists():
+        shutil.copyfile(TEXTURE_SOURCE / "walnut_albedo.png", texture_dir / "walnut_albedo.png")
     # Includes resolve relative to the model file, so compile beside the scene.
     probe = output_dir / f".{SCENE_NAME}.probe.xml"
     try:

@@ -1,21 +1,13 @@
 from dataclasses import replace
-from pathlib import Path
 
 import numpy as np
 import pytest
 
+from policy_rollout import DEFAULT_CHECKPOINT
 from utils.camera_calibration import (
     CropRectangle,
     load_camera_calibration,
     prepare_rgbd,
-)
-
-APP_ROOT = Path(__file__).resolve().parents[1]
-STUDENT_CHECKPOINT = (
-    APP_ROOT
-    / "checkpoints"
-    / "sequential_threading_cycle10_hybrid_teacher_d415_20ep"
-    / "checkpoint.pt"
 )
 
 # /camera/camera/color/camera_info as published by this workcell's D415
@@ -120,6 +112,20 @@ def test_prepare_rgbd_converts_units_layout_and_invalid_depth():
     assert not prepared.valid_mask[0, 0, 0]
 
 
+def test_prepare_rgbd_drops_depth_outside_the_training_clipping_range():
+    # Isaac's camera clips at (0.01, 5.0) m and writes zero beyond, so a far
+    # floor the simulator or the D415 still measures must read as invalid.
+    profile = load_camera_calibration()
+    rgb = np.zeros((180, 320, 3), dtype=np.uint8)
+    depth = np.full((180, 320), 1.0, dtype=np.float32)
+    depth[0, 0], depth[0, 1], depth[0, 2] = 5.0, 5.5, 0.005
+    prepared = prepare_rgbd(rgb, depth, profile, depth_units="metres")
+    assert prepared.valid_mask[0, 0, 0] and prepared.depth[0, 0, 0] == 5.0
+    assert not prepared.valid_mask[0, 0, 1] and prepared.depth[0, 0, 1] == 0.0
+    assert not prepared.valid_mask[0, 0, 2] and prepared.depth[0, 0, 2] == 0.0
+    assert prepared.valid_mask[0, 1, 1]
+
+
 @pytest.mark.parametrize(
     ("shape", "crop"),
     [((480, 640), CropRectangle(x=0, y=60, width=640, height=360))],
@@ -149,9 +155,48 @@ def test_prepare_rgbd_rejects_unmodelled_frame_shapes():
 
 
 @pytest.mark.skipif(
-    not STUDENT_CHECKPOINT.is_file(), reason="student checkpoint not copied in"
+    not DEFAULT_CHECKPOINT.is_file(), reason="deployed checkpoint not copied in"
 )
 def test_checked_in_profile_matches_the_student_checkpoint():
     torch = pytest.importorskip("torch")
-    payload = torch.load(STUDENT_CHECKPOINT, map_location="cpu", weights_only=False)
+    payload = torch.load(DEFAULT_CHECKPOINT, map_location="cpu", weights_only=False)
     load_camera_calibration().assert_checkpoint_compatible(payload["config"])
+
+
+def _vision_checkpoint_config(profile, encoder):
+    return {
+        "observation_mode": "vision",
+        "vision_encoder_config": {
+            "input": {
+                "image_shape": list(profile.policy_shape),
+                "camera_matrix": list(profile.policy_intrinsics.camera_matrix),
+            },
+            "encoder": encoder,
+        },
+    }
+
+
+def test_the_rgbd_head_is_checked_against_the_view_but_has_no_crop_box():
+    profile = load_camera_calibration()
+    rgbd = _vision_checkpoint_config(profile, {"type": "two_channel_rgbd_encoder"})
+    profile.assert_checkpoint_compatible(rgbd)
+
+    shifted = _vision_checkpoint_config(profile, {"type": "two_channel_rgbd_encoder"})
+    shifted["vision_encoder_config"]["input"]["camera_matrix"][2] += 1.0
+    with pytest.raises(ValueError, match="camera matrix"):
+        profile.assert_checkpoint_compatible(shifted)
+
+    # DP3 keeps its crop-box check.
+    dp3 = _vision_checkpoint_config(
+        profile,
+        {
+            "type": "rgb_pointcloud_dp3_encoder",
+            "point_cloud": {**profile.dp3_point_cloud, "crop_max_m": [0.2, 0.2, 1.17]},
+        },
+    )
+    with pytest.raises(ValueError, match="crop_max_m"):
+        profile.assert_checkpoint_compatible(dp3)
+
+    unknown = _vision_checkpoint_config(profile, {"type": "adapt3r_head_encoder"})
+    with pytest.raises(ValueError, match="no camera contract"):
+        profile.assert_checkpoint_compatible(unknown)

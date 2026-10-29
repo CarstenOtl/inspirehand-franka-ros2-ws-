@@ -1,4 +1,4 @@
-"""Isaac-free inference for ForgeUltra DP3 conditional-flow checkpoints."""
+"""Isaac-free inference for ForgeUltra vision conditional-flow checkpoints."""
 
 from __future__ import annotations
 
@@ -11,11 +11,16 @@ from typing import Any
 import torch
 from torch import nn
 
-from .dp3 import build_dp3_encoder
 from .flow_matching import sample_local_ode
 from .observation import (
+    FORCE_OBSERVATION_MODES,
     HAND_VELOCITY_OBSERVATION_MODES,
     native_osc_proprio_dim,
+)
+from .vision import (
+    SUPPORTED_VISION_ENCODER_TYPES,
+    build_vision_encoder,
+    vision_encoder_type,
 )
 
 
@@ -27,6 +32,7 @@ class FlowPolicyConfig:
     osc_native_action_scale: tuple[float, ...] = ()
     proprio_dim: int = 0
     hand_velocity_observation: str = "included"
+    force_observation: str = "omitted"
     action_horizon: int = 1
     visual_dim: int = 64
     condition_dim: int = 256
@@ -75,6 +81,8 @@ class FlowPolicyConfig:
                 raise ValueError("unified OSC requires one positive scale per action")
         if self.hand_velocity_observation not in HAND_VELOCITY_OBSERVATION_MODES:
             raise ValueError("unsupported hand-velocity observation convention")
+        if self.force_observation not in FORCE_OBSERVATION_MODES:
+            raise ValueError("unsupported force observation convention")
         if self.observation_mode not in {"vision", "nut_pose_3d", "nut_pose_6d"}:
             raise ValueError("unsupported student observation mode")
         if self.backbone_type not in {"mlp", "trajectory_transformer"}:
@@ -116,6 +124,9 @@ class FlowPolicyConfig:
         # the hand velocities, and some write the key out as a null.
         if values.get("hand_velocity_observation") is None:
             values["hand_velocity_observation"] = "included"
+        # Likewise every checkpoint before the force-observing student.
+        if values.get("force_observation") is None:
+            values["force_observation"] = "omitted"
         values.setdefault("trajectory_progress_conditioning", False)
         values.setdefault("trajectory_progress_duration_s", 0.0)
         values.setdefault("trajectory_progress_horizon_steps", 0)
@@ -165,10 +176,10 @@ class DextrahConcatFusion(nn.Module):
 
     def encode_visual(self, *, head_rgb, head_depth, valid_mask=None):
         if head_rgb is None or head_depth is None:
-            raise ValueError("DP3 rollout requires aligned head_rgb and head_depth")
+            raise ValueError("vision rollout requires aligned head_rgb and head_depth")
         value = self.visual_encoder(head_rgb, head_depth, valid_mask)
         if value.shape[-1] != self.visual_dim:
-            raise ValueError("DP3 encoder returned an unexpected latent width")
+            raise ValueError("vision encoder returned an unexpected latent width")
         return value
 
     def from_features(self, proprio, visual_features):
@@ -254,9 +265,9 @@ class ConditionalJointFlowPolicy(nn.Module):
     def __init__(self, config: FlowPolicyConfig) -> None:
         super().__init__()
         self.cfg = config
-        visual_encoder, visual_dim = build_dp3_encoder(config.vision_encoder_config)
+        visual_encoder, visual_dim = build_vision_encoder(config.vision_encoder_config)
         if visual_dim != config.visual_dim:
-            raise ValueError("DP3 latent width does not match checkpoint config")
+            raise ValueError("vision latent width does not match checkpoint config")
         self.fusion = DextrahConcatFusion(config, visual_encoder)
         self.condition = nn.Sequential(
             nn.Linear(self.fusion.output_dim, config.condition_dim), nn.ELU()
@@ -463,7 +474,7 @@ def default_integration_steps(device: str | torch.device) -> int:
 
 
 class FlowPolicyRunner:
-    """Strict checkpoint loader plus seeded receding-horizon DP3 inference."""
+    """Strict checkpoint loader plus seeded receding-horizon vision inference."""
 
     def __init__(
         self,
@@ -507,12 +518,12 @@ class FlowPolicyRunner:
         self.last_chunk: torch.Tensor | None = None
 
     def _assert_deployment_contract(self) -> None:
-        vision_type = self.config.vision_encoder_config.get("encoder", {}).get("type")
+        vision_type = vision_encoder_type(self.config.vision_encoder_config)
         errors = []
         if self.config.control_domain != "osc" or self.config.joint_dim != 9:
             errors.append("student must use the 9-D OSC control domain")
         expected_proprio_dim = native_osc_proprio_dim(
-            self.config.hand_velocity_observation
+            self.config.hand_velocity_observation, self.config.force_observation
         )
         if (
             self.config.observation_mode != "vision"
@@ -522,8 +533,11 @@ class FlowPolicyRunner:
                 "student must use vision with "
                 f"{expected_proprio_dim}-D native-OSC proprioception"
             )
-        if vision_type != "rgb_pointcloud_dp3_encoder":
-            errors.append("student must use the RGB point-cloud DP3 vision head")
+        if vision_type not in SUPPORTED_VISION_ENCODER_TYPES:
+            errors.append(
+                f"vision head {vision_type!r} is not one of "
+                + ", ".join(SUPPORTED_VISION_ENCODER_TYPES)
+            )
         if errors:
             raise ValueError("unsupported deployment checkpoint: " + "; ".join(errors))
 
@@ -590,6 +604,7 @@ class FlowPolicyRunner:
             "weight_source": self.weight_source,
             "device": str(self.device),
             "integration_steps": self.integration_steps,
+            "temporal_ensemble_decay": self.ensembler.decay,
             "epoch": self.payload.get("epoch"),
             "config": self.config.to_dict(),
             "dataset_contract": self.payload.get("dataset_contract"),

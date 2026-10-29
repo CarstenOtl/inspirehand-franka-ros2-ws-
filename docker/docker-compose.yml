@@ -33,6 +33,14 @@ services:
     environment:
       - DISPLAY=$DISPLAY
       - QT_X11_NO_MITSHM=1
+      # Every ROS process in here (camera driver, policy runner, viewers) must
+      # load this Fast DDS profile. With the default transports the D415's
+      # 1-2 MB images are fragmented between processes and two thirds of them
+      # are lost (29.8 Hz published, 7-12 Hz received, gaps up to 1 s); with
+      # it they arrive at 29.5 Hz with no gap over one frame. A process
+      # without it cannot receive from one with it, so set it here, not per
+      # shell.
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/root/develop_ws/docker/fastdds_large_shm.xml
       # Uncomment to build every package in src/franka_ros2, including the
       # Gazebo, MoveIt, mobile-base and RealSense/ZED ones the entrypoint
       # otherwise marks COLCON_IGNORE. Their dependencies are not in this image;

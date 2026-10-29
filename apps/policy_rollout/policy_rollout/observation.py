@@ -17,6 +17,21 @@ PREVIOUS_ACTION_DIM = 9
 HAND_VELOCITY_OBSERVATION_MODES = ("included", "omitted")
 NATIVE_OSC_PROPRIO_DIM = 29
 
+# A checkpoint trained with ``force_observation: included`` sees nine more
+# values after the previous action: the thumb and index pad forces in N
+# divided by 20 (ForgeUltra ``build_student_force_observation`` over
+# ``distillation_fingertip_force_n``) and the seven FR3 joint torques divided
+# by the effort limits (``distillation_arm_joint_torque_observation``), in the
+# teacher actor's order. The checkpoint records no layout; the training side
+# confirmed it (student.py ``build_native_osc_student_proprio``), and the first
+# proprio layer agrees: the previous-action column fingerprint sits right
+# before the forces.
+FORCE_OBSERVATION_MODES = ("omitted", "included")
+FINGERTIP_FORCE_DIM = 2
+FINGERTIP_FORCE_SCALE_N = 20.0
+ARM_TORQUE_DIM = 7
+FR3_ARM_EFFORT_LIMITS_NM = (87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0)
+
 
 def hand_velocity_width(hand_velocity_observation: str) -> int:
     """Return how many of the ten dq values the given convention keeps."""
@@ -29,14 +44,35 @@ def hand_velocity_width(hand_velocity_observation: str) -> int:
     return POLICY_DOF if hand_velocity_observation == "included" else ARM_DOF
 
 
-def native_osc_proprio_dim(hand_velocity_observation: str = "included") -> int:
-    """Return the proprioception width that dq convention produces."""
+def force_observation_width(force_observation: str) -> int:
+    """Return how many force/torque values the given convention appends."""
+
+    if force_observation not in FORCE_OBSERVATION_MODES:
+        raise ValueError(
+            "force_observation must be one of "
+            + ", ".join(repr(mode) for mode in FORCE_OBSERVATION_MODES)
+        )
+    return FINGERTIP_FORCE_DIM + ARM_TORQUE_DIM if force_observation == "included" else 0
+
+
+def native_osc_proprio_dim(
+    hand_velocity_observation: str = "included", force_observation: str = "omitted"
+) -> int:
+    """Return the proprioception width those conventions produce."""
 
     return (
         POLICY_DOF
         + hand_velocity_width(hand_velocity_observation)
         + PREVIOUS_ACTION_DIM
+        + force_observation_width(force_observation)
     )
+
+
+def normalize_fr3_joint_torque(arm_joint_torque_nm) -> torch.Tensor:
+    """ForgeUltra ``normalize_fr3_joint_torque``: divide by the limits, clip to 1."""
+
+    torque = _finite_vector(arm_joint_torque_nm, ARM_TORQUE_DIM, "arm_joint_torque_nm")
+    return (torque / torch.tensor(FR3_ARM_EFFORT_LIMITS_NM)).clamp(-1.0, 1.0)
 
 
 FORGE_POLICY_JOINT_NAMES = (
@@ -73,15 +109,21 @@ def build_native_osc_proprio(
     previous_filtered_native_action,
     *,
     hand_velocity_observation: str = "included",
+    force_observation: str = "omitted",
+    fingertip_force_n=None,
+    arm_joint_torque_nm=None,
 ) -> torch.Tensor:
-    """Return ForgeUltra's exact ``q10 + dq + previous action`` vector.
+    """Return ForgeUltra's exact ``q10 + dq + previous action [+ forces]`` vector.
 
     ``joint_velocity`` is always the full ten-joint measurement.  A checkpoint
     that omits the hand velocities keeps only its arm prefix, so a caller feeds
     and records what it measured without knowing which layout it is serving.
+    A force-observing checkpoint also needs ``[thumb, index]`` pad compression
+    in N and the seven arm joint torques in N m; the rest ignore them.
     """
 
     width = hand_velocity_width(hand_velocity_observation)
+    force_width = force_observation_width(force_observation)
     q = _finite_vector(joint_position, POLICY_DOF, "joint_position")
     dq = _finite_vector(joint_velocity, POLICY_DOF, "joint_velocity")
     previous = _finite_vector(
@@ -89,7 +131,20 @@ def build_native_osc_proprio(
         PREVIOUS_ACTION_DIM,
         "previous_filtered_native_action",
     )
-    return torch.cat((q, dq[:width], previous))
+    if not force_width:
+        return torch.cat((q, dq[:width], previous))
+    if fingertip_force_n is None or arm_joint_torque_nm is None:
+        raise ValueError(
+            "a force-observing checkpoint needs fingertip_force_n and arm_joint_torque_nm"
+        )
+    # Unilateral, like the hardware sensor and ForgeUltra's projection.
+    force = (
+        _finite_vector(fingertip_force_n, FINGERTIP_FORCE_DIM, "fingertip_force_n").clamp(min=0.0)
+        / FINGERTIP_FORCE_SCALE_N
+    )
+    return torch.cat(
+        (q, dq[:width], previous, force, normalize_fr3_joint_torque(arm_joint_torque_nm))
+    )
 
 
 def one_hot_process_phase(phase: str, feature_names: Sequence[str]) -> torch.Tensor:
@@ -112,12 +167,19 @@ def one_hot_process_phase(phase: str, feature_names: Sequence[str]) -> torch.Ten
 
 
 __all__ = [
+    "ARM_TORQUE_DIM",
+    "FINGERTIP_FORCE_DIM",
+    "FINGERTIP_FORCE_SCALE_N",
+    "FORCE_OBSERVATION_MODES",
+    "FR3_ARM_EFFORT_LIMITS_NM",
     "FR3_POLICY_JOINT_NAMES",
     "FORGE_POLICY_JOINT_NAMES",
     "HAND_VELOCITY_OBSERVATION_MODES",
     "NATIVE_OSC_PROPRIO_DIM",
     "build_native_osc_proprio",
+    "force_observation_width",
     "hand_velocity_width",
     "native_osc_proprio_dim",
+    "normalize_fr3_joint_torque",
     "one_hot_process_phase",
 ]

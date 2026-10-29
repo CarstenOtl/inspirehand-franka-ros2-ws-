@@ -3,6 +3,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from policy_rollout.observation import (
+    FR3_ARM_EFFORT_LIMITS_NM,
     FR3_POLICY_JOINT_NAMES,
     build_native_osc_proprio,
     native_osc_proprio_dim,
@@ -37,6 +38,54 @@ def test_unknown_hand_velocity_convention_is_refused():
     with pytest.raises(ValueError, match="hand_velocity_observation"):
         build_native_osc_proprio(
             range(10), range(10, 20), range(20, 29), hand_velocity_observation="zeroed"
+        )
+
+
+def test_force_observation_appends_pad_forces_and_normalized_torques():
+    torque = [87.0, -43.5, 0.0, 200.0, 6.0, -12.0, -30.0]
+    value = build_native_osc_proprio(
+        range(10),
+        range(10, 20),
+        range(20, 29),
+        force_observation="included",
+        fingertip_force_n=[3.5, -0.2],
+        arm_joint_torque_nm=torque,
+    )
+    assert native_osc_proprio_dim("included", "included") == 38
+    assert value.shape == (38,)
+    # q10, dq10, the previous action, then [thumb, index] in N / 20
+    # (unilateral) and the torques over the FR3 limits, clipped to 1.
+    assert value[:29].tolist() == pytest.approx(list(range(29)))
+    assert value[29:31].tolist() == pytest.approx([3.5 / 20.0, 0.0])
+    expected = [max(-1.0, min(1.0, t / l)) for t, l in zip(torque, FR3_ARM_EFFORT_LIMITS_NM)]
+    assert value[31:].tolist() == pytest.approx(expected)
+
+
+def test_force_observation_without_hand_velocities_is_35_wide():
+    torque = [8.7, 0.0, 0.0, 0.0, 0.0, 0.0, -1.2]
+    value = build_native_osc_proprio(
+        range(10),
+        range(10, 20),
+        range(20, 29),
+        hand_velocity_observation="omitted",
+        force_observation="included",
+        fingertip_force_n=[1.0, 2.0],
+        arm_joint_torque_nm=torque,
+    )
+    assert native_osc_proprio_dim("omitted", "included") == 35
+    # q10, the arm velocities only, the previous action, then the forces: the
+    # m24-dp3-nominal-da-force-nohv student's first proprio layer keeps the
+    # previous-action column fingerprint at 17-25, so the forces follow it.
+    assert value.tolist() == pytest.approx(
+        list(range(10)) + list(range(10, 17)) + list(range(20, 29))
+        + [0.05, 0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, -0.1]
+    )
+
+
+def test_force_observing_checkpoint_refuses_missing_forces():
+    with pytest.raises(ValueError, match="fingertip_force_n"):
+        build_native_osc_proprio(
+            range(10), range(10, 20), range(20, 29), force_observation="included"
         )
 
 

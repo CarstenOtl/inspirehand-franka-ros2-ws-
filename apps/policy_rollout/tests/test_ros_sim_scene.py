@@ -52,6 +52,45 @@ def test_policy_scene_places_the_bolt_and_home_like_training():
     np.testing.assert_allclose(arm, fo.FRANKA_ARM_RESET_JOINTS_M24, atol=1e-8)
 
 
+def test_policy_scene_table_is_the_cyclic_threading_one():
+    # threading_v2 (relative_pose_table_in_front.yaml): a legless 0.8 x 1.2 m
+    # top in front of the FR3, near ledge 46.5 cm from the robot axis, the bolt
+    # 12.5 cm inside it.
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / scene.SCENE_NAME))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    top = model.geom("table_top").id
+    centre, half = data.geom_xpos[top], model.geom_size[top]
+    np.testing.assert_allclose(centre, [0.865, 0.0, -0.015], atol=1e-9)
+    np.testing.assert_allclose(half, [0.4, 0.6, 0.015], atol=1e-9)
+    near_ledge = centre[0] - half[0]
+    assert near_ledge == pytest.approx(0.465)
+    assert data.xpos[model.body("m24_bolt").id][0] - near_ledge == pytest.approx(0.125)
+    assert not any(model.geom(g).name.startswith("table_leg") for g in range(model.ngeom))
+    assert model.mat_texid[model.geom_matid[top]][mujoco.mjtTextureRole.mjTEXROLE_RGB] >= 0
+
+
+def test_policy_scene_hand_renders_white_like_the_training_urdf():
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / scene.SCENE_NAME))
+    hand_root = model.body("hand_base_link").id
+    hand_geoms = [g for g in range(model.ngeom)
+                  if model.body_rootid[model.geom_bodyid[g]] == model.body_rootid[hand_root]
+                  and _is_descendant(model, model.geom_bodyid[g], hand_root)
+                  and model.geom_group[g] == 1]
+    assert hand_geoms
+    np.testing.assert_allclose(model.geom_rgba[hand_geoms], 1.0)
+
+
+def _is_descendant(model, body, ancestor):
+    while body != 0:
+        if body == ancestor:
+            return True
+        body = model.body_parentid[body]
+    return False
+
+
 def _thread_parameters(model):
     """Everything about the thread pair that is frame-independent."""
 

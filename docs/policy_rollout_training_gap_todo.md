@@ -500,8 +500,10 @@ Runner changes (uncommitted, tests in `apps/policy_rollout/tests`, driver and re
   the arm homed to. Homing is checked against it (`--max-home-grasp-error`, 2 mm, up to
   `--home-attempts` re-gotos) and the residual is in the report; the 2026-10-16 run would have
   been refused at 12.6 mm.
-- The Franka Desk load is read from `FrankaRobotState.inertia_load` at preflight and logged
-  (`configured_load` in the report); `--expected-load-mass-kg` makes it a gate.
+- The Franka Desk load is read from `FrankaRobotState` at preflight and logged
+  (`configured_load` in the report); `--expected-load-mass-kg` makes it a gate on the total
+  beyond the flange (`inertia_total`, end effector plus load), since Desk may carry the hand
+  either way. 2026-10-26: Desk had the hand as the end effector, 0.579 kg, load 0.
 - The driver has a `thumb_abduction_overlay` parameter; `sim_policy.launch.py` starts the mock
   driver without it, and `--thumb-overlay auto` inverts feedback only on hardware (D2 for sim).
 - `--hand-start release` (default) opens thumb and index to waypoint1's posture

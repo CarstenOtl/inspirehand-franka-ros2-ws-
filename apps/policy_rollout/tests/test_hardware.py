@@ -6,6 +6,12 @@ import pytest
 
 from policy_rollout import forge_osc as fo
 from policy_rollout.hardware import (
+    TorqueLowPass,
+    arm_torque_candidates,
+    arm_torque_candidates_from_controller,
+    external_joint_torque_message_to_array,
+    fingertip_force_message_to_newtons,
+    resolve_arm_torque_source,
     TRAINING_INACTIVE_FINGERS,
     GripCycleCoordinator,
     RgbdFrameSynchronizer,
@@ -426,6 +432,65 @@ def test_cycle_completion_rebases_without_retriggering_release():
     assert not coordinator.active
 
 
+@pytest.mark.parametrize(
+    "total_deg, target_deg",
+    [
+        (0.0, 60.0),     # a turn exactly on the grid: the next is a full step
+        (56.0, 64.0),    # four short is made up by the next turn
+        (63.0, 57.0),    # an overshoot shortens it
+        (50.0, 65.0),    # clamped to the trained 55-65 deg
+        (128.0, 55.0),
+        (178.0, 62.0),   # the residual is off the nearest grid point, not cycle 1
+    ],
+)
+def test_the_next_turn_aims_at_the_60_degree_grid(total_deg, target_deg):
+    target = fo.next_cycle_target_turn_rad(np.deg2rad(total_deg))
+    assert np.rad2deg(target) == pytest.approx(target_deg)
+
+
+def _complete_cycle(coordinator, reset_q, **kwargs):
+    coordinator.active = True
+    coordinator.phase_index = 4
+    coordinator.phase_steps = 9
+    return coordinator.update(
+        position=np.zeros(3), quaternion=reset_q, hand=np.zeros(3), **kwargs
+    )
+
+
+def test_the_release_turn_follows_the_measured_total_turn():
+    """ros-sim measures the nut's total turn, so cycle 2 makes up cycle 1's shortfall."""
+
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _coordinator(reset_q, max_cycles=3)
+    assert np.rad2deg(coordinator.release_turn_rad) == pytest.approx(55.0)
+
+    event, _ = _complete_cycle(
+        coordinator, reset_q, measured_turn_progress=0.0, measured_total_turn=np.deg2rad(56.0)
+    )
+    assert event == "cycle_completed"
+    assert np.rad2deg(coordinator.release_turn_rad) == pytest.approx(59.0)
+    event, _ = coordinator.update(
+        position=np.zeros(3), quaternion=reset_q, hand=np.zeros(3),
+        measured_turn_progress=np.deg2rad(57.0),
+    )
+    assert event is None
+    event, _ = coordinator.update(
+        position=np.zeros(3), quaternion=reset_q, hand=np.zeros(3),
+        measured_turn_progress=np.deg2rad(59.5),
+    )
+    assert event == "release_started"
+
+
+def test_without_a_measured_total_every_cycle_releases_at_55_degrees():
+    """The proxy cannot see the nut's total turn, so hardware keeps the 60 deg target."""
+
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _coordinator(reset_q, max_cycles=3)
+    event, _ = _complete_cycle(coordinator, reset_q)
+    assert event == "cycle_completed"
+    assert np.rad2deg(coordinator.release_turn_rad) == pytest.approx(55.0)
+
+
 # fr3_link0 poses from inspire_franka.urdf.xacro (hand_mount:=flange) at the
 # M24 reset joints and the training grasp posture.
 URDF_RESET_THUMB = np.array([0.55681, 0.00573, 0.26632])
@@ -502,7 +567,7 @@ def test_training_hand_reproduces_the_distilled_grasp_midpoint():
 
 
 def test_trained_reset_grasp_is_the_training_reset_frame_in_the_base():
-    """The return gate's reference: the grasp frame of the reset joints and posture.
+    """The return gate's reference: the grasp frame of the reset joints and entry pinch.
 
     Checked against the same quantity measured the way the rollout measures it
     live (tips in the flange from the pinch posture, flange from the arm), and
@@ -515,16 +580,19 @@ def test_trained_reset_grasp_is_the_training_reset_frame_in_the_base():
     hand = _training_hand()
     frame = TrainingFrameAdapter()
     position, quaternion, pinch = trained_reset_grasp(hand, frame)
-    np.testing.assert_allclose(
-        pinch, [fo.THREADING_GRASP_POSTURE[name] for name in fo.PINCH_JOINTS]
-    )
+    np.testing.assert_allclose(pinch, fo.ISAAC_ENTRY_PINCH)
     assert np.linalg.norm(quaternion) == pytest.approx(1.0)
     world_position, world_quaternion = frame.pose_base_to_world(position, quaternion)
-    # mujoco_student_rollout prints this frame at reset: [0.5829 0.0017 0.2641]
-    # (the frictionless arm drifts ~2 mm from it during the 0.25 s settle).
-    np.testing.assert_allclose(world_position, [0.5829, 0.0017, 0.2641], atol=1e-3)
+    # The entry grasp sits (26.0, -0.4, 165.4) mm from the bolt tip in the base
+    # frame, i.e. world (0.584, 0.000, 0.268); the closed posture's frame was
+    # (0.5829, 0.0017, 0.2641).
+    np.testing.assert_allclose(world_position, [0.584, 0.0004, 0.2677], atol=1e-3)
+    # World-down orthogonalised against thumb->index: the entry pinch's more
+    # open thumb tilts that line, so the approach axis leans 13.3 deg (the
+    # closed posture's leaned under 10). The teacher's decoded return command
+    # agrees with this frame to 0.8 deg.
     z_axis = fo.matrix_from_quat(world_quaternion)[:, 2]
-    assert np.degrees(np.arccos(-z_axis[2])) < 10.0
+    assert np.degrees(np.arccos(-z_axis[2])) == pytest.approx(13.3, abs=0.5)
     # Live measurement path: flange pose + tips in the flange.
     flange_position, flange_quaternion, thumb, index = hand.frames_in_world(
         fo.FRANKA_ARM_RESET_JOINTS_M24, pinch
@@ -534,6 +602,58 @@ def test_trained_reset_grasp_is_the_training_reset_frame_in_the_base():
     np.testing.assert_allclose(flange_position + rotation @ thumb_flange, thumb, atol=1e-9)
     np.testing.assert_allclose(flange_position + rotation @ index_flange, index, atol=1e-9)
     np.testing.assert_allclose(world_position, 0.5 * (thumb + index), atol=1e-9)
+
+
+def test_the_teacher_s_return_command_lands_on_the_entry_grasp():
+    """Isaac's teacher returns to its live entry pose; decoded here it must land on ours.
+
+    The unified command is the teacher's at the end of all ten returns of the
+    2026-10-25 force-obs training episode. Through this workspace's bolt frame
+    and decoder it has to reproduce the entry grasp, hand included.
+    """
+
+    from policy_rollout.hardware import TrainingFrameAdapter, policy_goal_base, trained_reset_grasp
+
+    frame = TrainingFrameAdapter()
+    entry_position, entry_quaternion, entry_pinch = trained_reset_grasp(_training_hand(), frame)
+    scale = np.array([3.0, 4.0, 16.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0])
+    teacher = np.array([-0.175, 0.003, 0.207, 0.0, -0.077, 0.538, -0.091, -0.083, 0.0]) * scale
+    goal_position, goal_quaternion = policy_goal_base(frame, teacher)
+    assert np.linalg.norm(goal_position - entry_position) < 0.001
+    alignment = min(1.0, abs(float(np.dot(goal_quaternion, entry_quaternion))))
+    assert np.degrees(2.0 * np.arccos(alignment)) < 1.5
+    np.testing.assert_allclose(fo.pinch_targets(teacher), entry_pinch, atol=2e-4)
+
+
+def test_the_previous_action_seed_encodes_the_entry_grasp_like_isaac_s_reset():
+    """Isaac's reset (and each cycle boundary) seeds prev_actions from the live pose.
+
+    Position is the grasp relative to the bolt tip over the 5 cm action bounds,
+    unclipped, so the entry grasp 165 mm above the tip seeds native z ~3.3;
+    the pinch seeds are 0 under the relative-to-grasp finger map.
+    """
+
+    pytest.importorskip("mujoco")
+    from policy_rollout.hardware import TrainingFrameAdapter, trained_reset_grasp
+    from policy_rollout.mujoco_threading_env import seed_action_history
+
+    frame = TrainingFrameAdapter()
+    position, quaternion, _ = trained_reset_grasp(_training_hand(), frame)
+    world_position, world_quaternion = frame.pose_base_to_world(position, quaternion)
+    seed = seed_action_history(
+        fo.GraspFrameState(world_position, world_quaternion, np.zeros(3), np.zeros(3), np.zeros((6, 7)))
+    )
+    np.testing.assert_allclose(
+        seed[0:3], (world_position - fo.BOLT_TIP_POSITION) / fo.POS_ACTION_BOUNDS, atol=1e-9
+    )
+    assert seed[2] == pytest.approx(3.31, abs=0.02)
+    np.testing.assert_allclose(seed[6:9], 0.0)
+    # The teacher's own return command (unified x scale) sits at the same
+    # entry grasp, so the seed must agree with it in position and yaw.
+    scale = np.array([3.0, 4.0, 16.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0])
+    teacher = np.array([-0.175, 0.003, 0.207, 0.0, -0.077, 0.538, -0.091, -0.083, 0.0]) * scale
+    np.testing.assert_allclose(seed[0:3], teacher[0:3], atol=0.03)
+    assert seed[5] == pytest.approx(teacher[5], abs=0.03)
 
 
 def test_physical_hand_feedback_passes_through_without_the_overlay():
@@ -794,3 +914,109 @@ def test_turn_monitor_values_are_degrees_in_field_order_and_nan_without_a_nut():
     )
     assert math.isnan(hardware[0]) and math.isnan(hardware[3])
     assert hardware[5] == 0.0
+
+
+def test_fingertip_force_reads_the_sim_channels_in_newtons():
+    message = SimpleNamespace(
+        name=["thumb_flexion_extension_force", "index_flexion_extension_force"],
+        effort=[1.5, 0.25],
+    )
+    force, raw = fingertip_force_message_to_newtons(message)
+    assert force.tolist() == pytest.approx([1.5, 0.25])
+    assert not raw
+
+
+def test_fingertip_force_reads_the_rh56_thumb_bend_and_index_in_grams():
+    # Driver order: pinky, ring, middle, index, thumb_bend, thumb_rotation.
+    message = SimpleNamespace(
+        name=["1", "2", "3", "4", "5", "6"],
+        effort=[0.0, 0.0, 0.0, 200.0, 1000.0, 50.0],
+    )
+    force, raw = fingertip_force_message_to_newtons(message)
+    assert force.tolist() == pytest.approx([9.80665, 1.96133])
+    assert raw
+
+
+def test_external_torques_are_read_by_name_in_fr3_joint_order():
+    names = [f"fr3_joint{i}" for i in (7, 6, 5, 4, 3, 2, 1)]
+    message = SimpleNamespace(name=names, effort=[7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
+    assert external_joint_torque_message_to_array(message).tolist() == [1, 2, 3, 4, 5, 6, 7]
+    with pytest.raises(RuntimeError, match="all FR3 joints"):
+        external_joint_torque_message_to_array(SimpleNamespace(name=names[:6], effort=[0.0] * 6))
+
+
+def test_the_torque_low_pass_starts_on_the_first_sample_and_follows_its_time_constant():
+    lowpass = TorqueLowPass(0.02)
+    assert lowpass.update([10.0], 0.0).tolist() == [10.0]
+    # One time constant later a step has covered 1 - 1/e of the way.
+    assert lowpass.update([0.0], 0.02)[0] == pytest.approx(10.0 / np.e)
+    assert TorqueLowPass(0.0).update([3.0], 0.0).tolist() == [3.0]
+
+
+def test_auto_torque_source_is_external_on_hardware_and_commanded_in_ros_sim():
+    assert resolve_arm_torque_source("auto", sim=False) == "external"
+    assert resolve_arm_torque_source("auto", sim=True) == "commanded"
+    for name in ("external", "measured", "desired", "commanded"):
+        assert resolve_arm_torque_source(name, sim=False) == name
+    assert resolve_arm_torque_source("measured", sim=True) == "measured"
+    with pytest.raises(ValueError, match="broadcaster"):
+        resolve_arm_torque_source("external", sim=True)
+    with pytest.raises(ValueError):
+        resolve_arm_torque_source("raw", sim=False)
+
+
+def test_hardware_records_all_four_torque_candidates_and_ros_sim_two():
+    assert arm_torque_candidates(sim=False) == ("external", "measured", "desired", "commanded")
+    assert arm_torque_candidates(sim=True) == ("measured", "commanded")
+
+
+def test_controller_candidates_take_gravity_off_tau_j_and_leave_coriolis_out():
+    state = SimpleNamespace(
+        tau_measured_filtered=[30.0, -5.0, 0, 0, 0, 0, 1.0],
+        tau_gravity=[28.0, -5.5, 0, 0, 0, 0, 0.0],
+        tau_task=[1.0, 2.0, 0, 0, 0, 0, 0],
+        tau_nullspace=[0.5, 0, 0, 0, 0, 0, 0],
+        tau_coriolis=[9.0] * 7,
+    )
+    candidates = arm_torque_candidates_from_controller(state)
+    assert candidates["measured"].tolist() == pytest.approx([2.0, 0.5, 0, 0, 0, 0, 1.0])
+    assert candidates["commanded"].tolist() == pytest.approx([1.5, 2.0, 0, 0, 0, 0, 0])
+    with pytest.raises(RuntimeError, match="rebuild"):
+        arm_torque_candidates_from_controller(SimpleNamespace(tau_task=[0] * 7))
+
+
+def test_a_failing_or_interrupted_shutdown_step_is_reported_not_raised(capsys):
+    from policy_rollout.hardware import _shutdown_step
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    def invalid_context():
+        raise RuntimeError("publisher's context is invalid")
+
+    _shutdown_step("abort ramp", interrupted)
+    _shutdown_step("abort", invalid_context)
+    out = capsys.readouterr().out
+    assert "'abort ramp' failed: KeyboardInterrupt" in out
+    assert "'abort' failed: RuntimeError" in out
+
+
+def test_a_thumb_settled_just_past_its_yaw_limit_is_not_a_mapping_fault():
+    pytest.importorskip("inspire_hand_driver")
+    from inspire_hand_driver import command_overlays
+    from inspire_hand_driver import kinematics as kin
+    from policy_rollout.hardware import HAND_JOINTS
+
+    thumb_dof = kin.dof_index(command_overlays.THUMB_ABDUCTION_JOINT)
+    # 2026-10-29: logical open ratio -0.0227 at the yaw limit.
+    physical_ratio = command_overlays.apply_open_ratio_overlay(thumb_dof, -0.0227)
+    position = np.zeros(len(HAND_JOINTS))
+    position[HAND_JOINTS.index("thumb_proximal_yaw_joint")] = kin.open_ratio_to_rad(thumb_dof, physical_ratio)
+    q, _ = physical_hand_state_to_policy(position, np.zeros(len(HAND_JOINTS)))
+    # Clamped onto the end of the logical range rather than refused.
+    assert q[0] == pytest.approx(kin.open_ratio_to_rad(thumb_dof, 0.0))
+    position[HAND_JOINTS.index("thumb_proximal_yaw_joint")] = kin.open_ratio_to_rad(
+        thumb_dof, command_overlays.apply_open_ratio_overlay(thumb_dof, -0.05)
+    )
+    with pytest.raises(ValueError, match="outside the overlaid policy range"):
+        physical_hand_state_to_policy(position, np.zeros(len(HAND_JOINTS)))

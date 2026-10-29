@@ -1,6 +1,6 @@
 """Closed-loop student rollout in MuJoCo with the ported ForgeUltra control path.
 
-The DP3 flow student sees the calibrated camera render and MuJoCo joint
+The flow student sees the calibrated camera render and MuJoCo joint
 state at 15 Hz; its unified OSC action is executed through the ported
 operational-space controller and joint-PD adapter at 120 Hz; the cyclic
 coordinator runs release/return exactly like ``forge_transitions.py``. The
@@ -23,6 +23,7 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+from policy_rollout import DEFAULT_CHECKPOINT  # noqa: E402
 from policy_rollout import forge_osc as fo  # noqa: E402
 from policy_rollout.mujoco_scene import add_policy_camera  # noqa: E402
 from policy_rollout.mujoco_threading_env import (  # noqa: E402
@@ -37,14 +38,6 @@ from policy_rollout.mujoco_threading_env import (  # noqa: E402
 from utils.camera_calibration import load_camera_calibration  # noqa: E402
 from utils.data_collection import create_rollout_dir  # noqa: E402
 
-# The deployed checkpoint (run_policy_rollout.DEFAULT_CHECKPOINT), so this backend
-# runs the same policy as `hardware` and `ros-sim` by default.
-DEFAULT_CHECKPOINT = (
-    APP_ROOT
-    / "checkpoints/fr3_offline_flow_matching_parallel_vision_13102026"
-    / "m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013-135143-648368"
-    / "nn/checkpoint.pt"
-)
 DEFAULT_RECORDING_ROOT = APP_ROOT.parents[1] / "logs" / "policy_rollout"
 # forge_ultra/tasks/forge_franka_threading_v2/config/reset_pose_m24.yaml
 # held_asset_spawn.yaw_deg: the nut's spawn yaw in the training world. The
@@ -79,6 +72,16 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--integration-steps", type=int, default=16)
+    parser.add_argument(
+        "--temporal-ensemble-decay",
+        type=float,
+        default=0.5,
+        help=(
+            "weight of a chunk proposal per policy tick of age when overlapping chunks "
+            "are blended (default 0.5, Isaac's evaluate_flow default; 0 executes only "
+            "the newest chunk's first action)"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--record-rgbd", action="store_true")
     parser.add_argument("--preview-every", type=int, default=0, help="save a render every N steps")
@@ -86,6 +89,13 @@ def main(argv=None) -> int:
     parser.add_argument("--video-camera", default="policy_replay_front", help="MJCF camera for the video")
     parser.add_argument("--video-size", default="960x540")
     parser.add_argument("--video-fps", type=float, default=15.0)
+    parser.add_argument(
+        "--prev-action-seed",
+        choices=["pose", "zeros"],
+        default="pose",
+        help="cycle 1's previous-action input: 'pose' (default) encodes the live grasp like "
+        "Isaac's reset; 'zeros' is the start used before 2026-10-26",
+    )
     parser.add_argument("--dead-zone", choices=["none", "default"], default="none")
     parser.add_argument(
         "--arm-friction-scale",
@@ -129,6 +139,7 @@ def main(argv=None) -> int:
         args.checkpoint,
         device=args.device,
         integration_steps=args.integration_steps,
+        temporal_ensemble_decay=args.temporal_ensemble_decay,
         seed=args.seed,
     )
     if args.output_dir is None:
@@ -145,6 +156,7 @@ def main(argv=None) -> int:
             "checkpoint_sha256": metadata["sha256"],
             "checkpoint_weight_source": metadata["weight_source"],
             "flow_integration_steps": metadata["integration_steps"],
+            "temporal_ensemble_decay": metadata["temporal_ensemble_decay"],
             "policy_device": metadata["device"],
             "camera_profile": str(profile.source_path),
             "collection_mode": "mujoco_closed_loop_student",
@@ -173,7 +185,14 @@ def main(argv=None) -> int:
         reset_grasp_quat=reset_grasp.quat.copy(),
         reset_hand=reset_hand.copy(),
     )
-    session.reset(previous_filtered_native_action=np.zeros(9), seed=args.seed)
+    # Isaac's reset seeds the previous action from the live pose, and the
+    # collected episodes start from it; --prev-action-seed zeros is the old start.
+    session.reset(
+        previous_filtered_native_action=(
+            seed_action_history(reset_grasp) if args.prev_action_seed == "pose" else np.zeros(9)
+        ),
+        seed=args.seed,
+    )
     duration_s = float(runner.config.trajectory_progress_duration_s)
 
     def render():
@@ -189,6 +208,7 @@ def main(argv=None) -> int:
         "sim_time_s", "phase", "cycle", "turn_progress_deg", "nut_axial_m", "nut_twist_rad",
         "grasp_pos", "grasp_quat", "hand_q", "pd_command", "osc_torque", "target_pos", "target_quat",
         "return_errors", "arm_q", "policy_action", "filtered_action",
+        "fingertip_force_n", "arm_joint_torque_nm",
     )}
     previews = []
     start_wall = time.perf_counter()
@@ -204,6 +224,9 @@ def main(argv=None) -> int:
         dq10 = scene.dq(POLICY_JOINTS)
         phase = coordinator.process_phase()
         progress = min(1.0, scene.sim_time / duration_s)
+        # The last physics step's, as Isaac samples them for the observation.
+        fingertip_force = scene.fingertip_force_n()
+        arm_torque = scene.arm_joint_torque_nm()
         result = session.step(
             joint_position=q10,
             joint_velocity=dq10,
@@ -213,6 +236,8 @@ def main(argv=None) -> int:
             trajectory_progress=progress,
             process_phase=phase,
             sample_time_s=scene.sim_time,
+            fingertip_force_n=fingertip_force,
+            arm_joint_torque_nm=arm_torque,
             task_signals={
                 "pickup_success": True,
                 "threading_entered": True,
@@ -233,7 +258,7 @@ def main(argv=None) -> int:
             step=step, turn_progress_rad=scene.turn_progress_rad, grasp=grasp, hand_joints=hand, scene=scene
         )
         if event == "cycle_completed":
-            seed = seed_action_history(scene.grasp_state(z_transport), scene.q(fo.PINCH_JOINTS))
+            seed = seed_action_history(scene.grasp_state(z_transport))
             session.action_filter.previous_filtered = torch.as_tensor(seed, dtype=torch.float32)
         if event is not None:
             print(f"[step {step:4d} t={scene.sim_time:6.2f}s] {event}: cycles={coordinator.completed_cycles} turn={np.degrees(scene.turn_progress_rad):.1f} deg return_err(p,o,h)=({errors[0]*1000:.1f} mm, {errors[1]:.1f} deg, {errors[2]:.3f} rad)", flush=True)
@@ -254,6 +279,8 @@ def main(argv=None) -> int:
         log["arm_q"].append(scene.q(ARM_JOINTS))
         log["policy_action"].append(result.policy_action.numpy())
         log["filtered_action"].append(filtered)
+        log["fingertip_force_n"].append(fingertip_force)
+        log["arm_joint_torque_nm"].append(arm_torque)
         if args.preview_every and step % args.preview_every == 0:
             previews.append((step, rgb))
         if video_renderer is not None:

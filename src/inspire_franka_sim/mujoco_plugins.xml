@@ -25,4 +25,16 @@
       </description>
     </class>
   </library>
+  <library path="inspire_franka_sim_fingertip_force_plugin">
+    <class name="inspire_franka_sim/FingertipForcePlugin"
+           type="inspire_franka_sim::FingertipForcePlugin"
+           base_class_type="mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase">
+      <description>
+        Publishes the thumb and index pad forces on /fingertip_force the way
+        ForgeUltra's force-observing student sees them: net pad contact force
+        along the calibrated tip frame's -X, in N. Idle in a scene without the
+        thumb_tip/index_tip bodies.
+      </description>
+    </class>
+  </library>
 </class_libraries>

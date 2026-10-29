@@ -99,6 +99,8 @@ class PolicyRolloutSession:
         trajectory_progress: float | None = None,
         process_phase: str | None = None,
         sample_time_s: float | None = None,
+        fingertip_force_n=None,
+        arm_joint_torque_nm=None,
         task_signals: dict[str, object] | None = None,
         extras: dict[str, object] | None = None,
     ) -> PolicyStep:
@@ -110,6 +112,9 @@ class PolicyRolloutSession:
             joint_velocity,
             previous,
             hand_velocity_observation=self.runner.config.hand_velocity_observation,
+            force_observation=self.runner.config.force_observation,
+            fingertip_force_n=fingertip_force_n,
+            arm_joint_torque_nm=arm_joint_torque_nm,
         )
         prepared = prepare_rgbd(rgb, depth, self.calibration, depth_units=depth_units)
         phase = None

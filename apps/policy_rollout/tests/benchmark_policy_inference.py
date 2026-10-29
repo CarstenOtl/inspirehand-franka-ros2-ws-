@@ -14,14 +14,10 @@ import numpy as np
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHECKPOINT = (
-    APP_ROOT
-    / "checkpoints/fr3_offline_flow_matching_parallel_vision_13102026"
-    / "m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013-135143-648368"
-    / "nn/checkpoint.pt"
-)
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
+
+from policy_rollout import DEFAULT_CHECKPOINT  # noqa: E402
 
 
 def main(argv=None) -> int:

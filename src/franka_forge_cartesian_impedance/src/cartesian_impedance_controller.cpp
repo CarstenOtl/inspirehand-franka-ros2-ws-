@@ -845,6 +845,17 @@ controller_interface::return_type CartesianImpedanceController::update(
     return controller_interface::return_type::ERROR;
   }
 
+  // Low-pass the measured joint torque here, at the control rate, so the state publish
+  // samples a signal without its 1 kHz noise.
+  const Vector7d tau_measured = Eigen::Map<const Vector7d>(joint_efforts_current_.data());
+  if (!tau_measured_filter_initialized_ || measured_torque_lowpass_s_ <= 0.0) {
+    tau_measured_filtered_ = tau_measured;
+    tau_measured_filter_initialized_ = true;
+  } else {
+    const double alpha = 1.0 - std::exp(-dt / measured_torque_lowpass_s_);
+    tau_measured_filtered_ += alpha * (tau_measured - tau_measured_filtered_);
+  }
+
   // A policy goal can move the controlled frame, so take it before measuring the tool pose:
   // this cycle's measurement, clip and law then all refer to the same point. The rest of the
   // command is handled below, after the first-update initialisation it may depend on.
@@ -1234,6 +1245,14 @@ controller_interface::return_type CartesianImpedanceController::update(
       msg.tau_nullspace[i] = terms.tau_nullspace(i);
       msg.tau_coriolis[i] = terms.tau_coriolis(i);
       msg.tau_command[i] = output(i);
+      msg.tau_measured_filtered[i] = tau_measured_filtered_(i);
+      msg.tau_gravity[i] = 0.0;
+    }
+    if (franka_robot_model_) {
+      const std::array<double, 7> gravity = franka_robot_model_->getGravityForceVector();
+      for (int i = 0; i < kNumJoints; ++i) {
+        msg.tau_gravity[i] = gravity[i];
+      }
     }
     cartesian_state_publisher_->unlockAndPublish();
   }
@@ -1279,6 +1298,7 @@ CartesianImpedanceController::CallbackReturn CartesianImpedanceController::on_in
     auto_declare<double>("max_policy_step_rad", 0.18);
     auto_declare<double>("policy_command_timeout", 0.25);
     auto_declare<double>("state_publish_rate", 100.0);
+    auto_declare<double>("measured_torque_lowpass_s", 0.02);
     auto_declare<double>("goto_settle_tolerance_m", 0.0005);
     auto_declare<double>("goto_settle_tolerance_rad", 0.002);
     auto_declare<double>("goto_settle_timeout", 2.0);
@@ -1432,6 +1452,11 @@ bool CartesianImpedanceController::assign_parameters() {
   max_policy_step_rad_ = node->get_parameter("max_policy_step_rad").as_double();
   policy_command_timeout_ = node->get_parameter("policy_command_timeout").as_double();
   state_publish_rate_ = node->get_parameter("state_publish_rate").as_double();
+  measured_torque_lowpass_s_ = node->get_parameter("measured_torque_lowpass_s").as_double();
+  if (!std::isfinite(measured_torque_lowpass_s_) || measured_torque_lowpass_s_ < 0.0) {
+    RCLCPP_FATAL(node->get_logger(), "measured_torque_lowpass_s must be finite and >= 0");
+    return false;
+  }
   goto_settle_tolerance_m_ = node->get_parameter("goto_settle_tolerance_m").as_double();
   goto_settle_tolerance_rad_ = node->get_parameter("goto_settle_tolerance_rad").as_double();
   goto_settle_timeout_ = node->get_parameter("goto_settle_timeout").as_double();
@@ -1731,6 +1756,7 @@ CartesianImpedanceController::on_activate(const rclcpp_lifecycle::State& /*previ
     return CallbackReturn::ERROR;
   }
   first_update_ = true;
+  tau_measured_filter_initialized_ = false;
   command_initialized_.store(false, std::memory_order_release);
   phase_.store(static_cast<int>(Phase::kIdle));
   rt_phase_ = Phase::kIdle;

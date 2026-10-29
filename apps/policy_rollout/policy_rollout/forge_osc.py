@@ -52,6 +52,30 @@ M24_THREAD_PITCH = 0.003
 # clockwise turn -- negative about the world's up axis -- as positive progress,
 # so progress = THREADING_DIRECTION_SIGN * (twist - twist_at_cycle_start).
 THREADING_DIRECTION_SIGN = -1.0
+# The cyclic teacher's release (forge_transitions.build_cyclic_threading_teacher,
+# ForgeUltra 304d4d9, which collected the force-obs student's data): each turn
+# aims at the next exact 60 deg step of the nut's turn since cycle 1, so a short
+# turn is made up by the next one, clamped to the trained 55-65 deg, and the
+# release fires 5 deg before that target. Before it, every cycle released at a
+# fixed 55 deg and the shortfall piled up (-35 deg by turn 10).
+THETA_MAX_RAD = math.radians(60.0)
+RELEASE_MIN_TURN_RAD = math.radians(55.0)
+RELEASE_MARGIN_RAD = THETA_MAX_RAD - RELEASE_MIN_TURN_RAD
+MAX_TARGET_TURN_RAD = THETA_MAX_RAD + RELEASE_MARGIN_RAD
+
+
+def next_cycle_target_turn_rad(total_turn_rad: float) -> float:
+    """The next cycle's turn target, given the nut's total turn since cycle 1.
+
+    A hex nut repeats every 60 deg, so only the residual off that grid is
+    visible; the next turn absorbs it (``threading_cycle_grid_residual``).
+    Python's ``round`` is half-to-even, like the ``torch.round`` it mirrors.
+    """
+
+    residual = total_turn_rad - THETA_MAX_RAD * round(total_turn_rad / THETA_MAX_RAD)
+    return min(max(THETA_MAX_RAD - residual, RELEASE_MIN_TURN_RAD), MAX_TARGET_TURN_RAD)
+
+
 BOLT_TIP_OFFSET = M24_BOLT_HEIGHT + M24_BOLT_BASE_HEIGHT
 BOLT_TIP_POSITION = BOLT_BASE_POSITION + np.array([0.0, 0.0, BOLT_TIP_OFFSET])
 
@@ -78,6 +102,15 @@ THREADING_GRASP_POSTURE = {
     "little_joint_0": 1.0999,
 }
 PINCH_RANGES = ((0.0, 1.246165), (0.0, 0.3578 / 1.1425), (0.0, 1.333))
+# The pinch Isaac's cyclic teacher captured at threading entry, then returned
+# to and gated on (forge_transitions use_live_policy_reset_pose: the live joints
+# right after the environment reset). It is not THREADING_GRASP_POSTURE, which
+# stays the closed posture the pinch actions are decoded about. Read off the
+# teacher's return command in the 2026-10-25 force-obs training episode: unified
+# pinch -0.091 / -0.083 / 0.000 at the end of all ten returns. Decoded back
+# through the bolt frame, that command lands on the entry grasp built with this
+# pinch to 0.4 mm / 0.8 deg, against 3.9 mm / 6.7 deg with the closed posture.
+ISAAC_ENTRY_PINCH = (1.0717, 0.0246, 0.214675498)
 MIMIC_JOINT_MAP = {
     "index_joint_1": ("index_joint_0", 1.1169, 0.0),
     "middle_joint_1": ("middle_joint_0", 1.1169, 0.0),
@@ -465,6 +498,7 @@ __all__ = [
     "PINCH_JOINTS",
     "PINCH_RANGES",
     "THREADING_GRASP_POSTURE",
+    "ISAAC_ENTRY_PINCH",
     "THREADING_HAND_POSTURE",
     "compute_dof_torque",
     "decode_action_target",

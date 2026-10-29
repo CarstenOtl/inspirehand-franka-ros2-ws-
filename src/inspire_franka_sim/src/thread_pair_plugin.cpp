@@ -40,6 +40,7 @@ namespace inspire_franka_sim
 bool ThreadPairPlugin::init(rclcpp::Node::SharedPtr node, const mjModel * model, mjData * data)
 {
   node_ = node;
+  model_ = model;
   logger_ = node->get_logger().get_child("thread_pair");
 
   const int axial = joint_id(model, "nut_axial");
@@ -106,7 +107,7 @@ bool ThreadPairPlugin::init(rclcpp::Node::SharedPtr node, const mjModel * model,
   return true;
 }
 
-void ThreadPairPlugin::update(const mjModel * model, mjData * data)
+void ThreadPairPlugin::pre_step(mjData * data)
 {
   if (!present_) {
     return;
@@ -114,21 +115,40 @@ void ThreadPairPlugin::update(const mjModel * model, mjData * data)
 
   if (reset_requested_.exchange(false)) {
     hold_requested_.store(false);
-    reset_thread(model, data);
+    reset_thread(model_, data);
   }
 
   const bool wanted = hold_requested_.load();
   if (wanted != hold_engaged_) {
     if (wanted) {
-      engage_hold(model, data);
+      engage_hold(model_, data);
     } else {
-      release_hold(model, data);
+      release_hold(model_, data);
     }
     hold_engaged_ = wanted;
   }
+}
 
-  // data->time is the clock mujoco_ros2_control publishes on /clock, so the
-  // stamp needs no ROS call from this realtime thread.
+void ThreadPairPlugin::on_reset(mjData * data)
+{
+  if (!present_) {
+    return;
+  }
+  // A world reset restores qpos0 but not the coupling this plugin rewrote in
+  // the shared model, and it drops whatever hold the rollout had asked for.
+  hold_requested_.store(false);
+  reset_thread(model_, data);
+}
+
+void ThreadPairPlugin::update(const mjModel * /*model*/, mjData * data)
+{
+  if (!present_) {
+    return;
+  }
+
+  // A snapshot, which is all publishing needs. data->time is the clock
+  // mujoco_ros2_control publishes on /clock, so the stamp needs no ROS call
+  // from this realtime thread.
   if (data->time + 1e-9 < next_publish_time_) {
     return;
   }
@@ -182,6 +202,7 @@ void ThreadPairPlugin::cleanup()
   hold_subscription_.reset();
   reset_service_.reset();
   node_.reset();
+  model_ = nullptr;
   present_ = false;
 }
 

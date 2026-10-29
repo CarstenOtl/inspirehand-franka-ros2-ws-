@@ -39,3 +39,100 @@ def test_arm_friction_scale_sets_the_menagerie_values_on_the_arm_dofs():
     )
     with pytest.raises(ValueError):
         _scene(arm_friction_scale=-1.0)
+
+
+class _ThreadStub:
+    """The scene calls ``CyclicCoordinator.observe`` makes, on a settable twist."""
+
+    def __init__(self):
+        self.twist_angle = 0.0
+        self.twist_reference = 0.0
+        self.held = False
+
+    @property
+    def turn_progress_rad(self):
+        return fo.THREADING_DIRECTION_SIGN * (self.twist_angle - self.twist_reference)
+
+    def rebase_turn_reference(self):
+        self.twist_reference = self.twist_angle
+
+    def hold_thread(self):
+        self.held = True
+
+    def release_thread_hold(self):
+        self.held = False
+
+
+def test_the_cyclic_coordinator_aims_each_turn_at_the_60_degree_grid():
+    pytest.importorskip("mujoco")
+    from policy_rollout.mujoco_threading_env import CyclicCoordinator
+
+    grasp = fo.GraspFrameState(
+        np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(3), np.zeros(3), np.zeros((6, 7))
+    )
+    coordinator = CyclicCoordinator(
+        max_cycles=3,
+        reset_grasp_pos=np.zeros(3),
+        reset_grasp_quat=np.array([1.0, 0.0, 0.0, 0.0]),
+        reset_hand=np.zeros(3),
+    )
+    scene = _ThreadStub()
+
+    def observe(turn_deg):
+        scene.twist_angle = fo.THREADING_DIRECTION_SIGN * np.deg2rad(turn_deg)
+        return coordinator.observe(
+            step=0, turn_progress_rad=0.0, grasp=grasp, hand_joints=np.zeros(3), scene=scene
+        )
+
+    assert observe(54.0) is None
+    assert observe(55.5) == "release_started"
+    # The nut stops at 56 deg; the return completes there.
+    events = [observe(56.0) for _ in range(coordinator.waypoint_steps * 4 + coordinator.return_steps)]
+    assert events[-1] == "cycle_completed"
+    assert np.rad2deg(coordinator.target_turn_rad) == pytest.approx(64.0)
+    # Cycle 2 releases 5 deg before its 64 deg target, i.e. at 115 deg in total.
+    assert observe(114.0) is None
+    assert observe(115.5) == "release_started"
+
+
+def test_a_pinch_on_the_nut_reads_as_compression_on_both_pads():
+    from policy_rollout.mujoco_threading_env import seed_action_history
+
+    scene = _scene()
+    scene.reset(
+        fo.FRANKA_ARM_RESET_JOINTS_M24,
+        {**fo.THREADING_GRASP_POSTURE, "middle_joint_0": 1.333, "ring_joint_0": 1.333, "little_joint_0": 1.333},
+    )
+    assert scene.fingertip_force_n().tolist() == [0.0, 0.0]
+    thumb, _ = scene.body_pose(scene.thumb_tip)
+    index, _ = scene.body_pose(scene.index_tip)
+    flange_pos, flange_quat = scene.body_pose(scene.flange)
+    z_transport = fo.reset_z_transport(thumb, index, flange_pos, flange_quat, tilt_deg=0.0)
+    action = seed_action_history(scene.grasp_state(z_transport))
+    peak = np.zeros(2)
+    # Close thumb and index from the grasp onto the nut.
+    for squeeze in np.linspace(0.0, 1.4, 240):
+        action[6:9] = squeeze
+        scene.control_tick(action, z_transport)
+        peak = np.maximum(peak, scene.fingertip_force_n())
+    # Without the calibrated 150 deg yaw the thumb's squeeze lands on its +X
+    # and reads zero.
+    assert peak[0] > 0.3 and peak[1] > 0.3
+    # Holding the pose, the OSC torque is small next to the effort limits.
+    assert np.all(np.abs(scene.arm_joint_torque_nm()) < [8.7] * 4 + [1.2] * 3)
+
+
+def test_the_table_is_threading_v2s_legless_top_in_front_of_the_robot():
+    mujoco = pytest.importorskip("mujoco")
+    scene = _scene()
+    m, d = scene.model, scene.data
+    mujoco.mj_forward(m, d)
+    top = m.geom("table_top").id
+    centre, half = d.geom_xpos[top], m.geom_size[top]
+    np.testing.assert_allclose(centre, [0.335, 0.0, -0.015], atol=1e-9)
+    np.testing.assert_allclose(half, [0.4, 0.6, 0.015], atol=1e-9)
+    # Near ledge 46.5 cm from the robot axis (x = 1.2), bolt 12.5 cm inside it.
+    assert 1.2 - (centre[0] + half[0]) == pytest.approx(0.465)
+    assert centre[0] + half[0] - d.xpos[m.body("m24_bolt").id][0] == pytest.approx(0.125)
+    assert not any(m.geom(g).name.startswith("table_leg") for g in range(m.ngeom))
+    assert m.mat_texid[m.geom_matid[top]][mujoco.mjtTextureRole.mjTEXROLE_RGB] >= 0

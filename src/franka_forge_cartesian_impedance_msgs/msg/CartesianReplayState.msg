@@ -31,3 +31,11 @@ float64[7] tau_task
 float64[7] tau_nullspace
 float64[7] tau_coriolis
 float64[7] tau_command
+
+# For a force-observing policy's torque input. The link-side measured joint torque (the effort
+# state interface: tau_J on the FR3, the applied actuator torque in MuJoCo) after a first-order
+# low-pass at the control rate (measured_torque_lowpass_s), and the robot model's gravity torque
+# (zero on the DH model, whose scene runs without gravity). Their difference is the torque the
+# joints transmit without gravity, which is what training's PhysX joint torque reads.
+float64[7] tau_measured_filtered
+float64[7] tau_gravity

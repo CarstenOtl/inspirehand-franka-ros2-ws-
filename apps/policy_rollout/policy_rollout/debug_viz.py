@@ -5,7 +5,10 @@ actually used rather than a reconstruction:
 
 ``~/dp3_points``   the exact 4096 XYZRGB points the DP3 encoder sampled, in the
                    camera optical frame (the launch already publishes the
-                   static ``fr3_link0`` -> camera transform RViz needs);
+                   static ``fr3_link0`` -> camera transform RViz needs). The
+                   two-channel RGB-D encoder samples no cloud, it sees the
+                   whole frame, so for it this is the policy view's own depth
+                   back-projected on a coarse pixel grid;
 ``~/scene_points`` those points above the table, in the base frame;
 ``~/markers``      the controller's controlled point, the controller target,
                    the policy grasp frame, and the nut estimated from the cloud;
@@ -39,6 +42,9 @@ NUT_MAX_HEIGHT_M = 0.20
 # freshness limit on a loaded box. rqt_image_view scales for display anyway.
 OVERLAY_ZOOM = 1
 OVERLAY_BACKDROP = 0.40       # dim the frame so the sampled points read against it
+# Pixel stride of the cloud drawn for an encoder that samples none: 80x45 points
+# from the 320x180 view, about DP3's 4096, so the viz costs the loop the same.
+FRAME_CLOUD_STRIDE = 4
 
 
 class PolicyDebugPublisher:
@@ -76,6 +82,9 @@ class PolicyDebugPublisher:
         self.overlay_fy = float(intrinsics[1, 1])
         self.overlay_cx = float(intrinsics[0, 2])
         self.overlay_cy = float(intrinsics[1, 2])
+        # DP3 keeps the cloud it sampled; the RGB-D encoder has none to keep.
+        self.encoder_samples_cloud = hasattr(encoder, "last_sampled_points")
+        self.frame_cloud_max_depth_m = float(getattr(encoder, "depth_max_m", 2.0))
 
     # --- helpers ---------------------------------------------------------------
     def _cloud(self, xyz, rgb01, frame_id, stamp):
@@ -105,6 +114,38 @@ class PolicyDebugPublisher:
         message.is_dense = True
         message.data = data.tobytes()
         return message
+
+    def _sampled_cloud(self):
+        """The DP3 encoder's own last cloud, decoded back to metres."""
+
+        points = self.encoder.last_sampled_points
+        valid_points = self.encoder.last_sampled_valid
+        if points is None or valid_points is None:
+            raise RuntimeError(
+                "debug viz needs a policy step to have run: the encoder has "
+                "sampled no cloud to draw"
+            )
+        sampled = points[0].cpu().numpy().astype(np.float64)
+        valid = valid_points[0].cpu().numpy().astype(bool)
+        centre = self.encoder.xyz_center_m.cpu().numpy().reshape(3)
+        scale = self.encoder.xyz_scale_m.cpu().numpy().reshape(3)
+        xyz_cam = sampled[:, :3] * scale + centre
+        rgb01 = np.clip((sampled[:, 3:6] + 1.0) * 0.5, 0.0, 1.0)
+        return xyz_cam[valid], rgb01[valid]
+
+    def _frame_cloud(self, prepared):
+        """Back-project the policy view the RGB-D encoder was given."""
+
+        stride = FRAME_CLOUD_STRIDE
+        depth = np.asarray(prepared.depth[0], dtype=np.float64)[::stride, ::stride]
+        valid = np.asarray(prepared.valid_mask[0], dtype=bool)[::stride, ::stride]
+        valid &= depth <= self.frame_cloud_max_depth_m
+        rows, columns = np.nonzero(valid)
+        z = depth[rows, columns]
+        x = (columns * stride - self.overlay_cx) * z / self.overlay_fx
+        y = (rows * stride - self.overlay_cy) * z / self.overlay_fy
+        rgb = np.asarray(prepared.rgb, dtype=np.float64)[:, ::stride, ::stride]
+        return np.stack((x, y, z), axis=-1), np.clip(rgb[:, rows, columns].T, 0.0, 1.0)
 
     def _overlay(self, policy_rgb, xyz_cam, rgb01, nut_mask, stamp):
         """Project the sampled points back into the policy view as an Image.
@@ -202,20 +243,11 @@ class PolicyDebugPublisher:
         from .forge_osc import matrix_from_quat
 
         stamp = self.node.get_clock().now().to_msg()
-        points = self.encoder.last_sampled_points
-        valid_points = self.encoder.last_sampled_valid
-        if points is None or valid_points is None:
-            raise RuntimeError(
-                "debug viz needs a policy step to have run: the encoder has "
-                "sampled no cloud to draw"
-            )
-        sampled = points[0].cpu().numpy().astype(np.float64)
-        valid = valid_points[0].cpu().numpy().astype(bool)
-        centre = self.encoder.xyz_center_m.cpu().numpy().reshape(3)
-        scale = self.encoder.xyz_scale_m.cpu().numpy().reshape(3)
-        xyz_cam = sampled[:, :3] * scale + centre
-        rgb01 = np.clip((sampled[:, 3:6] + 1.0) * 0.5, 0.0, 1.0)
-        xyz_cam, rgb01 = xyz_cam[valid], rgb01[valid]
+        xyz_cam, rgb01 = (
+            self._sampled_cloud()
+            if self.encoder_samples_cloud
+            else self._frame_cloud(prepared)
+        )
 
         self.points_publisher.publish(
             self._cloud(xyz_cam, rgb01, self.calibration.frame_id, stamp)

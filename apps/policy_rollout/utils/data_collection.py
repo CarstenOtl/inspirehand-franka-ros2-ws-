@@ -18,12 +18,17 @@ SCHEMA_VERSION = 1
 DATA_FILENAME = "rollout_data.npz"
 METADATA_FILENAME = "metadata.json"
 
-# q10 + dq + the previous nine-value action.  dq is the full ten joints for a
-# checkpoint shown the hand velocities and the seven arm joints for one trained
-# without them, so proprioception is 29 or 26 values wide and nothing else.
+# q10 + dq + the previous nine-value action [+ nine force/torque values].  dq
+# is the full ten joints for a checkpoint shown the hand velocities and the
+# seven arm joints for one trained without them; a force-observing checkpoint
+# appends two pad forces and seven normalized arm torques. So proprioception is
+# 26 or 29 values wide, or 35 or 38 with forces, and nothing else.
 PROPRIO_POSITION_DIM = 10
 PROPRIO_PREVIOUS_ACTION_DIM = 9
-SUPPORTED_PROPRIO_WIDTHS = (26, 29)
+PROPRIO_FORCE_DIM = 9
+# Proprio width -> how many joint velocities it carries.
+PROPRIO_VELOCITY_WIDTHS = {26: 7, 29: 10, 35: 7, 38: 10}
+SUPPORTED_PROPRIO_WIDTHS = tuple(PROPRIO_VELOCITY_WIDTHS)
 
 REQUIRED_FIELDS = (
     "sample_time_s",
@@ -232,11 +237,9 @@ class RolloutDataCollector:
         if proprio_width not in SUPPORTED_PROPRIO_WIDTHS:
             raise ValueError(
                 "proprio must be 29 values with the hand velocities or 26 "
-                f"without them, got {proprio_width}"
+                f"without them (35/38 with forces), got {proprio_width}"
             )
-        velocity_width = (
-            proprio_width - PROPRIO_POSITION_DIM - PROPRIO_PREVIOUS_ACTION_DIM
-        )
+        velocity_width = PROPRIO_VELOCITY_WIDTHS[proprio_width]
 
         values = {
             "sample_time_s": np.asarray(
@@ -434,7 +437,7 @@ def load_rollout(path: str | Path) -> LoadedRollout:
     if proprio_width not in SUPPORTED_PROPRIO_WIDTHS:
         raise ValueError(
             "proprio must be 29 values wide with the hand velocities or 26 "
-            f"without them, got {proprio_width}"
+            f"without them (35/38 with forces), got {proprio_width}"
         )
     expected_widths = {
         "joint_position": 10,

@@ -257,6 +257,10 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   double max_policy_step_rad_{0.18};
   double policy_command_timeout_{0.25};
   double state_publish_rate_{100.0};
+  // Time constant of the measured-torque low-pass published in ~/cartesian_state (0 = none).
+  double measured_torque_lowpass_s_{0.02};
+  Vector7d tau_measured_filtered_{Vector7d::Zero()};
+  bool tau_measured_filter_initialized_{false};
   double goto_settle_tolerance_m_{0.0005};
   double goto_settle_tolerance_rad_{0.002};
   double goto_settle_timeout_{2.0};

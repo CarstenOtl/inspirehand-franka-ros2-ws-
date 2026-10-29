@@ -51,10 +51,28 @@ ament_target_dependencies(${PROJECT_NAME}_isaac_hand_plugin
 )
 target_link_libraries(${PROJECT_NAME}_isaac_hand_plugin mujoco::mujoco)
 
+# The pad forces a force-observing student sees; no ros2_control interface
+# reaches contact forces. See the header.
+add_library(${PROJECT_NAME}_fingertip_force_plugin SHARED src/fingertip_force_plugin.cpp)
+target_compile_features(${PROJECT_NAME}_fingertip_force_plugin PUBLIC cxx_std_17)
+target_include_directories(${PROJECT_NAME}_fingertip_force_plugin PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(${PROJECT_NAME}_fingertip_force_plugin
+  mujoco_ros2_control_plugins
+  pluginlib
+  rclcpp
+  realtime_tools
+  sensor_msgs
+)
+target_link_libraries(${PROJECT_NAME}_fingertip_force_plugin mujoco::mujoco)
+
 pluginlib_export_plugin_description_file(
   mujoco_ros2_control_plugins mujoco_plugins.xml)
 
 install(TARGETS ${PROJECT_NAME}_thread_pair_plugin ${PROJECT_NAME}_isaac_hand_plugin
+  ${PROJECT_NAME}_fingertip_force_plugin
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin

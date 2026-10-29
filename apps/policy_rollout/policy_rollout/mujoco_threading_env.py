@@ -15,7 +15,8 @@ mirrors, in NumPy/MuJoCo:
   target -> operational-space torque -> joint-PD command (the deployment
   adapter) -> joint impedance torque;
 - the cyclic release/return coordinator of ``forge_transitions.py``:
-  release at 55 deg of directional turn progress, four 0.7 s waypoint phases,
+  release 5 deg before each cycle's turn target (the next 60 deg step of the
+  total turn, so 55 deg on the first cycle), four 0.7 s waypoint phases,
   a 1.0 s return phase gated by the physical return check (5 mm, 5 deg,
   0.15 rad) with a 16 s timeout, thread hold during the transition, and the
   action-history seed at each cycle boundary.
@@ -74,8 +75,8 @@ MENAGERIE_ARM_DAMPING = (0.21, 0.21, 0.21, 0.21, 0.21, 0.21, 0.21)
 PINCH_STIFFNESS, PINCH_DAMPING, PINCH_EFFORT = 30.0, 3.0, 20.0
 INACTIVE_STIFFNESS, INACTIVE_DAMPING, INACTIVE_EFFORT = 4.76, 0.21, 1.864
 
-# Cyclic release/return (waypoints_release_and_reset_franka.yaml).
-RELEASE_MIN_TURN_DEG = 55.0
+# Cyclic release/return (waypoints_release_and_reset_franka.yaml). The release
+# turn is per cycle: fo.next_cycle_target_turn_rad.
 WAYPOINT_DURATION_S = 0.7
 RETURN_DURATION_S = 1.0
 RETURN_POSITION_TOLERANCE_M = 0.005
@@ -83,6 +84,15 @@ RETURN_ORIENTATION_TOLERANCE_DEG = 5.0
 RETURN_HAND_TOLERANCE_RAD = 0.15
 RETURN_TIMEOUT_S = 16.0
 WAYPOINT_PHASES = 4
+
+# ForgeUltra's calibrated fingertip force-sensor frames
+# (assets/fr3_inspirehand/build_fr3_inspirehand.py TIP_FRAME_LOCAL_ROT0_WXYZ):
+# each tip frame is yawed about its pad link's Z so that local -X is the RH56
+# flexion/extension sensing direction. Both MJCFs keep the URDF's unrotated tip
+# bodies, whose positions the grasp frame uses, so the yaw is applied when
+# projecting instead. inspire_franka_sim's FingertipForcePlugin carries the same
+# two numbers for ros-sim.
+FINGERTIP_SENSOR_YAW_RAD = (2.617993878, -0.261799388)  # thumb_tip, index_tip
 
 
 
@@ -261,6 +271,47 @@ class ThreadingScene:
             flange_jacobian=j_flange[:, self.arm_dofs],
         )
 
+    def fingertip_force_n(self) -> np.ndarray:
+        """ForgeUltra ``InspireFingertipForceSensor``: ``[thumb, index]`` in N.
+
+        The net contact force on each pad link (every contact, as the hardware
+        cannot tell what presses it), in the calibrated tip frame, as
+        ``max(-F_local_x, 0)``.
+        """
+
+        m, d = self.model, self.data
+        wrench = np.zeros(6)
+        result = np.zeros(2)
+        for k, (tip, yaw) in enumerate(
+            zip((self.thumb_tip, self.index_tip), FINGERTIP_SENSOR_YAW_RAD)
+        ):
+            pad = m.body_parentid[tip]
+            force_w = np.zeros(3)
+            for i in range(d.ncon):
+                contact = d.contact[i]
+                body1 = m.geom_bodyid[contact.geom1]
+                body2 = m.geom_bodyid[contact.geom2]
+                if (body1 == pad) == (body2 == pad):
+                    continue
+                self.mujoco.mj_contactForce(m, d, i, wrench)
+                # The contact-frame force acts on geom2, its reaction on geom1.
+                force = contact.frame.reshape(3, 3).T @ wrench[:3]
+                force_w += force if body2 == pad else -force
+            c, s = np.cos(yaw), np.sin(yaw)
+            sensor = d.xmat[tip].reshape(3, 3) @ np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+            result[k] = max(-float((sensor.T @ force_w)[0]), 0.0)
+        return result
+
+    def arm_joint_torque_nm(self) -> np.ndarray:
+        """The seven applied arm joint torques, ForgeUltra ``FrankaJointTorqueSensor``.
+
+        PhysX's projected joint force on a driven revolute joint is the torque
+        applied across it; with the robot's gravity off, as in training, that
+        is the actuator torque alone.
+        """
+
+        return np.array([self.data.actuator_force[self.aid[n]] for n in ARM_JOINTS])
+
     def arm_mass_matrix(self):
         return full_mass_matrix(self.model, self.data)[np.ix_(self.arm_dofs, self.arm_dofs)]
 
@@ -395,6 +446,7 @@ class CyclicCoordinator:
     completed_cycles: int = 0
     failed: bool = False
     limit_reached: bool = False
+    target_turn_rad: float = fo.THETA_MAX_RAD
     events: list = field(default_factory=list)
 
     @property
@@ -434,7 +486,12 @@ class CyclicCoordinator:
                     self.phase_step = 0
                     self.wait_steps = 0
                 elif self.physically_returned(grasp, hand_joints):
-                    # on_finish: rebase, release the hold, count the cycle.
+                    # on_finish: aim the next turn at the 60 deg grid, rebase,
+                    # release the hold, count the cycle. The twist starts at 0
+                    # on reset, so it is the total turn since cycle 1.
+                    self.target_turn_rad = fo.next_cycle_target_turn_rad(
+                        THREADING_DIRECTION_SIGN * scene.twist_angle
+                    )
                     scene.rebase_turn_reference()
                     scene.release_thread_hold()
                     self.completed_cycles += 1
@@ -458,7 +515,7 @@ class CyclicCoordinator:
             not self.active
             and not self.failed
             and not self.limit_reached
-            and scene.turn_progress_rad >= math.radians(RELEASE_MIN_TURN_DEG)
+            and scene.turn_progress_rad >= self.target_turn_rad - fo.RELEASE_MARGIN_RAD
         ):
             scene.hold_thread()
             self.active = True
@@ -471,10 +528,14 @@ class CyclicCoordinator:
         return event
 
 
-def seed_action_history(grasp: fo.GraspFrameState, hand_joints, closed_posture=None):
-    """``seed_threading_policy_action_history``: encode the live pose as the previous action."""
+def seed_action_history(grasp: fo.GraspFrameState):
+    """``seed_threading_policy_action_history``: encode the live pose as the previous action.
 
-    closed = closed_posture or fo.THREADING_GRASP_POSTURE
+    The same seed Isaac writes into ``prev_actions`` at an environment reset
+    (``ForgeTg2Env._reset_idx``) and at every cycle boundary, so it is both the
+    first observation's previous action and the one after each return.
+    """
+
     seed = np.zeros(9)
     seed[0:3] = (grasp.pos - fo.BOLT_TIP_POSITION) / fo.POS_ACTION_BOUNDS
     base = fo.quat_from_euler_xyz(*fo.EE_BASE_ORN_EULER)
@@ -491,10 +552,9 @@ def seed_action_history(grasp: fo.GraspFrameState, hand_joints, closed_posture=N
 
     seed[3] = wrap(roll) / fo.ROT_ACTION_BOUNDS[0]
     seed[4] = wrap(pitch) / fo.ROT_ACTION_BOUNDS[1]
-    # Hand: the recorded episodes seed the pinch actions so that the relative
-    # pinch target equals the live reset hand pose.
-    for k, (name, (lo, hi)) in enumerate(zip(fo.PINCH_JOINTS, fo.PINCH_RANGES)):
-        seed[6 + k] = float(np.clip(2.0 * (hand_joints[k] - closed[name]) / (hi - lo), -1.0, 1.0))
+    # Pinch: zero. The M24 task runs finger_action_relative_to_grasp, where 0
+    # holds the closed grasp, and both Isaac seeders write 0 there. This used to
+    # encode the live hand instead, which is not what either does.
     return seed
 
 

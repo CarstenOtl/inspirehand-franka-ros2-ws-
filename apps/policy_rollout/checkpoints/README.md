@@ -9,17 +9,74 @@ exported them.
 
 ```
 checkpoints/
+  m24-dp3-nominal-da-force-nohv-s0-20261029-113811-885629/
+    nn/checkpoint.pt                   the deployed student (policy_rollout.DEFAULT_CHECKPOINT)
+    nn/flow_config.json, nn/run_provenance.json, evaluation/, summaries/   training-run side files
+  fr3_offline_flow_matching_force_obs_v1_25102026/
+    nn/checkpoint.pt                   the 38-D RGB-D student that observes forces
+  fr3_offline_flow_matching_force_obs_25102026/
+    nn/checkpoint.pt                   the 29-D RGB-D student of the force-obs teacher
+  fr3_offline_flow_matching_parallel_vision_13102026/
+    m24-dr-disturbed-dp3-no-finger-velocity-seed0-20261013-135143-648368/
+      nn/checkpoint.pt                 the previous 26-D DP3 student
   sequential_threading_cycle10_hybrid_teacher_d415_20ep/
-    checkpoint.pt                      the student policy that the rollout app loads
+    checkpoint.pt                      an earlier DP3 student, paired with reference_episode/
   fr3/
     vision_head-fr3_d415_nut_sweep_20260910T152223_calibration/
       nn/best.pt                       DP3 vision-head pretraining checkpoint (provenance only)
 ```
 
+## `m24-dp3-nominal-da-force-nohv-s0-20261029-113811-885629/nn/checkpoint.pt`
+
+The deployed student. It observes forces and drops the finger velocities.
+
+| field | value |
+|---|---|
+| sha256 | `387e5899331e11f6edf313056e7d4dddcd8f4d88797d2d369bdcce72ac44ae1b` |
+| size | 106 MB |
+| epoch | 100 (EMA decay 0.999; `ema_model` is loaded by default) |
+| control | 9-D OSC, `unified` action representation, native scale `[3,4,16,3,3,3,2,2,2]` |
+| proprio | 35-D: `q10 + arm dq7 + previous filtered native action + [thumb, index] pad force (N / 20) + 7 FR3 joint torques / effort limits (clipped to 1)` |
+| action horizon | 8 |
+| backbone | trajectory Transformer, 4 layers, 8 heads |
+| conditioning | trajectory progress (72.2 s / 1083 steps) and cyclic process phase (`policy`, `follow_waypoints`, `return_to_reset`) |
+| vision | RGB point-cloud DP3 encoder, 320x180, 4096 points, same crop box as the other DP3 students |
+| training | ForgeUltra `forgeUltra_force_obs` 0e575f7 (dirty, not pushed), depth augmentation `realistic`, no RGB augmentation |
+| training data | 40 `sequential-threading-dual-supervision-20261027-173748-484021` episodes |
+| Isaac closed loop | 3 episodes x 16 environments, all completed 10 cycles (480 cycles, 0 transition failures) |
+
+The checkpoint records no proprio layout; the training side confirmed the one
+above (student.py `build_native_osc_student_proprio`). The order matches the force
+channels appended after the previous action, as in the teacher actor and the
+v1 student. The first proprio layer confirms it: the previous action's column
+fingerprint sits at columns 17-25, as in the 26-D DP3 student.
+
+## `fr3_offline_flow_matching_force_obs_25102026/nn/checkpoint.pt`
+
+Distilled from the force-observation teacher. The force
+and torque signals are teacher inputs only; the student does not observe them.
+
+| field | value |
+|---|---|
+| sha256 | `6f68b30b20c897208c4b6368163c819638ee63b40bc43a2d239499101c9b1967` |
+| size | 159 MB |
+| epoch | 100 (EMA decay 0.999; `ema_model` is loaded by default) |
+| control | 9-D OSC, `unified` action representation, native scale `[3,4,16,3,3,3,2,2,2]` |
+| proprio | 29-D (`q10 + dq10 + previous filtered native action`), hand velocities included |
+| action horizon | 8 |
+| backbone | trajectory Transformer, 4 layers, 8 heads |
+| conditioning | trajectory progress (81.2 s / 1218 steps) and cyclic process phase (`policy`, `follow_waypoints`, `return_to_reset`) |
+| vision | two-channel RGB-D encoder (ResNet-18 stage-3 stems, 2 bidirectional fusion layers, 8x14 tokens), 320x180, 64-D output |
+| training data | 20 `sequential-threading-dual-supervision-20261025-100347-893694` episodes, 24573 samples |
+| Isaac closed loop | 15/16 environments completed 10 cycles (159 cycles, 1 transition failure) |
+
+Its camera matrix is the same 320x180 policy view as the DP3 students'.
+
 ## `sequential_threading_cycle10_hybrid_teacher_d415_20ep/checkpoint.pt`
 
-The ForgeUltra offline-flow student for the ten-cycle sequential threading
-task. This is the only file the rollout app reads.
+An earlier ForgeUltra offline-flow student for the ten-cycle sequential
+threading task, kept because the diagnostics that replay
+`reference_episode/` default to it.
 
 | field | value |
 |---|---|
@@ -61,6 +118,7 @@ mean rotation error 46 deg after 1000 steps on 16000 frames.
 
 The app accepts a ForgeUltra checkpoint dictionary containing `config`,
 `model`, and optionally `ema_model`; EMA is selected by default. It rejects
-anything except the 9-D OSC, 29-D proprio, RGB point-cloud DP3 contract, and
-it refuses a checkpoint whose camera matrix or DP3 crop does not match the
-camera profile YAML.
+anything except the 9-D OSC contract with 29-D (or, without hand velocities,
+26-D) proprio, plus 9 when it observes forces, and either the RGB point-cloud DP3 or the two-channel RGB-D
+vision head. It refuses a checkpoint whose camera matrix, or, for DP3, whose
+crop box, does not match the camera profile YAML.

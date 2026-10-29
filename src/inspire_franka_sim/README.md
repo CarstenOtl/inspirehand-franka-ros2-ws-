@@ -289,8 +289,17 @@ this->size() (which is 14)` inside `MujocoSystemInterface` and takes the whole
 hardware component down with it, which looks nothing like a configuration
 mistake.
 
+The hold and the reset are applied in the plugin's `pre_step`, on the physics
+thread. `update` runs on the control thread with a *snapshot* of `mjData`
+(mujoco_ros2_control's plugin contract), so it only publishes `/thread_state`.
+Until 2026-10-25 the hold was engaged from `update`. Its `eq_data` writes
+reached the shared model, which flattened the thread coupling, but the
+`eq_active` that pins the twist stayed in the snapshot, so every "hold" left
+the nut spinning almost freely (0.002 N m Coulomb). This only became visible
+once a student actually turned the nut: the release swung it from 56 to 116 deg.
+
 The plugin is idle in every other scene here: it logs once that the scene has no
-thread pair and its `update` returns immediately.
+thread pair and its hooks return immediately.
 
 ## Regenerating the assets
 
