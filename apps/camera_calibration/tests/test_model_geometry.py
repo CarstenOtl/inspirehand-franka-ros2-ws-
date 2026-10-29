@@ -10,6 +10,7 @@ from camera_calibration.calibration_math import (
     quaternion_xyzw_to_matrix,
 )
 from camera_calibration.model_geometry import (
+    add_apriltag_mount,
     DEFAULT_HAND_TO_TAG_QUATERNION_XYZW,
     DEFAULT_HAND_TO_TAG_XYZ,
     TAG_BODY_TO_PRINTED_TAG_QUATERNION_XYZW,
@@ -34,7 +35,7 @@ def _body_transform(body: ET.Element) -> np.ndarray:
 
 
 def test_default_flange_to_printed_tag_matches_calibration_mujoco_model():
-    root = ET.parse(ROBOT_SCENE).getroot()
+    root = add_apriltag_mount(ET.parse(ROBOT_SCENE).getroot())
     flange = root.find(".//body[@name='fr3_link8']")
     assert flange is not None
     rz1 = flange.find("body[@name='apriltag_rz1']")
@@ -75,7 +76,7 @@ def test_calibration_model_has_physical_flange_clocking_and_adapter():
 
 
 def test_calibration_target_is_flat_2p3_mm_plate_at_measured_holder_pose():
-    root = ET.parse(ROBOT_SCENE).getroot()
+    root = add_apriltag_mount(ET.parse(ROBOT_SCENE).getroot())
     flange = root.find(".//body[@name='fr3_link8']")
     assert flange is not None
     rz1 = flange.find("body[@name='apriltag_rz1']")

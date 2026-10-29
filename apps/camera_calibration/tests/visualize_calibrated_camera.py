@@ -29,6 +29,12 @@ import numpy as np
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+PACKAGE_SOURCE = REPO_ROOT / "src" / "camera_calibration"
+if str(PACKAGE_SOURCE) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_SOURCE))
+
+from camera_calibration.model_geometry import add_apriltag_mount  # noqa: E402
+
 DEFAULT_MODEL = REPO_ROOT / "assets" / "fr3_inspirehand" / "fr3_inspirehand.xml"
 CAMERA_NAME = "calibrated_rgb_pov"
 SUPPORTED_ROOT_FRAMES = {"world", "base", "fr3_link0"}
@@ -245,7 +251,7 @@ def decorated_scene_xml(
     image_size: tuple[int, int],
     frustum_depth_m: float,
 ) -> str:
-    """Inject a camera housing, RGB optical camera, axes, and view frustum."""
+    """Inject the flange AprilTag, a camera housing, RGB optical camera, axes, and view frustum."""
     if not math.isfinite(frustum_depth_m) or frustum_depth_m <= 0.0:
         raise ValueError("--frustum-depth-m must be finite and positive")
     model_path = model_path.expanduser().resolve()
@@ -259,6 +265,7 @@ def decorated_scene_xml(
             if not asset_path.is_file():
                 raise FileNotFoundError(f"MuJoCo asset does not exist: {asset_path}")
             element.set("file", str(asset_path))
+    add_apriltag_mount(root, model_path.parent)
     worldbody = root.find("worldbody")
     if worldbody is None:
         raise ValueError(f"{model_path} has no worldbody")

@@ -34,3 +34,6 @@ __pycache__/
 
 # Debug images and plots generated while investigating runs.
 /debug/
+
+# Raw camera-calibration runs (sample images); accepted results are copied to assets/camera/calibration/
+/apps/camera_calibration/logs/

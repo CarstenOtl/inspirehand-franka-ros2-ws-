@@ -1,0 +1,59 @@
+schema_version: 1
+# Measured, not validated: the deployed student was trained on the
+# 2026-09-10 pose. Promote once a student is trained on this pose.
+status: measured
+calibrated_at_utc: "2026-10-29T17:32:20.626741Z"
+# Recorded at 1920x1080. The pose is resolution-independent; the 640x480
+# policy stream's factory intrinsics follow from these by scaling 4/9 and
+# cropping 106.67 px per side (agrees with the 2026-09-10 640x480 matrix to
+# 0.000 px).
+
+world_to_camera_mount:
+  parent_frame: fr3_link0
+  child_frame: camera_link
+  translation_m: [0.0038473331791420914, 0.5559147348916714, 0.4769340633514402]
+  rotation_xyzw: [0.07707991175108038, 0.1524134834220694, -0.40957602612556204, 0.8961452427473958]
+  matrix_4x4:
+    - [0.6180352177886874, 0.7575752504153074, 0.21002906830026014, 0.0038473331791420914]
+    - [-0.7105831790079155, 0.6526123320552772, -0.2629994101901703, 0.5559147348916714]
+    - [-0.3363094040967264, 0.013299774718308899, 0.9416576345511929, 0.4769340633514402]
+    - [0.0, 0.0, 0.0, 1.0]
+
+world_to_color_optical:
+  parent_frame: fr3_link0
+  child_frame: camera_color_optical_frame
+  translation_m: [0.015436792116129017, 0.5655169409139895, 0.47709339261888223]
+  rotation_xyzw: [-0.2810334892558843, 0.7679468890565848, -0.5380779809011071, 0.20432777582689068]
+  matrix_4x4:
+    - [-0.7585406758845976, -0.2117490334716522, 0.6162616245170223, 0.015436792116129017]
+    - [-0.6515261417074417, 0.2629845287721011, -0.7115847274206569, 0.5655169409139895]
+    - [-0.01138989465942547, -0.9412765185907578, -0.33744449299004753, 0.47709339261888223]
+    - [0.0, 0.0, 0.0, 1.0]
+
+calibration_fixture:
+  tag_family: tag36h11
+  tag_id: 0
+  tag_size_m: 0.04
+  carrier_to_tag:
+    parent_frame: fr3_link8
+    child_frame: apriltag_0
+    translation_m: [0.042426406871192854, -0.042426406871192854, 0.035]
+    rotation_xyzw: [-0.27059805007309906, 0.6532814824381881, -0.6532814824381881, 0.27059805007309906]
+    matrix_4x4:
+      - [-0.7071067811865466, 0.0, 0.7071067811865488, 0.042426406871192854]
+      - [-0.7071067811865488, -2.220446049250313e-16, -0.7071067811865465, -0.042426406871192854]
+      - [0.0, -1.0000000000000002, -2.220446049250313e-16, 0.035]
+      - [0.0, 0.0, 0.0, 1.0]
+
+fit_quality:
+  samples_collected: 12
+  samples_used: 11
+  translation_rmse_m: 0.009722098952521664
+  rotation_rmse_deg: 0.9783361756760356
+
+provenance:
+  source_result: calibration_result.json  # copy of the gitignored apps/camera_calibration/logs/20261029T173220_626741Z/ run
+  source_result_sha256: 67e0c1661a651e5aa71a302c786cfb8d9d44e910301c2c1b34904b94378aa072
+  source_run_timestamp_utc: "2026-10-29T17:32:20.626741Z"
+  source_capture_resolution: [1920, 1080]
+  static_camera_info: ../../info/d415.yaml

@@ -58,6 +58,7 @@ from camera_calibration.calibration_math import (  # noqa: E402
 )
 from camera_calibration.auto_waypoints import AUTO_WAYPOINTS  # noqa: E402
 from camera_calibration.model_geometry import (  # noqa: E402
+    add_apriltag_mount,
     TAG_BODY_TO_PRINTED_TAG_QUATERNION_XYZW,
     TAG_BODY_TO_PRINTED_TAG_XYZ,
 )
@@ -230,10 +231,8 @@ def _initial_camera_pose(
     return world_to_camera_mujoco
 
 
-def _absolute_asset_xml_with_camera(
-    world_to_camera_mujoco: np.ndarray, intrinsics: D435RgbIntrinsics
-) -> str:
-    """Return the scene XML with absolute assets and one fixed RGB camera."""
+def _tagged_scene_root() -> ET.Element:
+    """The robot scene with the flange AprilTag mounted and absolute assets."""
     if not ROBOT_SCENE.is_file():
         raise FileNotFoundError(f"combined MuJoCo scene not found: {ROBOT_SCENE}")
     root = ET.fromstring(ROBOT_SCENE.read_text(encoding="utf-8"))
@@ -247,6 +246,14 @@ def _absolute_asset_xml_with_camera(
             if not asset_path.is_file():
                 raise FileNotFoundError(f"MuJoCo asset not found: {asset_path}")
             element.set("file", str(asset_path))
+    return add_apriltag_mount(root, ROBOT_SCENE.parent)
+
+
+def _absolute_asset_xml_with_camera(
+    world_to_camera_mujoco: np.ndarray, intrinsics: D435RgbIntrinsics
+) -> str:
+    """Return the scene XML with absolute assets and one fixed RGB camera."""
+    root = _tagged_scene_root()
 
     # Inject an explicitly UV-mapped copy of the 50 mm planar plate face. The
     # texture has a 640/800 black-square ratio, hence its metric black edge is
@@ -319,7 +326,9 @@ def load_calibration_scene(
     intrinsics.validate()
     mj = _require_mujoco()
 
-    seed_model = mj.MjModel.from_xml_path(str(ROBOT_SCENE))
+    seed_model = mj.MjModel.from_xml_string(
+        ET.tostring(_tagged_scene_root(), encoding="unicode")
+    )
     seed_data = mj.MjData(seed_model)
     _reset_start_keyframe(mj, seed_model, seed_data)
     world_to_camera_mujoco = _initial_camera_pose(
