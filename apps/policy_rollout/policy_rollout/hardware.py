@@ -151,10 +151,12 @@ class TorqueLowPass:
 
 
 #: How far past either end of the overlaid range the thumb-yaw feedback may
-#: read, as a logical open ratio, before it counts as a fault: 30 register
-#: counts, about 0.037 rad. 20 was too tight: on 2026-10-29 a thumb held at its
-#: yaw limit settled 22.7 counts past it and ended two runs after 20 steps.
-THUMB_FEEDBACK_SLACK_OPEN_RATIO = 0.03
+#: read, as a logical open ratio, before it counts as a fault: 45 thousandths,
+#: about 0.05 rad. 20 was too tight: on 2026-10-29 a thumb held at its yaw limit
+#: settled 22.7 past it and ended two runs after 20 steps; 30 was too tight once
+#: the hand's force threshold went from 500 to 1000 g, and the thumb settled
+#: 30.7 past it (hardware-20261103-155652-541265, ended after 70 steps).
+THUMB_FEEDBACK_SLACK_OPEN_RATIO = 0.045
 
 
 def physical_hand_state_to_policy(
@@ -668,6 +670,91 @@ def policy_goal_base(frame, filtered_action) -> tuple[np.ndarray, np.ndarray]:
     return frame.pose_world_to_base(goal.pos, goal.quat)
 
 
+# The Cartesian controller's FR3 position limits (kPositionLower/Upper in
+# franka_forge_cartesian_impedance). Near a limit the FR3 also lowers the speed
+# it allows toward it, to zero within ~1 mrad, and aborts the motion with a
+# joint_velocity_violation reflex: hardware-20261103-154114-907622 drifted
+# joint 5 to 2.875 of 2.8763 rad and stopped that way.
+FR3_POSITION_LOWER = np.array([-2.9007, -1.8361, -2.9007, -3.0770, -2.8763, 0.4398, -3.0508])
+FR3_POSITION_UPPER = np.array([2.9007, 1.8361, 2.9007, -0.1169, 2.8763, 4.6216, 3.0508])
+
+
+def joint_limit_violation(q_arm, margin_rad) -> str | None:
+    """Why the arm is too close to a position limit to keep running, or None."""
+
+    q_arm = np.asarray(q_arm, dtype=float)
+    margins = np.minimum(q_arm - FR3_POSITION_LOWER, FR3_POSITION_UPPER - q_arm)
+    joint = int(np.argmin(margins))
+    if margins[joint] >= margin_rad:
+        return None
+    return (
+        f"fr3_joint{joint + 1} at {q_arm[joint]:.3f} rad is {margins[joint]:.3f} rad from its "
+        f"limit (stop margin {margin_rad:.2f} rad)"
+    )
+
+
+class FingerSweepReleaseDetector:
+    """Release signal for a student that turns the nut with its fingers.
+
+    The 2026-11-02 FR3 v2 student does not turn the nut with the wrist: in all
+    ten turns of ros_sim-20261103-130005-909378 the wrist moved ~5 deg while the
+    loaded fingertips first converged to 2-3 mm, then the index swept closed
+    (0.70 -> 0.83 rad) and the nut turned from about -12 to +58 deg in ~0.5 s.
+    The fingertips end that turn 16-18 mm apart, inside the grasp-yaw proxy's
+    collapsed-pinch veto, so the proxy can never release this student.
+
+    This fires on the end of that sweep: a tight loaded pinch, then the index
+    at ``index_closed_rad`` within the same grasp (the hand opening rearms it).
+    The pads need not still be loaded at the end: with 2x arm friction
+    (ros_sim-20261103-145533-735482) the contact left the index pad during a
+    61 deg turn. Offline it fired in 9 of the 10 turns above at 39-59 deg of
+    real twist (the tenth never loaded the thumb), and never in
+    hardware-20261103-143701-495628, whose fingers stalled on the nut at
+    0.49-0.59 rad and later slipped past it with 1-3 N on the pads.
+
+    The pinch is 10 mm, not the 2-3 mm the simulated tips reach: the RH56's
+    rounded tips got no closer than 7.8 mm on the nut (7-11 N on both pads) in
+    hardware-20261103-161413-264559, before the index swept to 0.84 rad. 10 mm
+    fires there at 6.1 s and nowhere else in the five 2026-11-03 hardware runs
+    or the ros-sim runs above.
+    """
+
+    def __init__(
+        self,
+        *,
+        pinch_separation_m=0.010,
+        index_closed_rad=0.82,
+        index_force_n=5.0,
+        thumb_force_n=2.0,
+        open_separation_m=0.025,
+        open_force_n=1.0,
+    ):
+        self.pinch_separation_m = float(pinch_separation_m)
+        self.index_closed_rad = float(index_closed_rad)
+        self.index_force_n = float(index_force_n)
+        self.thumb_force_n = float(thumb_force_n)
+        self.open_separation_m = float(open_separation_m)
+        self.open_force_n = float(open_force_n)
+        self.pinched = False
+
+    def reset(self) -> None:
+        self.pinched = False
+
+    def update(self, *, fingertip_separation_m, fingertip_force_n, index_rad) -> bool:
+        """Whether this tick ends a finger-sweep turn. Missing inputs never fire."""
+
+        if fingertip_separation_m is None or fingertip_force_n is None or index_rad is None:
+            return False
+        separation = float(fingertip_separation_m)
+        thumb_force, index_force = (float(value) for value in fingertip_force_n)
+        if max(thumb_force, index_force) < self.open_force_n and separation > self.open_separation_m:
+            self.pinched = False
+        loaded = index_force >= self.index_force_n and thumb_force >= self.thumb_force_n
+        if loaded and separation <= self.pinch_separation_m:
+            self.pinched = True
+        return self.pinched and float(index_rad) >= self.index_closed_rad
+
+
 class GripCycleCoordinator:
     """Physical release/return phase state from measured grasp rotation.
 
@@ -679,6 +766,10 @@ class GripCycleCoordinator:
     In ros-sim the nut's real twist IS available (``ThreadPairClient``), and
     ``update`` then gates on that instead; the proxy is still advanced and
     recorded alongside it.
+
+    ``release_signal="finger_sweep"`` replaces the proxy with
+    ``FingerSweepReleaseDetector`` for students that turn the nut with their
+    fingers; a measured twist still wins when ``update`` is given one.
 
     The release fires ``fo.RELEASE_MARGIN_RAD`` (5 deg) before the cycle's turn
     target. Training aims every turn after the first at the next 60 deg step of
@@ -698,7 +789,19 @@ class GripCycleCoordinator:
         reset_hand,
         min_fingertip_separation_m=None,
         max_proxy_step_rad=None,
+        release_signal="grasp_yaw",
+        return_tolerance_m=0.005,
+        return_tolerance_deg=5.0,
     ):
+        if release_signal not in ("grasp_yaw", "finger_sweep"):
+            raise ValueError(f"unknown release signal {release_signal!r}")
+        self.release_signal = release_signal
+        # The return gate. 5 mm / 5 deg is what the simulators reach; the
+        # physical arm settles 8-10 mm short (the policy aims ~4 mm low and the
+        # impedance sags ~4 mm under the payload-model error, 2026-11-03).
+        self.return_tolerance_m = float(return_tolerance_m)
+        self.return_tolerance_deg = float(return_tolerance_deg)
+        self.finger_sweep = FingerSweepReleaseDetector()
         self.rate_hz = float(rate_hz)
         self.max_cycles = int(max_cycles)
         self.reset_position = np.asarray(reset_position, dtype=float).copy()
@@ -728,6 +831,7 @@ class GripCycleCoordinator:
         self.last_proxy_turn_rad = 0.0
         self.last_proxy_step_rad = 0.0
         self.gated_on_measured_turn = False
+        self.last_sweep_fired = False
         self.proxy_vetoes = 0
         self.last_veto = None
         self.target_turn_rad = fo.THETA_MAX_RAD
@@ -775,7 +879,11 @@ class GripCycleCoordinator:
         position_error, orientation_error, hand_error = self.return_errors(
             position, quaternion, hand
         )
-        return position_error <= 0.005 and orientation_error <= 5.0 and hand_error <= 0.15
+        return (
+            position_error <= self.return_tolerance_m
+            and orientation_error <= self.return_tolerance_deg
+            and hand_error <= 0.15
+        )
 
     def update(
         self,
@@ -786,6 +894,8 @@ class GripCycleCoordinator:
         measured_turn_progress=None,
         measured_total_turn=None,
         fingertip_separation_m=None,
+        fingertip_force_n=None,
+        index_rad=None,
     ) -> tuple[str | None, float]:
         # The proxy is always advanced and recorded, even when it is not what
         # gates the release: it is the only turn signal hardware has, so how far
@@ -799,6 +909,12 @@ class GripCycleCoordinator:
             else float(measured_turn_progress)
         )
         self.gated_on_measured_turn = measured_turn_progress is not None
+        # Advanced in the policy phase only, like the grasp it watches.
+        self.last_sweep_fired = (not self.active) and self.finger_sweep.update(
+            fingertip_separation_m=fingertip_separation_m,
+            fingertip_force_n=fingertip_force_n,
+            index_rad=index_rad,
+        )
         event = None
         if self.active:
             self.phase_steps += 1
@@ -815,6 +931,7 @@ class GripCycleCoordinator:
                     self.phase_steps = 0
                     self.wait_steps = 0
                     self._cycle_yaw_origin = self._unwrapped_yaw
+                    self.finger_sweep.reset()
                     self.target_turn_rad = (
                         fo.THETA_MAX_RAD
                         if measured_total_turn is None
@@ -832,19 +949,33 @@ class GripCycleCoordinator:
             and not self.active
             and not self.failed
             and self.completed_cycles < self.max_cycles
-            and progress >= self.release_turn_rad
         ):
-            veto = None if self.gated_on_measured_turn else self._proxy_veto(fingertip_separation_m)
+            if self.gate_source == "finger_sweep":
+                release, veto = self.last_sweep_fired, None
+            else:
+                release = progress >= self.release_turn_rad
+                veto = (
+                    self._proxy_veto(fingertip_separation_m)
+                    if release and self.gate_source == "grasp_yaw"
+                    else None
+                )
             if veto is not None:
                 self.proxy_vetoes += 1
                 self.last_veto = veto
-            else:
+            elif release:
                 self.active = True
                 self.phase_index = 0
                 self.phase_steps = 0
                 self.wait_steps = 0
+                self.finger_sweep.reset()
                 event = "release_started"
         return event, progress
+
+    @property
+    def gate_source(self) -> str:
+        """What decided this tick's release: nut_twist, finger_sweep or grasp_yaw."""
+
+        return "nut_twist" if self.gated_on_measured_turn else self.release_signal
 
     def _proxy_veto(self, fingertip_separation_m) -> str | None:
         """Why the proxy's release turn must not be believed this tick, or None."""
@@ -2203,6 +2334,13 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 if getattr(args, "max_proxy_step_deg", None) is None
                 else math.radians(args.max_proxy_step_deg)
             ),
+            return_tolerance_m=getattr(args, "return_tolerance_mm", 5.0) / 1000.0,
+            return_tolerance_deg=getattr(args, "return_tolerance_deg", 5.0),
+            release_signal=(
+                "grasp_yaw"
+                if getattr(args, "release_signal", "auto") == "grasp-yaw"
+                else "finger_sweep"
+            ),
         )
         print(
             "return gate reference: the trained reset grasp "
@@ -2231,17 +2369,26 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                     "thread pair live: nut twist "
                     f"{math.degrees(thread_pair.twist_rad or 0.0):.1f} deg, "
                     f"axial {1.0e3 * (thread_pair.axial_m or 0.0):.2f} mm; "
-                    "the release gates on the measured turn",
+                    + (
+                        "the release gates on the measured turn"
+                        if getattr(args, "release_signal", "auto") in ("auto", "nut-twist")
+                        else f"the release gates on --release-signal {args.release_signal}"
+                    ),
                     flush=True,
                 )
             else:
                 thread_pair = None
                 print(
-                    "warning: no /thread_state in this simulator; falling back to "
-                    "the grasp-frame yaw proxy. Regenerate the scene and set "
+                    "warning: no /thread_state in this simulator; the release falls "
+                    "back to the hardware signal. Regenerate the scene and set "
                     "mujoco_plugins in controllers_sim_policy.yaml.",
                     flush=True,
                 )
+        # ros-sim's measured nut twist gates the release unless a hardware
+        # signal was asked for, to rehearse it against the twist it estimates.
+        gate_on_nut_twist = thread_pair is not None and getattr(
+            args, "release_signal", "auto"
+        ) in ("auto", "nut-twist")
         if not args.yes:
             input("Start closed-loop physical policy execution? [Enter/Ctrl-C] ")
 
@@ -2271,6 +2418,12 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 )
             if sample.controller_position_clipped or sample.controller_orientation_clipped:
                 clipped_policy_ticks += 1
+            limit_violation = joint_limit_violation(
+                sample.arm_position, getattr(args, "joint_limit_margin", 0.15)
+            )
+            if limit_violation is not None:
+                status = "joint_limit"
+                raise RuntimeError(limit_violation)
             q_hand, dq_hand = node.policy_hand_state(sample)
             q10 = np.concatenate((sample.arm_position, q_hand))
             dq10 = np.concatenate((sample.arm_velocity, dq_hand))
@@ -2364,11 +2517,13 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 position=grasp_position,
                 quaternion=grasp_quaternion,
                 hand=q_hand,
-                measured_turn_progress=nut_turn,
+                measured_turn_progress=nut_turn if gate_on_nut_twist else None,
                 measured_total_turn=(
-                    None if thread_pair is None else thread_pair.total_turn_rad()
+                    thread_pair.total_turn_rad() if gate_on_nut_twist else None
                 ),
                 fingertip_separation_m=tip_separation_m,
+                fingertip_force_n=sample.fingertip_force_n,
+                index_rad=q_hand[2],
             )
             # Live view of the turn the release gates on (the policy's only
             # nut-rotation input, through its phase), next to the proxy.
@@ -2400,10 +2555,17 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                     flush=True,
                 )
             if event is not None:
-                source = "nut twist" if coordinator.gated_on_measured_turn else "grasp-turn proxy"
+                if coordinator.gate_source == "nut_twist":
+                    source = f"nut twist={math.degrees(turn_progress):.1f} deg"
+                elif coordinator.gate_source == "grasp_yaw":
+                    source = f"grasp-turn proxy={math.degrees(turn_progress):.1f} deg"
+                else:
+                    # The sweep measures no angle; ros-sim still knows the twist.
+                    source = "finger sweep" + (
+                        "" if nut_turn is None else f", nut twist={math.degrees(nut_turn):.1f} deg"
+                    )
                 print(
-                    f"policy event: {event}; cycles={coordinator.completed_cycles}, "
-                    f"{source}={math.degrees(turn_progress):.1f} deg "
+                    f"policy event: {event}; cycles={coordinator.completed_cycles}, {source} "
                     f"(proxy={math.degrees(coordinator.last_proxy_turn_rad):.1f} deg)"
                     + (
                         f"; next release at {math.degrees(coordinator.release_turn_rad):.1f} deg"
@@ -2563,8 +2725,14 @@ def _rollout_report(
         "requested_period_s": loop_period_s,
         "completed_cycles": 0 if coordinator is None else coordinator.completed_cycles,
         # What gated the release. "nut_twist" is the simulated thread pair's own
-        # angle; "grasp_yaw_proxy" is the inferred one hardware has to use.
-        "turn_source": "grasp_yaw_proxy" if thread_pair is None else "nut_twist",
+        # angle; "finger_sweep" and "grasp_yaw_proxy" are the signals hardware has.
+        "turn_source": (
+            None
+            if coordinator is None
+            else {"grasp_yaw": "grasp_yaw_proxy"}.get(
+                coordinator.gate_source, coordinator.gate_source
+            )
+        ),
         "final_nut_twist_deg": (
             None
             if thread_pair is None or thread_pair.twist_rad is None

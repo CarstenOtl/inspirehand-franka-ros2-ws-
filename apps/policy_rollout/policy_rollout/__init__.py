@@ -10,7 +10,7 @@ from pathlib import Path
 # given --checkpoint. One definition, so they cannot drift apart again.
 DEFAULT_CHECKPOINT = (
     Path(__file__).resolve().parents[1]
-    / "checkpoints/m24-dp3-nominal-da-force-nohv-s0-20261029-113811-885629"
+    / "checkpoints/m24-dp3-run09fr3v2-nominal-cycles-noclock-force-nohv-da-s0-20261102-173148-415770"
     / "nn/checkpoint.pt"
 )
 

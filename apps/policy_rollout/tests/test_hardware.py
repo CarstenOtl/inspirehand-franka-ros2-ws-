@@ -14,6 +14,7 @@ from policy_rollout.hardware import (
     resolve_arm_torque_source,
     TRAINING_INACTIVE_FINGERS,
     GripCycleCoordinator,
+    joint_limit_violation,
     RgbdFrameSynchronizer,
     TrainingFrameAdapter,
     assert_policy_camera_frames,
@@ -412,6 +413,125 @@ def test_cycle_coordinator_accepts_a_gradual_turn_with_a_full_pinch():
     assert errors[0] == pytest.approx(0.004)
     assert errors[1] == pytest.approx(0.0, abs=1e-6)
     assert errors[2] == pytest.approx(0.0)
+
+
+# (fingertip separation m, [thumb, index] pad force N, index rad) per 15 Hz tick,
+# from ros_sim-20261103-130005-909378 cycle 0 (ticks 22-39: the nut turned
+# -15 -> +58 deg) and hardware-20261103-143701-495628 (ticks 28-39, the fingers
+# stalled on the nut; ticks 212-226, they slipped past it unloaded).
+SIM_FINGER_SWEEP_TURN = [
+    (0.0334, [2.9, 4.5], 0.38), (0.0294, [1.1, 0.0], 0.41), (0.0254, [4.6, 4.1], 0.45),
+    (0.0210, [4.6, 3.5], 0.49), (0.0149, [4.6, 3.0], 0.54), (0.0102, [2.1, 0.0], 0.59),
+    (0.0061, [1.4, 0.0], 0.62), (0.0025, [4.6, 5.5], 0.67), (0.0026, [8.2, 11.9], 0.69),
+    (0.0037, [7.3, 10.9], 0.70), (0.0058, [6.5, 11.9], 0.73), (0.0076, [7.1, 12.6], 0.75),
+    (0.0093, [8.2, 12.8], 0.76), (0.0114, [8.5, 12.7], 0.78), (0.0127, [8.2, 12.3], 0.80),
+    (0.0139, [8.3, 10.9], 0.81), (0.0153, [8.1, 8.7], 0.82), (0.0162, [6.0, 8.2], 0.83),
+]
+HARDWARE_STALLED_GRIP = [(0.0190, [7.5 + 0.1 * k, 7.5 + 0.2 * k], 0.49) for k in range(12)]
+HARDWARE_SLIP = [
+    (0.0162, [1.1, 0.4], 0.53), (0.0148, [1.2, 1.4], 0.55), (0.0138, [1.9, 3.0], 0.55),
+    (0.0108, [1.9, 3.0], 0.59), (0.0089, [1.3, 1.4], 0.61), (0.0057, [1.3, 1.4], 0.65),
+    (0.0053, [0.7, 0.7], 0.66), (0.0050, [0.3, 0.3], 0.67), (0.0055, [0.3, 0.3], 0.71),
+    (0.0060, [0.0, 0.0], 0.72), (0.0069, [-0.1, 0.0], 0.72), (0.0084, [-0.2, 0.0], 0.84),
+    (0.0230, [0.0, -0.3], 0.85),
+]
+
+
+def _sweep_coordinator(reset_q):
+    return GripCycleCoordinator(
+        rate_hz=15.0,
+        max_cycles=2,
+        reset_position=np.zeros(3),
+        reset_quaternion=reset_q,
+        reset_hand=np.zeros(3),
+        min_fingertip_separation_m=0.030,
+        max_proxy_step_rad=np.deg2rad(20.0),
+        release_signal="finger_sweep",
+    )
+
+
+def _feed(coordinator, ticks, quaternion, **kwargs):
+    events = []
+    for separation, force, index in ticks:
+        event, _ = coordinator.update(
+            position=np.zeros(3),
+            quaternion=quaternion,
+            hand=np.zeros(3),
+            fingertip_separation_m=separation,
+            fingertip_force_n=np.array(force),
+            index_rad=index,
+            **kwargs,
+        )
+        events.append(event)
+    return events
+
+
+def test_finger_sweep_releases_at_the_end_of_a_simulated_turn():
+    """The student turns the nut with its fingers, which the yaw proxy cannot see.
+
+    Its tips end that turn ~16 mm apart, inside the proxy's collapsed-pinch veto,
+    so on hardware the 2026-11-03 run could never release. The sweep fires on
+    the tick the index reaches 0.82 rad (nut twist 46 deg in sim) and not before.
+    """
+
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _sweep_coordinator(reset_q)
+    events = _feed(coordinator, SIM_FINGER_SWEEP_TURN, reset_q)
+    assert events.index("release_started") == 16
+    assert coordinator.gate_source == "finger_sweep"
+    assert coordinator.proxy_vetoes == 0
+
+
+def test_finger_sweep_ignores_a_stalled_grip_and_an_unloaded_slip():
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _sweep_coordinator(reset_q)
+    # A degenerate grasp frame reads a large proxy turn; the sweep ignores it.
+    turned = _turned_about_world_z(reset_q, -100.0)
+    events = _feed(coordinator, HARDWARE_STALLED_GRIP + HARDWARE_SLIP, turned)
+    assert set(events) == {None}
+    assert coordinator.process_phase() == "policy"
+
+
+def test_finger_sweep_needs_the_pinch_and_the_close_in_one_grasp():
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _sweep_coordinator(reset_q)
+    pinch = SIM_FINGER_SWEEP_TURN[:9]
+    opened = [(0.060, [0.0, 0.0], 0.20)]
+    closed_loaded = [(0.016, [6.0, 8.2], 0.83)]
+    assert set(_feed(coordinator, pinch + opened + closed_loaded, reset_q)) == {None}
+    assert _feed(coordinator, pinch + closed_loaded, reset_q)[-1] == "release_started"
+
+
+def test_finger_sweep_fires_when_the_contact_leaves_the_pads():
+    """Under 2x arm friction the index pad read 0 N at the end of a 61 deg turn."""
+
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _sweep_coordinator(reset_q)
+    pinch = SIM_FINGER_SWEEP_TURN[:9]
+    closed_unloaded = [(0.018, [6.3, 0.0], 0.83)]
+    assert _feed(coordinator, pinch + closed_unloaded, reset_q)[-1] == "release_started"
+
+
+def test_finger_sweep_accepts_the_rh56s_widest_loaded_pinch():
+    """hardware-20261103-161413-264559: the real tips closed to 7.8 mm, not 2-3."""
+
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _sweep_coordinator(reset_q)
+    ticks = [
+        (0.0220, [4.3, 10.2], 0.46), (0.0134, [0.6, 7.0], 0.57), (0.0099, [3.0, 8.0], 0.65),
+        (0.0079, [6.9, 8.3], 0.72), (0.0079, [11.5, 10.7], 0.72), (0.0119, [5.1, 7.8], 0.74),
+        (0.0165, [4.5, 7.3], 0.79), (0.0185, [4.7, 7.3], 0.82),
+    ]
+    events = _feed(coordinator, ticks, reset_q)
+    assert events.index("release_started") == len(ticks) - 1
+
+
+def test_measured_twist_still_wins_over_the_finger_sweep():
+    reset_q = _reset_grasp_quaternion()
+    coordinator = _sweep_coordinator(reset_q)
+    events = _feed(coordinator, SIM_FINGER_SWEEP_TURN, reset_q, measured_turn_progress=0.0)
+    assert set(events) == {None}
+    assert coordinator.gate_source == "nut_twist"
 
 
 def test_cycle_completion_rebases_without_retriggering_release():
@@ -1015,8 +1135,48 @@ def test_a_thumb_settled_just_past_its_yaw_limit_is_not_a_mapping_fault():
     q, _ = physical_hand_state_to_policy(position, np.zeros(len(HAND_JOINTS)))
     # Clamped onto the end of the logical range rather than refused.
     assert q[0] == pytest.approx(kin.open_ratio_to_rad(thumb_dof, 0.0))
+    # 2026-11-03, force threshold 1000 g: -0.0307 at the yaw limit.
     position[HAND_JOINTS.index("thumb_proximal_yaw_joint")] = kin.open_ratio_to_rad(
-        thumb_dof, command_overlays.apply_open_ratio_overlay(thumb_dof, -0.05)
+        thumb_dof, command_overlays.apply_open_ratio_overlay(thumb_dof, -0.0307)
+    )
+    q, _ = physical_hand_state_to_policy(position, np.zeros(len(HAND_JOINTS)))
+    assert q[0] == pytest.approx(kin.open_ratio_to_rad(thumb_dof, 0.0))
+    position[HAND_JOINTS.index("thumb_proximal_yaw_joint")] = kin.open_ratio_to_rad(
+        thumb_dof, command_overlays.apply_open_ratio_overlay(thumb_dof, -0.06)
     )
     with pytest.raises(ValueError, match="outside the overlaid policy range"):
         physical_hand_state_to_policy(position, np.zeros(len(HAND_JOINTS)))
+
+
+def test_joint_limit_guard_stops_before_the_fr3_reflex():
+    """hardware-20261103-154114-907622 drifted joint 5 to 2.875 of 2.8763 rad."""
+
+    reflex = np.array([-0.574, 0.323, 0.389, -2.508, 2.875, 2.193, -2.534])
+    assert "fr3_joint5" in joint_limit_violation(reflex, 0.15)
+    # The closest a successful ros-sim cycle came: joint 5 at 0.30 rad from its limit.
+    cycling = reflex.copy()
+    cycling[4] = 2.8763 - 0.30
+    assert joint_limit_violation(cycling, 0.15) is None
+    # The home pose is nowhere near.
+    home = np.array([0.0, -0.2, 0.0, -2.2, 1.68, 2.05, -1.02])
+    assert joint_limit_violation(home, 0.15) is None
+
+
+def test_return_gate_tolerance_is_configurable():
+    """hardware-20261103-162709-785253 settled 8-10 mm and 3-5 deg from the reset."""
+
+    reset_q = _reset_grasp_quaternion()
+    settled = np.array([-0.0025, 0.0026, -0.0081])
+    tilted = fo.quat_mul(fo.quat_from_euler_xyz(0.0, 0.0, np.deg2rad(3.5)), reset_q)
+    strict = _coordinator(reset_q)
+    assert not strict._returned(settled, tilted, np.zeros(3))
+    loose = GripCycleCoordinator(
+        rate_hz=15.0,
+        max_cycles=1,
+        reset_position=np.zeros(3),
+        reset_quaternion=reset_q,
+        reset_hand=np.zeros(3),
+        return_tolerance_m=0.012,
+        return_tolerance_deg=7.0,
+    )
+    assert loose._returned(settled, tilted, np.zeros(3))

@@ -83,6 +83,7 @@ def generate_launch_description():
             ),
             "description_namespace": LaunchConfiguration("description_namespace"),
             "state_extras_divisor": LaunchConfiguration("hand_state_extras_divisor"),
+            "startup_force": LaunchConfiguration("hand_startup_force"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("hand")),
     )
@@ -202,6 +203,13 @@ def generate_launch_description():
                 "hand_state_extras_divisor",
                 default_value="5",
                 description="Read the hand's current and force once per N state publishes.",
+            ),
+            DeclareLaunchArgument(
+                "hand_startup_force",
+                default_value="500",
+                description="Firmware grip-force threshold (0..1000 g) for every DOF; a finger "
+                "stops when its fingertip sensor reaches it. 500 g (~4.9 N) stops the policy's "
+                "pinch on first contact with the nut, where the simulated hand keeps closing.",
             ),
             DeclareLaunchArgument(
                 "arm", default_value="true", description="Bring up the FR3 replay controller."

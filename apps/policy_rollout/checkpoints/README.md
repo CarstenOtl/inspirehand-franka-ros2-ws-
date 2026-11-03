@@ -9,9 +9,15 @@ exported them.
 
 ```
 checkpoints/
-  m24-dp3-nominal-da-force-nohv-s0-20261029-113811-885629/
+  m24-dp3-run09fr3v2-nominal-cycles-noclock-force-nohv-da-s0-20261102-173148-415770/
     nn/checkpoint.pt                   the deployed student (policy_rollout.DEFAULT_CHECKPOINT)
     nn/flow_config.json, nn/run_provenance.json, evaluation/, summaries/   training-run side files
+  m24-dp3-nominal-holder-da-force-nohv-s0-20261030-173636-450280/
+    nn/checkpoint.pt                   the same student on the FR3 v1 arm, with the progress clock
+  m24-dp3-nominal-calib1029-da-s0-20261030-112229-116599/
+    nn/checkpoint.pt                   the same student without the bolt holder
+  m24-dp3-nominal-da-force-nohv-s0-20261029-113811-885629/
+    nn/checkpoint.pt                   the same student trained on the 2026-09-10 camera pose
   fr3_offline_flow_matching_force_obs_v1_25102026/
     nn/checkpoint.pt                   the 38-D RGB-D student that observes forces
   fr3_offline_flow_matching_force_obs_25102026/
@@ -26,9 +32,74 @@ checkpoints/
       nn/best.pt                       DP3 vision-head pretraining checkpoint (provenance only)
 ```
 
+## `m24-dp3-run09fr3v2-nominal-cycles-noclock-force-nohv-da-s0-20261102-173148-415770/nn/checkpoint.pt`
+
+The deployed student: the recipe of the one below, trained in Isaac on the
+FR3 v2 arm (task `Isaac-Forge-Franka-Threading-V2-M24-FR3v2-v0`, the model both
+MuJoCo backends use) with the bolt holder, and without trajectory-progress
+conditioning ("noclock"): it sees only the cyclic process phase, so no backend
+feeds it a clock. Otherwise its `flow_config.json` matches the one below, so
+the 35-D layout is unchanged. Copied in from the `...-20261103T125536Z-1-001.zip`
+export.
+
+| field | value |
+|---|---|
+| sha256 | `ccf44fa0c8a575edf61f0a039ffcef99c2d6874e3507fd88bee46ed61c5ba9d8` |
+| size | 105 MB |
+| epoch | 100 (EMA decay 0.999), final flow MSE 0.0117 |
+| proprio, control, vision | as below |
+| conditioning | cyclic process phase only (no trajectory progress) |
+| training | ForgeUltra `forgeUltra_force_obs` e870374 (dirty), depth augmentation `realistic`, no RGB augmentation |
+| training data | 68 `sequential-threading-dual-supervision-20261102-145157-329200-completed-cycles-20261102-171410-489253` episodes |
+| Isaac closed loop | 3 episodes x 16 environments, nominal: 45 cycles, 1/48 completed 10, 2 transition failures |
+
+## `m24-dp3-nominal-holder-da-force-nohv-s0-20261030-173636-450280/nn/checkpoint.pt`
+
+The previous deployed student: the recipe of the one below, retrained on data collected
+with the hardware's M24 bolt holder in the scene (the bolt stands in its hex
+pocket, the tabletop raised to the holder's foot; both simulators reproduce
+it, see `policy_rollout/mujoco_scene.py`). Its `flow_config.json` differs from
+the one below only in the progress horizon, so the 35-D layout is unchanged.
+Copied in from the `...-20261031T144813Z-1-001.zip` export.
+
+| field | value |
+|---|---|
+| sha256 | `1202527878cfc6b28238b8e6f68063d1563eca89bfa741afc010379b43f8648d` |
+| size | 101 MB |
+| epoch | 100 (EMA decay 0.999), final flow MSE 0.0108 |
+| proprio, control, vision | as below |
+| conditioning | trajectory progress (72.3 s / 1084 steps) and cyclic process phase |
+| training | ForgeUltra `forgeUltra_force_obs` ee3ca0e (dirty, not pushed), depth augmentation `realistic`, no RGB augmentation |
+| training data | 40 `sequential-threading-dual-supervision-20261030-110819-178662` episodes |
+| Isaac closed loop | 3 episodes x 16 environments: nominal 428 cycles, 41/48 completed 10; randomized (seed 7) 466 cycles, 46/48; 0 transition failures |
+
+## `m24-dp3-nominal-calib1029-da-s0-20261030-112229-116599/nn/checkpoint.pt`
+
+The previous deployed student: the recipe of the one below, retrained on images
+rendered from the 2026-10-29 camera calibration
+(`assets/camera/calibration/20261029T173220_626741Z`, 25.5 mm / 3.55 deg from
+the 2026-09-10 pose). Its `flow_config.json` differs from the one below only
+in the progress horizon, and its first proprio layer has the same column
+fingerprint, so the 35-D layout is unchanged. The checkpoint does not record
+the camera pose; the run name and the training side do.
+
+| field | value |
+|---|---|
+| sha256 | `495618add3f72c224810cea083d30beb54ed068922076d40f66e452423cbff23` |
+| size | 106 MB |
+| epoch | 100 (EMA decay 0.999), final flow MSE 0.0113 |
+| proprio, control, vision | as below |
+| conditioning | trajectory progress (72.17 s / 1082 steps) and cyclic process phase |
+| training | ForgeUltra `forgeUltra_force_obs` ee3ca0e (dirty, not pushed), depth augmentation `realistic`, no RGB augmentation |
+| training data | 40 `sequential-threading-dual-supervision-20261029-191033-137205` episodes |
+| Isaac closed loop | 3 episodes x 16 environments: 461 cycles, 44/48 completed 10, 0 transition failures |
+
 ## `m24-dp3-nominal-da-force-nohv-s0-20261029-113811-885629/nn/checkpoint.pt`
 
-The deployed student. It observes forces and drops the finger velocities.
+The previous deployed student, trained on the 2026-09-10 camera pose. To run
+it, put that pose back into `utils/camera_calibration/fr3_realsense_dp3.yaml`
+(the file's header lists it) and regenerate the ros-sim scene. It observes
+forces and drops the finger velocities.
 
 | field | value |
 |---|---|

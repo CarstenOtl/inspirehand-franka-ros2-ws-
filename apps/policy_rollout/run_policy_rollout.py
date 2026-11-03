@@ -197,6 +197,45 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--return-tolerance-mm",
+        type=float,
+        default=5.0,
+        help=(
+            "the grasp must come back within this distance of the trained reset grasp "
+            "for a cycle to count (the simulators reach 5; the physical arm settled "
+            "8-10 mm short on 2026-11-03)"
+        ),
+    )
+    parser.add_argument(
+        "--return-tolerance-deg",
+        type=float,
+        default=5.0,
+        help="the grasp must come back within this rotation of the trained reset grasp",
+    )
+    parser.add_argument(
+        "--joint-limit-margin",
+        type=float,
+        default=0.15,
+        metavar="RAD",
+        help=(
+            "stop the rollout when any arm joint comes this close to its position limit, "
+            "before the FR3's own velocity reflex does (successful cycles stay >= 0.30 rad "
+            "away; a stuck policy winds joints 5 and 7 toward their limits)"
+        ),
+    )
+    parser.add_argument(
+        "--release-signal",
+        choices=("auto", "nut-twist", "finger-sweep", "grasp-yaw"),
+        default="auto",
+        help=(
+            "what fires the scripted release. auto: the simulated nut's twist in "
+            "ros-sim, finger-sweep on hardware. finger-sweep: the end of a loaded "
+            "finger sweep, how the deployed student turns the nut. grasp-yaw: the "
+            "grasp-frame yaw proxy, for students that turn with the wrist. Giving a "
+            "hardware signal in ros-sim rehearses it against the measured twist."
+        ),
+    )
+    parser.add_argument(
         "--min-fingertip-separation",
         type=float,
         default=0.030,
@@ -365,6 +404,12 @@ def _run_hardware(argv, sim: bool = False) -> int:
         raise ValueError("--viewer-depth-max and --viewer-hz must be positive")
     if args.max_home_grasp_error < 0 or args.home_attempts < 1 or args.home_settle_s < 0:
         raise ValueError("--max-home-grasp-error, --home-attempts and --home-settle-s must be valid")
+    if not 0.0 < args.return_tolerance_mm <= 30.0 or not 0.0 < args.return_tolerance_deg <= 15.0:
+        raise ValueError("--return-tolerance-mm must be in (0, 30] and --return-tolerance-deg in (0, 15]")
+    if not 0.0 < args.joint_limit_margin < 1.0:
+        raise ValueError("--joint-limit-margin must be in (0, 1) rad")
+    if args.release_signal == "nut-twist" and not sim:
+        raise ValueError("--release-signal nut-twist needs ros-sim's simulated nut")
     if args.min_fingertip_separation < 0 or args.max_proxy_step_deg <= 0:
         raise ValueError("--min-fingertip-separation and --max-proxy-step-deg must be valid")
     args.thumb_overlay_enabled = resolve_thumb_overlay(args.thumb_overlay, sim)
