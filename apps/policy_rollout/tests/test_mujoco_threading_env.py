@@ -14,14 +14,29 @@ def _scene(**kwargs):
     return ThreadingScene(nut_quat_wxyz=nut_quat, **kwargs)
 
 
+def test_the_arm_is_menageries_fr3_v2():
+    # Link masses, joint ranges and armature from inspire_franka_sim's fr3v2.xml.
+    scene = _scene()
+    m = scene.model
+    masses = [m.body(f"fr3_link{i}").mass[0] for i in range(1, 8)]
+    np.testing.assert_allclose(masses, [2.4377, 2.2375, 2.18579, 2.17587, 2.17482, 1.56762, 0.682876])
+    np.testing.assert_allclose(m.jnt_range[m.joint("fr3_joint6").id], [0.4398, 4.6216])
+    np.testing.assert_allclose(m.dof_armature[scene.arm_dofs], 0.195)
+    assert m.mesh("fr3v2_link6_9").id >= 0
+
+
 def test_arm_friction_scale_sets_the_menagerie_values_on_the_arm_dofs():
     from policy_rollout.mujoco_threading_env import (
         MENAGERIE_ARM_DAMPING,
         MENAGERIE_ARM_FRICTIONLOSS,
     )
 
-    frictionless = _scene()
-    assert frictionless.arm_friction_scale == 0.0
+    default = _scene()
+    assert default.arm_friction_scale == 1.0
+    np.testing.assert_allclose(
+        default.model.dof_frictionloss[default.arm_dofs], MENAGERIE_ARM_FRICTIONLOSS
+    )
+    frictionless = _scene(arm_friction_scale=0.0)
     np.testing.assert_allclose(frictionless.model.dof_frictionloss[frictionless.arm_dofs], 0.0)
     np.testing.assert_allclose(frictionless.model.dof_damping[frictionless.arm_dofs], 0.0)
 
@@ -129,7 +144,10 @@ def test_the_table_is_threading_v2s_legless_top_in_front_of_the_robot():
     mujoco.mj_forward(m, d)
     top = m.geom("table_top").id
     centre, half = d.geom_xpos[top], m.geom_size[top]
-    np.testing.assert_allclose(centre, [0.335, 0.0, -0.015], atol=1e-9)
+    # Raised to the bolt holder's foot, 43.5 mm under the bolt base.
+    np.testing.assert_allclose(centre, [0.335, 0.0, 0.0065 - 0.015], atol=1e-9)
+    holder = m.body("bolt_holder").id
+    np.testing.assert_allclose(d.xpos[holder], d.xpos[m.body("m24_bolt").id], atol=1e-9)
     np.testing.assert_allclose(half, [0.4, 0.6, 0.015], atol=1e-9)
     # Near ledge 46.5 cm from the robot axis (x = 1.2), bolt 12.5 cm inside it.
     assert 1.2 - (centre[0] + half[0]) == pytest.approx(0.465)

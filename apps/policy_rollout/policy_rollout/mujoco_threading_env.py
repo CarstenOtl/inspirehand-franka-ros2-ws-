@@ -60,16 +60,14 @@ THREAD_AXIAL_ARMATURE = 5.0      # kg, see _add_thread_pair
 THREAD_TWIST_ARMATURE = 0.001    # kg m^2, keeps the hold equality stiff
 CONTACT_FRICTION = 0.75
 
-# MuJoCo Menagerie's FR3 joint dry friction and viscous damping (the fr3.xml
-# values before the 2026-09-30 "friction experiment" zeroed them to match the
-# training asset's zero drive gains). The training arm's own joint friction is
-# unknown (gap doc E2); ``ThreadingScene(arm_friction_scale=...)`` scales these
-# so the policy can be rolled out against a plant with the physical arm's
-# stiction. At 1.0 the MuJoCo-only rollout reproduces the hardware trace
-# (joint 1 pinned, index closing on the nut at 3-4 s); at 0.0 it reproduces
-# ros-sim's (every joint swinging, index held open, lift at 3 s).
-MENAGERIE_ARM_FRICTIONLOSS = (1.137, 1.137, 1.137, 1.137, 0.763, 0.44, 0.248)
-MENAGERIE_ARM_DAMPING = (0.21, 0.21, 0.21, 0.21, 0.21, 0.21, 0.21)
+# MuJoCo Menagerie's FR3 v2 joint dry friction and viscous damping
+# (inspire_franka_sim's fr3v2.xml, which training_scene_spec loads into the arm).
+# ``ThreadingScene(arm_friction_scale=...)`` scales them: 1.0 is Menagerie's
+# model, 0 a frictionless arm. Until 2026-10-31 the arm was the v1 FR3 and these
+# were its 1.137 x4 / 0.763 / 0.44 / 0.248 N m and 0.21 N m s/rad; at that
+# friction the MuJoCo-only rollout reproduced the hardware hover stall.
+MENAGERIE_ARM_FRICTIONLOSS = (0.2,) * 7
+MENAGERIE_ARM_DAMPING = (0.003,) * 7
 
 # Hand drives (ThreadingRobotControllerCfg).
 PINCH_STIFFNESS, PINCH_DAMPING, PINCH_EFFORT = 30.0, 3.0, 20.0
@@ -103,7 +101,7 @@ def _mimic_follower_targets(leaders: dict) -> dict:
 class ThreadingScene:
     """Compiled MuJoCo scene with the FR3, Inspire hand, camera, and threaded nut."""
 
-    def __init__(self, *, nut_quat_wxyz, mjcf=None, camera=None, arm_friction_scale=0.0):
+    def __init__(self, *, nut_quat_wxyz, mjcf=None, camera=None, arm_friction_scale=1.0):
         import mujoco
 
         self.mujoco = mujoco
@@ -146,7 +144,7 @@ class ThreadingScene:
     def _configure_robot(spec) -> None:
         import mujoco
 
-        scene_bodies = {"world", "table", "m24_bolt", "recorded_nut", "recorded_tcp_marker", "replayed_tcp_marker"}
+        scene_bodies = {"world", "table", "m24_bolt", "bolt_holder", "recorded_nut", "recorded_tcp_marker", "replayed_tcp_marker"}
         for body in spec.bodies:
             if body.name not in scene_bodies:
                 body.gravcomp = 1.0  # training asset: disable_gravity=True

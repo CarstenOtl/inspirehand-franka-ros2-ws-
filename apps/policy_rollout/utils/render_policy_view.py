@@ -17,7 +17,7 @@ checkpoint's own DP3 encoder (deterministic at evaluation, so these are the
 - a side view in fr3_link0 (x forward, z up) of the sampled points within 8 cm
   of the bolt plane, with training's table, bolt and nut and the grasp point.
   This one goes through the camera calibration, so it carries that error too
-  (the 2026-09-10 fit has 2.7 cm / 3.5 deg residuals).
+  (the 2026-10-29 fit has 9.7 mm / 1.0 deg residuals).
 """
 
 from __future__ import annotations

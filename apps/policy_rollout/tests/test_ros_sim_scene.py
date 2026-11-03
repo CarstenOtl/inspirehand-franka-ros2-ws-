@@ -62,13 +62,34 @@ def test_policy_scene_table_is_the_cyclic_threading_one():
     mujoco.mj_forward(model, data)
     top = model.geom("table_top").id
     centre, half = data.geom_xpos[top], model.geom_size[top]
-    np.testing.assert_allclose(centre, [0.865, 0.0, -0.015], atol=1e-9)
+    # Raised to the bolt holder's foot, 43.5 mm under the bolt base.
+    np.testing.assert_allclose(centre, [0.865, 0.0, 0.0065 - 0.015], atol=1e-9)
     np.testing.assert_allclose(half, [0.4, 0.6, 0.015], atol=1e-9)
     near_ledge = centre[0] - half[0]
     assert near_ledge == pytest.approx(0.465)
     assert data.xpos[model.body("m24_bolt").id][0] - near_ledge == pytest.approx(0.125)
     assert not any(model.geom(g).name.startswith("table_leg") for g in range(model.ngeom))
     assert model.mat_texid[model.geom_matid[top]][mujoco.mjtTextureRole.mjTEXROLE_RGB] >= 0
+
+
+def test_policy_scene_bolt_stands_in_the_holder_on_the_table():
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / scene.SCENE_NAME))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    holder = model.geom("bolt_holder_geom").id
+    np.testing.assert_allclose(data.xpos[model.body("bolt_holder").id],
+                               data.xpos[model.body("m24_bolt").id], atol=1e-9)
+    vertices = model.mesh_vert[model.mesh_vertadr[model.geom_dataid[holder]]:][
+        :model.mesh_vertnum[model.geom_dataid[holder]]]
+    # The mesh is compiled about its centroid; put it back in the body frame.
+    world = data.geom_xpos[holder] + vertices @ data.geom_xmat[holder].reshape(3, 3).T
+    top = model.geom("table_top").id
+    table_surface = data.geom_xpos[top][2] + model.geom_size[top][2]
+    assert world[:, 2].min() == pytest.approx(table_surface, abs=1e-6)
+    assert world[:, 2].max() == pytest.approx(0.05 + 0.0165, abs=1e-6)
+    np.testing.assert_allclose(world[:, :2].min(0), [0.59 - 0.04, -0.04], atol=1e-6)
+    assert model.geom_contype[holder] == 0 and model.geom_conaffinity[holder] == 0
 
 
 def test_policy_scene_hand_renders_white_like_the_training_urdf():
@@ -306,3 +327,20 @@ def test_policy_scene_keyframe_holds_the_hand_where_it_stands():
     for name in scene.hand.ISAAC_DRIVES:
         joint = model.joint(name).id
         assert abs(data.qvel[model.jnt_dofadr[joint]]) < 1e-3, name
+
+
+def test_policy_scene_arm_is_menageries_fr3_v2():
+    # inspire_franka_sim's fr3v2.xml under the fr3_ names: v2's link masses,
+    # joint ranges and joint dynamics, motor actuators clamped like the URDF.
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / scene.SCENE_NAME))
+    masses = [model.body(f"fr3_link{i}").mass[0] for i in range(1, 8)]
+    np.testing.assert_allclose(masses, [2.4377, 2.2375, 2.18579, 2.17587, 2.17482, 1.56762, 0.682876])
+    np.testing.assert_allclose(model.jnt_range[model.joint("fr3_joint6").id], [0.4398, 4.6216])
+    dofs = [model.joint(f"fr3_joint{i}").dofadr[0] for i in range(1, 8)]
+    np.testing.assert_allclose(model.dof_armature[dofs], 0.195)
+    np.testing.assert_allclose(model.dof_frictionloss[dofs], 0.2)
+    np.testing.assert_allclose(model.dof_damping[dofs], 0.003)
+    np.testing.assert_allclose(
+        [model.actuator(f"fr3_joint{i}").ctrlrange[1] for i in range(1, 8)], [87] * 4 + [12] * 3
+    )

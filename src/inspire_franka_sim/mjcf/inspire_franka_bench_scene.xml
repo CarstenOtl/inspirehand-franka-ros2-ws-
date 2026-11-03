@@ -14,7 +14,7 @@
     <model name="inspire_hand" file="inspire_hand_right.xml"/>
   </asset>
 
-  <include file="fr3.xml"/>
+  <include file="fr3v2.xml"/>
   <include file="scene_common.xml"/>
 
   <worldbody>

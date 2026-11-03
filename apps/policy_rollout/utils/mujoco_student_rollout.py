@@ -100,10 +100,10 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--arm-friction-scale",
         type=float,
-        default=0.0,
-        help="arm joint dry friction and damping as a multiple of MuJoCo Menagerie's FR3 "
-        "values (0 = the training asset's frictionless arm, 1 = the physical arm's "
-        "stiction as far as the MJCF ever modelled it; see mujoco_threading_env)",
+        default=1.0,
+        help="arm joint dry friction and damping as a multiple of MuJoCo Menagerie's FR3 v2 "
+        "values (0.2 N m, 0.003 N m s/rad per joint; 1 = Menagerie's model, the default, "
+        "0 = frictionless; see mujoco_threading_env)",
     )
     args = parser.parse_args(argv)
     if args.integration_steps < 1:

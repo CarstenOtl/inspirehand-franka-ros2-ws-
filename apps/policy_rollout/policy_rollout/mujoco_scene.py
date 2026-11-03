@@ -11,7 +11,14 @@ make it match the scene that produced the student's training data:
   and ``index_tip_fixed`` joints), not the MJCF's hand-authored offsets;
 - the table is threading_v2's (forgeUltra 35373e0,
   ``relative_pose_table_in_front.yaml``): a legless 0.8 x 1.2 m walnut top
-  centred at x = 0.335, not the MJCF's 0.8 x 0.6 m white bench on legs.
+  centred at x = 0.335, not the MJCF's 0.8 x 0.6 m white bench on legs;
+- the M24 bolt stands in the printed bolt holder (``Bolt-Holder-M24-v2lprt``)
+  the hardware uses, and the tabletop is raised to the holder's foot, so the
+  bolt keeps its training pose and the holder fills the 5 cm it used to float;
+- the arm is MuJoCo Menagerie's FR3 v2 (inspire_franka_sim's ``fr3v2.xml``, the
+  model training moves to): its link inertials, joint ranges, joint friction,
+  damping and armature, and its meshes, replace the MJCF's FR3 (v1). The
+  kinematics of the two are identical.
 
 Everything else (hand mount at +10 mm with a half-turn, official mimic
 coupling, M24 bolt at (0.61, 0, 0.05)) already agrees with the training asset.
@@ -22,6 +29,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+
+from .forge_osc import BOLT_BASE_POSITION
 
 # thumb_tip_fixed / index_tip_fixed origins from the official URDF.
 URDF_THUMB_TIP_OFFSET = (0.002144443, 0.017899759, -0.00745)
@@ -34,6 +43,94 @@ URDF_INDEX_TIP_OFFSET = (0.015744429, 0.031656168, -0.00605)
 TRAINING_TABLE_HALF_SIZE = (0.4, 0.6, 0.015)
 TRAINING_TABLE_TEXREPEAT = (3.0, 3.0)
 
+# Bolt-Holder-M24-v2lprt.STEP: an 80 x 80 mm foot plate under a 50 mm column,
+# 60 mm tall, with a 16.5 mm deep hex pocket (36 mm across flats) the M24 head
+# sits in. The mesh is tessellated from the STEP with its origin on the pocket
+# floor, i.e. at the bolt's base frame. Its foot is 43.5 mm below that, which
+# puts the tabletop at z = 0.0065 under the bolt at z = 0.05 (it was at z = 0
+# with the bolt floating on a virtual 5 cm pedestal).
+BOLT_HOLDER_MESH = Path("forge_nut_bolt") / "m24" / "m24_bolt_holder.stl"
+BOLT_HOLDER_SEAT_HEIGHT = 0.0435
+BOLT_HOLDER_RGBA = (0.62, 0.62, 0.64, 1.0)
+TRAINING_TABLE_SURFACE_Z = BOLT_BASE_POSITION[2] - BOLT_HOLDER_SEAT_HEIGHT
+
+
+# Menagerie's FR3 v2 as vendored in inspire_franka_sim, under the fr3_ names.
+FR3V2_MJCF = Path(__file__).resolve().parents[3] / "src" / "inspire_franka_sim" / "mjcf" / "fr3v2.xml"
+FR3_LINKS = tuple(f"fr3_link{i}" for i in range(8))
+
+
+def fr3v2_arm():
+    """Per-link inertial, joint and geoms of ``fr3v2.xml``, plus its joint default and materials."""
+
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(FR3V2_MJCF).getroot()
+    default = root.find("./default/default[@class='fr3v2']/joint").attrib
+    materials = {m.get("name"): m.get("rgba") for m in root.iter("material")}
+    meshes = {m.get("name"): m.get("file") for m in root.find("asset").iter("mesh")}
+    links = {}
+    for body in root.iter("body"):
+        name = body.get("name")
+        if name not in FR3_LINKS:
+            continue
+        joint = body.find("joint")
+        links[name] = {
+            "inertial": body.find("inertial").attrib,
+            "joint": None if joint is None else {**default, **joint.attrib},
+            "geoms": [g.attrib for g in body.findall("geom")],
+        }
+    return links, materials, meshes
+
+
+def use_fr3v2_arm(spec):
+    """Give the replay MJCF's FR3 Menagerie's FR3 v2 dynamics and look."""
+
+    import mujoco
+
+    links, materials, meshes = fr3v2_arm()
+    mesh_dir = FR3V2_MJCF.parent / "assets"
+    for name, rgba in materials.items():
+        material = spec.add_material(name=f"fr3v2_{name}")
+        material.rgba = [float(v) for v in rgba.split()]
+    for name, file in meshes.items():
+        spec.add_mesh(name=f"fr3v2_{name}", file=str(mesh_dir / file))
+    collision_class = spec.find_default("collision")
+    for link, values in links.items():
+        body = spec.body(link)
+        for geom in list(body.geoms):
+            spec.delete(geom)
+        inertial = values["inertial"]
+        body.explicitinertial = True
+        body.mass = float(inertial["mass"])
+        body.ipos = [float(v) for v in inertial["pos"].split()]
+        body.iquat = [float(v) for v in inertial["quat"].split()]
+        body.inertia = [float(v) for v in inertial["diaginertia"].split()]
+        for geom in values["geoms"]:
+            visual = geom.get("class") == "visual"
+            added = body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_MESH,
+                meshname=f"fr3v2_{geom['mesh']}",
+                **({} if visual else {"default": collision_class}),
+            )
+            if visual:
+                added.contype, added.conaffinity, added.group = 0, 0, 2
+                added.material = f"fr3v2_{geom['material']}"
+            else:
+                added.name = geom.get("name", "")
+                added.group = 3
+            added.mass = 0.0
+            added.density = 0.0
+        joint = values["joint"]
+        if joint is not None:
+            spec_joint = spec.joint(joint["name"])
+            spec_joint.range = [float(v) for v in joint["range"].split()]
+            spec_joint.frictionloss = float(joint["frictionloss"])
+            # MjsJoint.damping is (linear, quadratic, cubic) in MuJoCo 3.12.
+            spec_joint.damping = [float(joint["damping"]), 0.0, 0.0]
+            spec_joint.armature = float(joint["armature"])
+    return links
+
 
 def default_replay_mjcf() -> Path:
     return Path(__file__).resolve().parents[3] / "assets" / "fr3_inspirehand" / "fr3_inspirehand_replay.xml"
@@ -45,6 +142,8 @@ def training_scene_spec(
     base_plate_z: float = 0.0,
     urdf_tip_frames: bool = True,
     training_table: bool = True,
+    bolt_holder: bool = True,
+    fr3v2: bool = True,
 ):
     """Return an ``MjSpec`` of the replay scene with the training corrections."""
 
@@ -65,7 +164,37 @@ def training_scene_spec(
         for geom in list(spec.body("table").geoms):
             if geom.name.startswith("table_leg"):
                 spec.delete(geom)
+    if bolt_holder:
+        add_bolt_holder(spec)
+    if fr3v2:
+        use_fr3v2_arm(spec)
     return spec
+
+
+def add_bolt_holder(spec):
+    """Stand ``m24_bolt`` in the hardware's bolt holder and raise the table to it.
+
+    Visual only, like the table and the bolt: nothing in the threading task
+    touches it, and its pocket's convex hull would swallow the nut's lowest
+    travel. Square to the table, as it is mounted on the bench.
+    """
+
+    import mujoco
+
+    spec.add_mesh(name="m24_bolt_holder", file=str(BOLT_HOLDER_MESH))
+    bolt = spec.body("m24_bolt")
+    holder = spec.worldbody.add_body(name="bolt_holder", pos=list(bolt.pos))
+    holder.add_geom(
+        name="bolt_holder_geom",
+        type=mujoco.mjtGeom.mjGEOM_MESH,
+        meshname="m24_bolt_holder",
+        rgba=list(BOLT_HOLDER_RGBA),
+        contype=0,
+        conaffinity=0,
+    )
+    table = spec.body("table")
+    table.pos = [float(table.pos[0]), float(table.pos[1]), float(TRAINING_TABLE_SURFACE_Z)]
+    return holder
 
 
 def load_training_scene(mjcf: str | Path | None = None, **kwargs):
@@ -134,8 +263,16 @@ def full_mass_matrix(model, data) -> np.ndarray:
 
 
 __all__ = [
+    "BOLT_HOLDER_MESH",
+    "BOLT_HOLDER_RGBA",
+    "BOLT_HOLDER_SEAT_HEIGHT",
     "OPTICAL_TO_MUJOCO",
+    "FR3V2_MJCF",
+    "TRAINING_TABLE_SURFACE_Z",
+    "add_bolt_holder",
     "add_policy_camera",
+    "fr3v2_arm",
+    "use_fr3v2_arm",
     "link0_world_transform",
     "URDF_INDEX_TIP_OFFSET",
     "URDF_THUMB_TIP_OFFSET",

@@ -18,7 +18,7 @@
     <model name="end_effector" file="inspire_hand_on_flange.xml"/>
   </asset>
 
-  <include file="fr3.xml"/>
+  <include file="fr3v2.xml"/>
   <include file="scene_common.xml"/>
 
   <!-- Same reasoning as the bench scene. -->

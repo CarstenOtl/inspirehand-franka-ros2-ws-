@@ -44,6 +44,7 @@ pose its model or publish commands to this simulation or hardware.
 """
 
 import os
+import xml.etree.ElementTree as ET
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -65,16 +66,75 @@ SCENES = {
 }
 
 # Each scene's rest keyframe. The combined scenes need their own ("start"),
-# because fr3.xml's "home" covers only the arm and MuJoCo zero-pads a keyframe
+# because the arm MJCF's "home" covers only the arm and MuJoCo zero-pads a keyframe
 # to the whole model, which would put the hand followers somewhere wrong. See
 # the comment in inspire_franka_flange_scene.xml.
 KEYFRAMES = {
     "inspire_franka_flange_scene.xml": "start",
     "inspire_franka_flange_torque_scene.xml": "start",
     "inspire_franka_policy_scene.xml": "policy_home",
+    # sim_policy.launch.py arm_friction_scale / arm_armature_scale off their
+    # defaults: the same scene with the arm's friction and armature rescaled.
+    "inspire_franka_policy_scene_arm_variant.xml": "policy_home",
     "fr3_scene.xml": "home",
     "inspire_hand_scene.xml": "open",
 }
+
+# The MuJoCo arm is Menagerie's FR3 v2 (mjcf/fr3v2.xml) under franka_description's
+# fr3 names, which franka_description derives from robot_type. So the URDF stays
+# robot_type fr3 and its arm-link inertials are replaced with the MJCF's own: the
+# Cartesian controller's mass matrix (a pinocchio CRBA over robot_description)
+# then describes exactly the simulated arm. (franka_description's fr3v2 values
+# are close but not identical: link 7's centre of mass differs by ~2 cm.)
+ARM_MJCF = "fr3v2.xml"
+
+
+def _quat_to_matrix(w, x, y, z):
+    return [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ]
+
+
+def _with_arm_inertials(urdf: str, arm_mjcf: str) -> str:
+    """robot_description with fr3_link0..7's <inertial> taken from the MuJoCo arm."""
+
+    bodies = {
+        body.get("name"): body.find("inertial")
+        for body in ET.parse(arm_mjcf).getroot().iter("body")
+        if body.find("inertial") is not None
+    }
+    root = ET.fromstring(urdf)
+    for link in root.iter("link"):
+        source = bodies.get(link.get("name"))
+        if source is None or not link.get("name", "").startswith("fr3_link"):
+            continue
+        inertial = link.find("inertial")
+        if inertial is None:
+            raise RuntimeError(f"{link.get('name')} has no <inertial> to replace")
+        # MJCF: principal moments about axes rotated by quat; URDF: the full
+        # tensor in the link frame (rpy 0), I = R diag(d) R^T.
+        rot = _quat_to_matrix(*(float(v) for v in source.get("quat").split()))
+        diag = [float(v) for v in source.get("diaginertia").split()]
+        tensor = [
+            [sum(rot[i][k] * diag[k] * rot[j][k] for k in range(3)) for j in range(3)]
+            for i in range(3)
+        ]
+        inertial.find("origin").set("xyz", source.get("pos"))
+        inertial.find("origin").set("rpy", "0 0 0")
+        inertial.find("mass").set("value", source.get("mass"))
+        inertial.find("inertia").attrib.update(
+            {
+                f"i{a}{b}": f"{tensor[i][j]:.9g}"
+                for (a, i), (b, j) in (
+                    (("x", 0), ("x", 0)), (("x", 0), ("y", 1)), (("x", 0), ("z", 2)),
+                    (("y", 1), ("y", 1)), (("y", 1), ("z", 2)), (("z", 2), ("z", 2)),
+                )
+            }
+        )
+    return ET.tostring(root, encoding="unicode")
+
 
 # controller name -> the value of *_command_interface that spawns it.
 ARM_CONTROLLERS = {
@@ -141,6 +201,10 @@ def launch_setup(context, *args, **kwargs):
             "initial_keyframe": KEYFRAMES.get(os.path.basename(mjcf_path), "home"),
         },
     ).toxml()
+    if hardware_type == "mujoco" and with_arm:
+        robot_description = _with_arm_inertials(
+            robot_description, os.path.join(sim_share, "mjcf", ARM_MJCF)
+        )
 
     # MuJoCo owns the clock, so everything downstream has to run on sim time.
     use_sim_time = {"use_sim_time": hardware_type == "mujoco"}

@@ -5,12 +5,13 @@
 torque scene (FR3 + Inspire hand, gravity off) placed in the student's training
 environment instead of ``scene_common.xml``:
 
-- the table top at fr3_link0 z = 0 and the floor 0.75 m below it, as in the
-  corrected training scene (``policy_rollout/mujoco_scene.py``), with the
-  table where the cyclic-threading environment puts it (in front of the FR3,
-  see TRAINING_TABLE_CENTER): the legless 0.8 x 1.2 m walnut top;
-- the M24 bolt at the training pose and the nut at its first recorded pose,
-  both converted from the training world (FR3 base at (1.2, 0, 0) yawed by pi)
+- the floor 0.75 m below fr3_link0 and the table where the cyclic-threading
+  environment puts it (in front of the FR3, see TRAINING_TABLE_CENTER): the
+  legless 0.8 x 1.2 m walnut top;
+- the M24 bolt at the training pose, standing in the hardware's bolt holder
+  with the tabletop raised to the holder's foot (z = 0.0065, see
+  ``policy_rollout/mujoco_scene.py``), and the nut at its first recorded pose,
+  all converted from the training world (FR3 base at (1.2, 0, 0) yawed by pi)
   into fr3_link0;
 - ``policy_d415``: the calibrated colour camera with the exact 640x480 pinhole
   matrix (focal length and principal point, not only fovy) so that
@@ -49,7 +50,12 @@ if str(APP_ROOT) not in sys.path:
 
 from policy_rollout import forge_osc as fo  # noqa: E402
 from policy_rollout import mujoco_threading_env as te  # noqa: E402
-from policy_rollout.mujoco_scene import OPTICAL_TO_MUJOCO  # noqa: E402
+from policy_rollout.mujoco_scene import (  # noqa: E402
+    BOLT_HOLDER_MESH,
+    BOLT_HOLDER_RGBA,
+    OPTICAL_TO_MUJOCO,
+    TRAINING_TABLE_SURFACE_Z,
+)
 from utils.camera_calibration import load_camera_calibration  # noqa: E402
 
 SIM_MJCF_DIR = WORKSPACE_ROOT / "src" / "inspire_franka_sim" / "mjcf"
@@ -65,6 +71,9 @@ import make_hand_mjcf as hand  # noqa: E402
 #: simulates it with during training (make_hand_mjcf.py with the isaac flag;
 #: the remainder is IsaacHandPlugin's, configured by isaac_hand_custom_xml).
 END_EFFECTOR = "inspire_hand_on_flange_isaac.xml"
+#: The arm: MuJoCo Menagerie's FR3 v2 under the workspace's fr3_ names (the
+#: model training moves to as well), see inspire_franka_sim's MJCF_PROVENANCE.md.
+ARM_MJCF = "fr3v2.xml"
 CAMERA_NAME = "policy_d415"
 KEYFRAME_NAME = "policy_home"
 MESH_SOURCE = WORKSPACE_ROOT / "assets" / "fr3_inspirehand" / "forge_nut_bolt" / "m24"
@@ -78,8 +87,9 @@ TEXTURE_SUBDIR = "forge_table"
 # 0.8 m deep x 1.2 m wide walnut top in front of the FR3, its near ledge
 # 46.5 cm from the robot axis and the bolt 12.5 cm inside it. Training moves the
 # top per reset (+-5 cm along, +-10 cm across, +-2.5 deg); its eval, and this
-# scene, keep it at the nominal centre. Training world, metres.
-TRAINING_TABLE_CENTER = (0.335, 0.0, 0.0)
+# scene, keep it at the nominal centre. Training world, metres; the top is
+# raised to the bolt holder's foot.
+TRAINING_TABLE_CENTER = (0.335, 0.0, TRAINING_TABLE_SURFACE_Z)
 TABLE_HALF_SIZE = (0.4, 0.6, 0.015)
 
 # First sample of checkpoints/reference_episode/episode_000_sequential_threading.npz
@@ -274,11 +284,11 @@ def scene_xml(profile, keyframe: str = "") -> str:
        The flange torque scene (gravity off, as libfranka compensates it on
        the real arm) in the distilled policy's training environment, for
        inspire_franka_trajectory_replay's sim_policy.launch.py. Poses are the
-       training world's converted into fr3_link0: bench top at z = 0, the M24
-       bolt, and the calibrated D415 colour camera with its exact pinhole
-       matrix. The table is forgeUltra's threading_v2 tabletop as the policy
-       camera saw it in training: in front of the robot, legless walnut. The
-       nut rides ForgeUltra's simplified thread pair (an axial slide coupled
+       training world's converted into fr3_link0: the M24 bolt in the
+       hardware's bolt holder, the bench top at the holder's foot, and the
+       calibrated D415 colour camera with its exact pinhole matrix. The table
+       is forgeUltra's threading_v2 tabletop as the policy camera saw it in
+       training: in front of the robot, legless walnut. The nut rides ForgeUltra's simplified thread pair (an axial slide coupled
        to a twist hinge), so it can be gripped and turned.
 
        Careful with comments in here: a double hyphen is illegal inside an XML
@@ -300,9 +310,10 @@ def scene_xml(profile, keyframe: str = "") -> str:
     <material name="forge_nut" rgba="0.84 0.84 0.88 1"/>
     <mesh name="forge_m24_nut" file="{MESH_SUBDIR}/m24_nut.stl"/>
     <mesh name="forge_m24_bolt" file="{MESH_SUBDIR}/m24_bolt.stl"/>
+    <mesh name="m24_bolt_holder" file="{MESH_SUBDIR}/{BOLT_HOLDER_MESH.name}"/>
   </asset>
 
-  <include file="fr3.xml"/>
+  <include file="{ARM_MJCF}"/>
 
   <option gravity="0 0 0"/>
 
@@ -326,6 +337,13 @@ def scene_xml(profile, keyframe: str = "") -> str:
          contact, is what holds the nut on the bolt. -->
     <body name="m24_bolt" pos="{_fmt(bolt)}" quat="{_fmt(bolt_quat)}">
       <geom name="m24_bolt_geom" type="mesh" mesh="forge_m24_bolt" material="forge_bolt"
+        contype="0" conaffinity="0"/>
+    </body>
+    <!-- The hardware's printed M24 bolt holder (Bolt-Holder-M24-v2lprt.STEP),
+         its origin on the pocket floor the bolt head sits on, square to the
+         table. Visual only, like the table and the bolt. -->
+    <body name="bolt_holder" pos="{_fmt(bolt)}">
+      <geom name="bolt_holder_geom" type="mesh" mesh="m24_bolt_holder" rgba="{_fmt(BOLT_HOLDER_RGBA)}"
         contype="0" conaffinity="0"/>
     </body>
 {thread_pair_xml()}
@@ -393,7 +411,7 @@ def generate(profile_path=None, output_dir: Path = SIM_MJCF_DIR) -> str:
     output_dir = Path(output_dir)
     mesh_dir = output_dir / "assets" / MESH_SUBDIR
     mesh_dir.mkdir(parents=True, exist_ok=True)
-    for mesh in ("m24_nut.stl", "m24_bolt.stl"):
+    for mesh in ("m24_nut.stl", "m24_bolt.stl", BOLT_HOLDER_MESH.name):
         if not (mesh_dir / mesh).exists():
             shutil.copyfile(MESH_SOURCE / mesh, mesh_dir / mesh)
     texture_dir = output_dir / "assets" / TEXTURE_SUBDIR

@@ -10,7 +10,7 @@
     <model name="end_effector" file="no_end_effector.xml"/>
   </asset>
 
-  <include file="fr3.xml"/>
+  <include file="fr3v2.xml"/>
   <include file="scene_common.xml"/>
 
   <!-- No <keyframe> here: fr3.xml already defines "home" and MuJoCo rejects a
