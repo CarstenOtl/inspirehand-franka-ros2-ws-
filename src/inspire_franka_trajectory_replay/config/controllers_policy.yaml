@@ -94,6 +94,15 @@
       # gravity on its own, which Isaac matched with disable_gravity.
       coriolis_compensation: false
       # ForgeUltra's clamp on the summed torque. Never binds on an FR3.
+      # Coulomb friction feedforward per joint, Nm (0 = off). Training's FR3 has no
+      # joint friction; the physical wrist lost ~0.65 Nm of the ~1 Nm the yaw clip
+      # asks for (2026-11-03), so the fingers met the nut 0.3 rad short. Moving losses
+      # measured on both 2026-11-03 runs: 0.32-0.44 Nm (j2, j5-j7); 0.3 stays under all
+      # of them, so the arm keeps some friction rather than being pushed. In ros-sim with
+      # 0.4 Nm per joint this took the student from 0 to 3 cycles in 450 steps.
+      friction_compensation_nm: [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+      friction_compensation_velocity: 0.05
+      friction_compensation_torque: 0.3
       torque_limit: 100.0
       # ForgeUltra's per-substep target clip, run here at 1 kHz on ~/policy_goal:
       # pos_action_threshold / rot_action_threshold from vanilla_threading.yaml, in

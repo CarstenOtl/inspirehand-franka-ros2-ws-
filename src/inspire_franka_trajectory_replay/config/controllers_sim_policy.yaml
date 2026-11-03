@@ -119,6 +119,12 @@ cartesian_trajectory_replay_controller:
     coriolis_compensation: false
     # ForgeUltra's +-100 Nm clamp and its per-substep target clip, as in
     # controllers_policy.yaml. Keep the two equal; the runner checks them.
+    # Coulomb friction feedforward per joint, Nm (0 = off). Training's FR3 has no
+    # joint friction; the physical wrist lost ~0.65 Nm of the ~1 Nm the yaw clip
+    # asks for (2026-11-03), so the fingers met the nut 0.3 rad short.
+    friction_compensation_nm: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    friction_compensation_velocity: 0.05
+    friction_compensation_torque: 0.3
     torque_limit: 100.0
     policy_clip_position_m: 0.02
     policy_clip_orientation_rad: 0.097

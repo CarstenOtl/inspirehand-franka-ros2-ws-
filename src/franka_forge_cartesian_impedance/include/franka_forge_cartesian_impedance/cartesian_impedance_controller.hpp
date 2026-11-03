@@ -237,6 +237,11 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   bool coriolis_compensation_{true};
   // ForgeUltra's +-100 Nm clamp on the summed torque (0 = none). Never binds on an FR3.
   double torque_limit_{0.0};
+  // Coulomb friction feedforward per joint (friction_compensation_torque); all zero, the
+  // default, is off. Training's FR3 has no joint friction, the physical one does.
+  Vector7d friction_compensation_nm_{Vector7d::Zero()};
+  double friction_compensation_velocity_{0.05};
+  double friction_compensation_torque_{0.3};
   // ForgeUltra's per-substep target clip, for ~/policy_goal. Both thresholds zero (the
   // default) means the controller does not accept policy goals. The clip runs in the frame
   // `policy_clip_frame_` names: training's world, which is the FR3 base yawed by this angle.

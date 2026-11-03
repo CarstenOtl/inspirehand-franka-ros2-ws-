@@ -184,6 +184,36 @@ inline CartesianImpedanceTerms example_cartesian_impedance(
   return terms;
 }
 
+/// Coulomb friction feedforward, added to the impedance torque before the clamp and the
+/// rate limiter. Training's FR3 is frictionless, so the policy's 5.6 deg/tick yaw clip only
+/// ever asks the rotational spring for ~1 Nm at joint 7; on the 2026-11-03 hardware runs
+/// ~0.65 Nm of that was lost to joint friction (commanded -1.0 Nm, -0.35 Nm at the link), the
+/// wrist turned at 22-28 deg/s instead of 37-41, and the fingers met the nut 0.3 rad short of
+/// the simulated pre-rotation.
+///
+/// Moving, the compensation follows the joint velocity; near standstill, where stiction is,
+/// it follows the commanded impedance torque through tanh(tau / torque_scale), so a joint that
+/// is asked to move gets the breakaway torque and a joint at equilibrium (tau ~ 0) gets none.
+/// The two blend linearly in |dq| / velocity_scale. A non-positive coefficient disables the
+/// joint.
+inline Vector7d friction_compensation_torque(const Vector7d& coulomb_nm, const Vector7d& dq,
+                                             const Vector7d& tau_impedance,
+                                             double velocity_scale, double torque_scale) {
+  Vector7d out = Vector7d::Zero();
+  for (int i = 0; i < 7; ++i) {
+    if (!(coulomb_nm(i) > 0.0)) {
+      continue;
+    }
+    const double moving =
+        velocity_scale > 0.0 ? std::min(1.0, std::abs(dq(i)) / velocity_scale) : 1.0;
+    const double motion_direction = dq(i) > 0.0 ? 1.0 : (dq(i) < 0.0 ? -1.0 : 0.0);
+    const double command_direction =
+        torque_scale > 0.0 ? std::tanh(tau_impedance(i) / torque_scale) : 0.0;
+    out(i) = coulomb_nm(i) * (moving * motion_direction + (1.0 - moving) * command_direction);
+  }
+  return out;
+}
+
 /// The example's post-command reference filter: first-order on the position, slerp on the
 /// orientation with the working quaternion kept on the target's hemisphere.
 inline void example_reference_filter(double alpha, const Eigen::Vector3d& position_target,

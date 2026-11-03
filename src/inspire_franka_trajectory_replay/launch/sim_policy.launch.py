@@ -51,6 +51,7 @@ docs/policy_rollout_training_gap_todo.md).
 """
 
 from pathlib import Path
+import re
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -65,6 +66,93 @@ CONTROLLER = "trajectory_replay_controller"
 CARTESIAN_CONTROLLER = "cartesian_trajectory_replay_controller"
 SCENE = "inspire_franka_policy_scene.xml"
 MJCF_CAMERA = "policy_d415"
+
+
+# The arm the scene includes: MuJoCo Menagerie's FR3 v2 under the workspace's
+# fr3_ names (inspire_franka_sim/mjcf/fr3v2.xml). Its joint friction, damping and
+# armature are upstream's; arm_friction_scale and arm_armature_scale rescale them.
+ARM_MJCF = "fr3v2.xml"
+VARIANT_SCENE = "inspire_franka_policy_scene_arm_variant.xml"
+VARIANT_ARM = "fr3v2_arm_variant.xml"
+_ATTRIBUTE = r'\s{name}="([^"]*)"'
+
+
+def _joint_dynamics(arm: str) -> list:
+    """(frictionloss, damping, armature) of fr3_joint1..7: the joint's own value, else its class default."""
+
+    default = re.search(r'<default class="fr3v2">\s*(?:<!--.*?-->\s*)*<joint([^>]*)/>', arm, re.S)
+    if default is None:
+        raise RuntimeError(f"no fr3v2 joint default in {ARM_MJCF}")
+    values = []
+    for i in range(1, 8):
+        match = re.search(rf'<joint name="fr3_joint{i}"[^>]*?/>', arm, re.S)
+        if match is None:
+            raise RuntimeError(f"fr3_joint{i} not found in {ARM_MJCF}")
+        row = []
+        for name in ("frictionloss", "damping", "armature"):
+            own = re.search(_ATTRIBUTE.format(name=name), match.group(0))
+            inherited = re.search(_ATTRIBUTE.format(name=name), default.group(1))
+            row.append(float((own or inherited).group(1)) if (own or inherited) else 0.0)
+        values.append(tuple(row))
+    return values
+
+
+def _friction_compensation(value: str):
+    """``arm_friction_compensation``: empty for off, one number for joint 7, or seven."""
+
+    value = value.strip()
+    if not value:
+        return None
+    numbers = [float(v) for v in value.replace(",", " ").split()]
+    if len(numbers) == 1:
+        numbers = [0.0] * 6 + numbers
+    if len(numbers) != 7 or any(not 0.0 <= v <= 2.0 for v in numbers):
+        raise RuntimeError("arm_friction_compensation takes one (joint 7) or seven values in [0, 2] Nm")
+    return numbers
+
+
+def _controllers_with_compensation(controllers_yaml: str, compensation: list) -> str:
+    """Write the controller profile with friction_compensation_nm replaced, next to the original."""
+
+    source = Path(controllers_yaml)
+    text = source.read_text()
+    line = "friction_compensation_nm: [" + ", ".join(repr(float(v)) for v in compensation) + "]"
+    text, count = re.subn(r"friction_compensation_nm: \[[^\]]*\]", line, text)
+    if count != 1:
+        raise RuntimeError(f"expected one friction_compensation_nm in {source}")
+    variant = source.with_name("controllers_sim_policy_friction_compensation.yaml")
+    variant.write_text(text)
+    return str(variant)
+
+
+def _arm_variant_scene(friction_scale: float, armature_scale: float) -> str:
+    """Write the policy scene with the arm's joint friction and armature rescaled.
+
+    Menagerie's dry friction and damping times ``friction_scale`` and its
+    armature times ``armature_scale``. Both files go next to the originals in
+    the installed mjcf/ directory, so the arm's meshdir and the scene's
+    relative asset paths still resolve; they are regenerated on every launch.
+    """
+
+    mjcf = Path(get_package_share_directory("inspire_franka_sim")) / "mjcf"
+    arm = (mjcf / ARM_MJCF).read_text()
+    for i, (friction, damping, armature) in enumerate(_joint_dynamics(arm), start=1):
+        match = re.search(rf'<joint name="fr3_joint{i}"[^>]*?/>', arm, re.S)
+        tag = re.sub(r'\s(frictionloss|damping|armature)="[^"]*"', "", match.group(0))
+        tag = tag[:-2].rstrip() + (
+            f' frictionloss="{friction_scale * friction:.6g}"'
+            f' damping="{friction_scale * damping:.6g}"'
+            f' armature="{armature_scale * armature:.6g}"/>'
+        )
+        arm = arm[: match.start()] + tag + arm[match.end() :]
+    (mjcf / VARIANT_ARM).write_text(arm)
+    scene = (mjcf / SCENE).read_text()
+    include = f'<include file="{ARM_MJCF}"/>'
+    if scene.count(include) != 1:
+        raise RuntimeError(f"{SCENE} does not include {ARM_MJCF} exactly once")
+    scene = scene.replace(include, f'<include file="{VARIANT_ARM}"/>')
+    (mjcf / VARIANT_SCENE).write_text(scene)
+    return VARIANT_SCENE
 
 
 def _default_calibration() -> str:
@@ -91,11 +179,23 @@ def launch_setup(context, *args, **kwargs):
     prefix = rgbd_topic.rsplit("/", 1)[0]
     pose = camera["world_pose"]
 
+    arm_friction_scale = float(arg("arm_friction_scale"))
+    arm_armature_scale = float(arg("arm_armature_scale"))
+    if arm_friction_scale < 0.0 or arm_armature_scale < 0.0:
+        raise RuntimeError("arm_friction_scale and arm_armature_scale must be >= 0")
+    if arm_friction_scale == 1.0 and arm_armature_scale == 1.0:
+        scene = SCENE
+    else:
+        scene = _arm_variant_scene(arm_friction_scale, arm_armature_scale)
+
     controllers_yaml = str(
         Path(get_package_share_directory("inspire_franka_trajectory_replay"))
         / "config"
         / "controllers_sim_policy.yaml"
     )
+    compensation = _friction_compensation(arg("arm_friction_compensation"))
+    if compensation is not None:
+        controllers_yaml = _controllers_with_compensation(controllers_yaml, compensation)
     simulator = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             str(Path(get_package_share_directory("inspire_franka_sim")) / "launch" / "sim.launch.py")
@@ -109,7 +209,7 @@ def launch_setup(context, *args, **kwargs):
             "arm_command_interface": "none",
             "hand_command_interface": "position_direct",
             "controllers_config_path": controllers_yaml,
-            "mjcf": SCENE,
+            "mjcf": scene,
             "camera_publish_rate": arg("camera_rate"),
             "sim_speed_factor": arg("sim_speed"),
         }.items(),
@@ -272,6 +372,29 @@ def generate_launch_description():
                 "camera_calibration",
                 default_value=_default_calibration(),
                 description="Camera profile YAML whose matrix, frame and topics the simulated D415 uses.",
+            ),
+            DeclareLaunchArgument(
+                "arm_friction_scale",
+                default_value="1.0",
+                description="Scale on the arm's joint dry friction and damping as MuJoCo "
+                "Menagerie's FR3 v2 has them (0.2 N m and 0.003 N m s/rad per joint). 1.0 "
+                "(default) is Menagerie's model, 0 a frictionless arm. Off the defaults the "
+                "launch writes " + VARIANT_SCENE + " and runs that.",
+            ),
+            DeclareLaunchArgument(
+                "arm_friction_compensation",
+                default_value="",
+                description="Cartesian controller's Coulomb friction feedforward, Nm: one "
+                "value for joint 7 or seven for joints 1-7. Empty (default) keeps "
+                "controllers_sim_policy.yaml's (off); otherwise the launch writes "
+                "controllers_sim_policy_friction_compensation.yaml next to it and uses that.",
+            ),
+            DeclareLaunchArgument(
+                "arm_armature_scale",
+                default_value="1.0",
+                description="Scale on Menagerie's FR3 v2 rotor inertia (armature 0.195 kg m^2 "
+                "per joint). 1.0 (default) keeps it. Below ~0.14 joint 7 goes unstable under "
+                "the critically damped Cartesian controller at MuJoCo's 2 ms step.",
             ),
             OpaqueFunction(function=launch_setup),
         ]

@@ -20,6 +20,7 @@ using franka_forge_cartesian_impedance::example_cartesian_impedance;
 using franka_forge_cartesian_impedance::example_gain_filter;
 using franka_forge_cartesian_impedance::example_reference_filter;
 using franka_forge_cartesian_impedance::forge_nullspace_torque;
+using franka_forge_cartesian_impedance::friction_compensation_torque;
 using franka_forge_cartesian_impedance::Matrix7d;
 using franka_forge_cartesian_impedance::Matrix6d;
 using franka_forge_cartesian_impedance::RotationErrorForm;
@@ -722,4 +723,55 @@ TEST(ForgePolicyGoal, a_tool_frame_change_leaves_the_tracking_error_invariant) {
   EXPECT_NEAR(franka_forge_cartesian_impedance::quaternion_angle(after.second, reference_q),
               angle_before, 1e-12);
   EXPECT_LT(angle_before, 0.35);
+}
+
+TEST(FrictionCompensation, IsOffWithZeroCoefficients) {
+  Vector7d dq = Vector7d::Constant(0.3);
+  Vector7d tau = Vector7d::Constant(-1.0);
+  EXPECT_TRUE(friction_compensation_torque(Vector7d::Zero(), dq, tau, 0.05, 0.3).isZero());
+}
+
+TEST(FrictionCompensation, FollowsTheVelocityWhileMoving) {
+  Vector7d coulomb = Vector7d::Zero();
+  coulomb(6) = 0.5;
+  Vector7d dq = Vector7d::Zero();
+  Vector7d tau = Vector7d::Zero();
+  // The 2026-11-03 wrist: turning negative at 25 deg/s under -1 Nm.
+  dq(6) = -0.44;
+  tau(6) = -1.0;
+  const Vector7d out = friction_compensation_torque(coulomb, dq, tau, 0.05, 0.3);
+  EXPECT_DOUBLE_EQ(out(6), -0.5);
+  EXPECT_TRUE(out.head(6).isZero());
+  // Moving against the command (braking): it follows the motion, as friction does.
+  tau(6) = +1.0;
+  EXPECT_DOUBLE_EQ(friction_compensation_torque(coulomb, dq, tau, 0.05, 0.3)(6), -0.5);
+}
+
+TEST(FrictionCompensation, BreaksStictionInTheCommandedDirection) {
+  Vector7d coulomb = Vector7d::Constant(0.5);
+  Vector7d dq = Vector7d::Zero();
+  Vector7d tau = Vector7d::Zero();
+  // The hover stall: ~1 Nm asked for, the joint not moving.
+  tau(6) = -1.0;
+  const Vector7d out = friction_compensation_torque(coulomb, dq, tau, 0.05, 0.3);
+  EXPECT_NEAR(out(6), -0.5 * std::tanh(1.0 / 0.3), 1e-12);
+  EXPECT_LT(out(6), -0.49);
+  // At equilibrium (no command) nothing is added, so a resting joint cannot be pushed.
+  EXPECT_DOUBLE_EQ(out(0), 0.0);
+}
+
+TEST(FrictionCompensation, BlendsContinuouslyBetweenStictionAndMotion) {
+  Vector7d coulomb = Vector7d::Constant(0.5);
+  Vector7d tau = Vector7d::Constant(-0.15);
+  double previous = 0.0;
+  for (int k = 0; k <= 100; ++k) {
+    Vector7d dq = Vector7d::Constant(-0.001 * k);
+    const double value = friction_compensation_torque(coulomb, dq, tau, 0.05, 0.3)(3);
+    EXPECT_LE(std::abs(value), 0.5 + 1e-12);
+    if (k > 0) {
+      EXPECT_LT(std::abs(value - previous), 0.02);  // no jump at |dq| = velocity_scale
+    }
+    previous = value;
+  }
+  EXPECT_DOUBLE_EQ(previous, -0.5);
 }

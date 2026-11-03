@@ -1129,9 +1129,13 @@ controller_interface::return_type CartesianImpedanceController::update(
       position, orientation, jacobian, coriolis, q_current, dq_current, position_d_,
       orientation_d_, nullspace_d_, stiffness_, damping_, nullspace_stiffness_,
       nullspace_damping_lambda_, rotation_error_form_, arm_mass_matrix);
-  // Forge's clamp first, then the libfranka torque-rate bound the robot would enforce anyway.
-  const Vector7d output = saturate_torque_rate(clamp_torque(terms.tau_command, torque_limit_),
-                                               tau_command_previous_);
+  // The physical arm's joint friction, which training never had, on top of the law; then
+  // Forge's clamp, then the libfranka torque-rate bound the robot would enforce anyway.
+  const Vector7d tau_friction = friction_compensation_torque(
+      friction_compensation_nm_, dq_current, terms.tau_task + terms.tau_nullspace,
+      friction_compensation_velocity_, friction_compensation_torque_);
+  const Vector7d output = saturate_torque_rate(
+      clamp_torque(terms.tau_command + tau_friction, torque_limit_), tau_command_previous_);
   tau_command_previous_ = output;
   for (int i = 0; i < kNumJoints; ++i) {
     command_interfaces_[i].set_value(output(i));
@@ -1282,6 +1286,10 @@ CartesianImpedanceController::CallbackReturn CartesianImpedanceController::on_in
     auto_declare<std::string>("rotation_error", "quaternion_vector");
     auto_declare<bool>("coriolis_compensation", true);
     auto_declare<double>("torque_limit", 0.0);
+    auto_declare<std::vector<double>>("friction_compensation_nm",
+                                      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+    auto_declare<double>("friction_compensation_velocity", 0.05);
+    auto_declare<double>("friction_compensation_torque", 0.3);
     auto_declare<double>("policy_clip_position_m", 0.0);
     auto_declare<double>("policy_clip_orientation_rad", 0.0);
     auto_declare<double>("policy_clip_frame_yaw", 0.0);
@@ -1438,6 +1446,39 @@ bool CartesianImpedanceController::assign_parameters() {
     }
     policy_clip_frame_ =
         Eigen::Quaterniond(Eigen::AngleAxisd(policy_clip_frame_yaw_, Eigen::Vector3d::UnitZ()));
+  }
+  const auto friction = node->get_parameter("friction_compensation_nm").as_double_array();
+  if (friction.size() != static_cast<std::size_t>(kNumJoints)) {
+    RCLCPP_FATAL(node->get_logger(), "friction_compensation_nm must hold %d values, got %zu",
+                 kNumJoints, friction.size());
+    return false;
+  }
+  for (int i = 0; i < kNumJoints; ++i) {
+    // 2 Nm is three times the largest loss measured on the FR3; more is a typo.
+    if (!std::isfinite(friction[i]) || friction[i] < 0.0 || friction[i] > 2.0) {
+      RCLCPP_FATAL(node->get_logger(),
+                   "friction_compensation_nm[%d] must be in [0, 2] Nm, got %f", i, friction[i]);
+      return false;
+    }
+    friction_compensation_nm_(i) = friction[i];
+  }
+  friction_compensation_velocity_ =
+      node->get_parameter("friction_compensation_velocity").as_double();
+  friction_compensation_torque_ = node->get_parameter("friction_compensation_torque").as_double();
+  if (!(friction_compensation_velocity_ > 0.0) || !(friction_compensation_torque_ > 0.0)) {
+    RCLCPP_FATAL(node->get_logger(),
+                 "friction_compensation_velocity and friction_compensation_torque must be > 0");
+    return false;
+  }
+  if ((friction_compensation_nm_.array() > 0.0).any()) {
+    RCLCPP_INFO(node->get_logger(),
+                "joint friction compensation [%.2f %.2f %.2f %.2f %.2f %.2f %.2f] Nm "
+                "(velocity scale %.3f rad/s, torque scale %.2f Nm)",
+                friction_compensation_nm_(0), friction_compensation_nm_(1),
+                friction_compensation_nm_(2), friction_compensation_nm_(3),
+                friction_compensation_nm_(4), friction_compensation_nm_(5),
+                friction_compensation_nm_(6), friction_compensation_velocity_,
+                friction_compensation_torque_);
   }
   torque_rate_limit_ = node->get_parameter("torque_rate_limit").as_double();
   goto_max_velocity_ = node->get_parameter("goto_max_velocity").as_double();
