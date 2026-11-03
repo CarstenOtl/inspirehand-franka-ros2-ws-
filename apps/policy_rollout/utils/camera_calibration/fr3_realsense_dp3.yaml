@@ -2,22 +2,24 @@ schema_version: 1
 
 # Everything about the policy camera lives in this file.
 #
-# training_camera is the camera model baked into
-# checkpoints/sequential_threading_cycle10_hybrid_teacher_d415_20ep/checkpoint.pt.
-# The policy-view matrix and the DP3 point-cloud box are copied verbatim from
-# that checkpoint's vision_encoder_config. The 640x480 colour calibration and
-# the world pose come from this workcell's own D415 calibration run,
-# assets/camera/calibration/20260910T152223_150165Z/calibrated_tf.yaml, which is
-# the accepted artifact from the run the
-# training scene (fr3_d415_nut_sweep_20260910T152223_calibration) was built
-# from. Consistency checks that back this up:
+# training_camera is the camera model the deployed student
+# (checkpoints/m24-dp3-nominal-calib1029-da-s0-20261030-112229-116599) was
+# trained with. The policy-view matrix and the DP3 point-cloud box are copied
+# verbatim from that checkpoint's vision_encoder_config. The 640x480 colour
+# calibration and the world pose come from this workcell's own D415
+# calibration run,
+# assets/camera/calibration/20261029T173220_626741Z/calibrated_tf.yaml, whose
+# forgeultra_camera_info.yaml training rendered from (the checkpoint does not
+# record the pose; the run name "calib1029" and the training side say so).
+# Consistency checks:
 #   - 640x480 matrix, central 640x360 rows kept, halved  ==  checkpoint matrix
 #     (fx 301.0258, fy 300.3467, cx 153.9877, cy 88.9638) to float32 precision;
 #   - distance from the calibrated camera to the training bolt at
-#     (0.61, 0, 0.11) m is 0.88 m; the checkpoint's DP3 xyz_center_m z is 0.89 m;
-#   - the reference training episode's per-step eef->camera transforms are
-#     consistent with a camera fixed at this pose up to a constant end-effector
-#     frame offset (about 1.5 cm / 10 deg residual across the episode).
+#     (0.61, 0, 0.11) m is 0.90 m; the checkpoint's DP3 xyz_center_m z is 0.89 m.
+# Students before 2026-10-30 were trained on the 2026-09-10 pose
+# (20260910T152223_150165Z: translation [0.0320, 0.5514, 0.4903], rotation_wxyz
+# [0.1810, -0.2951, 0.7767, -0.5262]), 25.5 mm / 3.55 deg from this one. Put
+# that pose back in both world_pose blocks to run one of them.
 training_camera:
   model: Intel RealSense D415
   mount: fixed_world
@@ -53,10 +55,10 @@ training_camera:
     aligned_depth_to: color
   world_pose:
     # fr3_link0 -> camera_color_optical_frame (world_to_camera_optical in the
-    # calibration result). The training scene applied this transform at its
-    # robot root, which sits on the table surface at joint-1 height: a plane
-    # fit to the recorded training depth puts the camera 0.491 m above the
-    # table at 22.4 deg, exactly this pose's height and tilt. In the replay
+    # calibration result). The training scene applies this transform at its
+    # robot root, which sits on the table surface at joint-1 height (checked
+    # for the 2026-09-10 pose: a plane fit to the recorded training depth put
+    # the camera at exactly that pose's height and tilt). In the replay
     # MJCF that root is 0.333 m above the fr3_link0 body (see
     # tests/smoke_test_mujoco.py). On the physical cell the transform is
     # relative to the real base plate, so the training view is reproduced only
@@ -64,9 +66,9 @@ training_camera:
     # rollout.
     parent_frame_id: fr3_link0
     child_frame_id: camera_color_optical_frame
-    translation_m: [0.032024625343287656, 0.5514171438029323, 0.4903332221249476]
-    rotation_wxyz: [0.18096933350357602, -0.29508243312355115,
-                    0.7766963627887651, -0.5262311450530647]
+    translation_m: [0.015436792116129017, 0.5655169409139895, 0.47709339261888223]
+    rotation_wxyz: [0.20432777582689068, -0.2810334892558843,
+                    0.7679468890565848, -0.5380779809011071]
   dp3_point_cloud:
     num_points: 4096
     depth_min_m: 0.10
@@ -97,19 +99,19 @@ physical_camera:
     crop_px: {x: 0, y: 60, width: 640, height: 360}
   maximum_intrinsics_error_px: 0.5
   measured_world_pose:
-    # Exact accepted workcell calibration used to build the training scene.
-    # The operator accepted this artifact for student-policy rollout on
-    # 2026-09-12.
+    # Exact workcell calibration the training scene was built from
+    # (hand-guided, 11 samples, 9.7 mm / 0.98 deg). Validated for rollout on
+    # 2026-10-30, when a student trained on it was deployed.
     status: validated
-    source: assets/camera/calibration/20260910T152223_150165Z/calibrated_tf.yaml
+    source: assets/camera/calibration/20261029T173220_626741Z/calibrated_tf.yaml
     parent_frame_id: fr3_link0
     child_frame_id: camera_color_optical_frame
-    translation_m: [0.032024625343287656, 0.5514171438029323, 0.4903332221249476]
-    rotation_wxyz: [0.18096933350357602, -0.29508243312355115,
-                    0.7766963627887651, -0.5262311450530647]
+    translation_m: [0.015436792116129017, 0.5655169409139895, 0.47709339261888223]
+    rotation_wxyz: [0.20432777582689068, -0.2810334892558843,
+                    0.7679468890565848, -0.5380779809011071]
     quality:
-      translation_rmse_m: 0.02746452953380092
-      rotation_rmse_deg: 3.5032834042323495
+      translation_rmse_m: 0.009722098952521664
+      rotation_rmse_deg: 0.9783361756760356
       samples_used: 11
   maximum_training_pose_error:
     translation_m: 0.01

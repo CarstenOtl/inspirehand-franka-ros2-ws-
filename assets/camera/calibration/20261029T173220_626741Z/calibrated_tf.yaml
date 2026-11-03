@@ -1,7 +1,9 @@
 schema_version: 1
-# Measured, not validated: the deployed student was trained on the
-# 2026-09-10 pose. Promote once a student is trained on this pose.
-status: measured
+# Validated 2026-10-30: the deployed student
+# (m24-dp3-nominal-calib1029-da-s0) was trained on this pose.
+status: validated
+validated_for: student_policy_rollout
+validated_at_utc: "2026-10-30"
 calibrated_at_utc: "2026-10-29T17:32:20.626741Z"
 # Recorded at 1920x1080. The pose is resolution-independent; the 640x480
 # policy stream's factory intrinsics follow from these by scaling 4/9 and
