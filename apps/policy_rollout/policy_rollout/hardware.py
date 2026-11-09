@@ -150,13 +150,6 @@ class TorqueLowPass:
         return self.value.copy()
 
 
-#: How far past either end of the overlaid range the thumb-yaw feedback may
-#: read, as a logical open ratio, before it counts as a fault: 45 thousandths,
-#: about 0.05 rad. 20 was too tight: on 2026-10-29 a thumb held at its yaw limit
-#: settled 22.7 past it and ended two runs after 20 steps; 30 was too tight once
-#: the hand's force threshold went from 500 to 1000 g, and the thumb settled
-#: 30.7 past it (hardware-20261103-155652-541265, ended after 70 steps).
-THUMB_FEEDBACK_SLACK_OPEN_RATIO = 0.045
 
 #: Columns of HAND_JOINTS that homing curls before the index and thumb move.
 SUPPORT_FINGER_INDICES = tuple(
@@ -178,106 +171,30 @@ def home_hand_in_stages(client, home_hand, timeout: float, tolerance: float) -> 
     client.wait_for_hand(home_hand, timeout, tolerance)
 
 
-def physical_hand_state_to_policy(
-    hand_position, hand_velocity, *, thumb_overlay: bool = True, hand_map=None
-) -> tuple[np.ndarray, np.ndarray]:
-    """Map physical RH56 feedback into the checkpoint's logical coordinates.
+def physical_hand_state_to_policy(hand_position, hand_velocity) -> tuple[np.ndarray, np.ndarray]:
+    """The three pinch joints the policy observes, from the driver's six driven joints.
 
-    The driver moves thumb yaw and flexion commands from the model's angle onto
-    the register that puts the real thumb there (camera fit,
-    ``command_overlays``). Its joint-state topic reports the angle the registers
-    imply, so the policy scalars and their derivatives are inverted here; the
-    TF tree remains untouched.
-
-    ``thumb_overlay=False`` says the driver runs without the calibration (its
-    ``thumb_abduction_overlay`` parameter, off in ros-sim): the reported pose
-    then already is the logical one and nothing is inverted.
-
-    ``hand_map``: an RH56 student's ``RH56HandMap``. ``hand_position`` is then
-    the driver's register readout (``~/state`` open ratios, see
-    ``hand_register_state_to_arrays``), read through the linkage map to leader
-    angles; that needs the overlay off. The RH56 reports no velocity, so the
-    rates are zero (RH56 students do not observe them).
+    The driver already reports the fitted hand model, so a joint angle here
+    means the real joint angle.
     """
-
-    from inspire_hand_driver import command_overlays
-    from inspire_hand_driver import kinematics as kin
 
     positions = np.asarray(hand_position, dtype=float).reshape(-1)
     velocities = np.asarray(hand_velocity, dtype=float).reshape(-1)
-    if positions.shape != (len(HAND_JOINTS),) or velocities.shape != (
-        len(HAND_JOINTS),
-    ):
+    if positions.shape != (len(HAND_JOINTS),) or velocities.shape != (len(HAND_JOINTS),):
         raise ValueError("physical hand state must contain all six driven joints")
     if not np.isfinite(positions).all() or not np.isfinite(velocities).all():
         raise ValueError("physical hand state contains non-finite values")
-    if hand_map is not None:
-        if thumb_overlay:
-            raise ValueError("RH56 hand feedback needs the driver's thumb-yaw overlay off")
-        from .rh56_hand import leaders_from_open_ratios
-
-        if not ((positions >= 0.0) & (positions <= 1.0)).all():
-            raise ValueError("RH56 register readout must be open ratios in [0, 1]")
-        q_policy = leaders_from_open_ratios(hand_map, positions, HAND_JOINTS, POLICY_HAND_JOINTS)
-        return q_policy, np.zeros_like(q_policy)
     columns = {name: index for index, name in enumerate(HAND_JOINTS)}
     indices = [columns[name] for name in POLICY_HAND_JOINTS]
-    q_policy = positions[indices].copy()
-    dq_policy = velocities[indices].copy()
-    if not thumb_overlay:
-        return q_policy, dq_policy
-
-    thumb_dof = kin.dof_index(command_overlays.THUMB_ABDUCTION_JOINT)
-    physical_ratio = kin.rad_to_open_ratio(thumb_dof, q_policy[0])
-    logical_ratio = command_overlays.invert_open_ratio_overlay(
-        thumb_dof, physical_ratio
-    )
-    # A thumb driven onto the end of its range can settle a few register
-    # counts (1/1000 each) past it: 2026-10-26 the student commanded 1.27 rad
-    # against the RH56's 1.246 rad yaw limit and the feedback overshot the
-    # overlay's zero. That is the limit, not a mapping fault; anything further
-    # out still is.
-    slack = THUMB_FEEDBACK_SLACK_OPEN_RATIO
-    if not -slack <= logical_ratio <= 1.0 + slack:
-        raise ValueError(
-            "physical thumb-yaw feedback is outside the overlaid policy range "
-            f"(logical open ratio {logical_ratio:.4f})"
-        )
-    logical_ratio = min(max(logical_ratio, 0.0), 1.0)
-    q_policy[0] = kin.open_ratio_to_rad(thumb_dof, logical_ratio)
-    dq_policy[0] *= command_overlays.model_rate_gain(thumb_dof)
-
-    # Registers more open than the model's zero are legitimate here (the hand
-    # before its first command), so flexion is limited to the model's range
-    # rather than refused.
-    flexion_dof = kin.dof_index(command_overlays.THUMB_FLEXION_JOINT)
-    flexion_ratio = command_overlays.invert_open_ratio_overlay(
-        flexion_dof, kin.rad_to_open_ratio(flexion_dof, q_policy[1])
-    )
-    q_policy[1] = kin.open_ratio_to_rad(flexion_dof, flexion_ratio)
-    dq_policy[1] *= command_overlays.model_rate_gain(flexion_dof)
-    return q_policy, dq_policy
+    return positions[indices].copy(), velocities[indices].copy()
 
 
 def _hand_calibration_id() -> str:
-    """The thumb calibration a recording's registers were written under."""
+    """The hand model a recording was taken with."""
 
     from inspire_hand_driver import command_overlays
 
     return command_overlays.HAND_CALIBRATION_ID
-
-
-def hand_register_state_to_arrays(message) -> tuple[np.ndarray, np.ndarray]:
-    """The driver's ``~/state`` (actual registers as open ratios) in HAND_JOINTS order.
-
-    What an RH56 student observes through: the hand reports registers, and the
-    linkage map turns them into leader angles. No velocity; zeros.
-    """
-
-    from .rh56_hand import register_state_to_open_ratios
-
-    ratios = register_state_to_open_ratios(message, HAND_JOINTS)
-    return ratios, np.zeros_like(ratios)
 
 
 def hand_joint_state_to_arrays(message) -> tuple[np.ndarray, np.ndarray]:
@@ -415,18 +332,12 @@ class TrainingHandKinematics:
     an open bench measurement.
     """
 
-    def __init__(self, profile=None, followers: str = "linkage") -> None:
+    def __init__(self, profile=None) -> None:
         import mujoco
 
         from .mujoco_scene import load_training_scene
 
         self.profile = profile or fo.MIMIC_M24_PROFILE
-        # RH56 only: "linkage" is the training hand; "mimic" is the old hand
-        # model (linear map + mimic couplings) for a physical hand it describes
-        # better. The trained reference grasp always uses "linkage".
-        if followers not in ("linkage", "mimic"):
-            raise ValueError(f"followers must be 'linkage' or 'mimic', not {followers!r}")
-        self.followers = followers
         self._mujoco = mujoco
         self.model, self.data = load_training_scene(urdf_tip_frames=True)
         self._address = {
@@ -441,12 +352,6 @@ class TrainingHandKinematics:
         """Every training-asset hand joint at these three pinch leaders."""
 
         targets = dict(zip(fo.PINCH_JOINTS, pinch_positions))
-        if self.profile.hand == "rh56":
-            from .rh56_hand import expand_followers, expand_followers_mimic
-
-            if self.followers == "mimic":
-                return expand_followers_mimic(targets)
-            return expand_followers(targets)
         targets.update(TRAINING_INACTIVE_FINGERS)
         return fo.expand_hand_mimic(targets)
 
@@ -575,7 +480,7 @@ RELEASE_START_PINCH = np.array([1.093208432, 0.0001, 0.03])
 # poses are expressed at it. Keep this equal to `tool_offset_xyz` in
 # controllers_policy.yaml and controllers_sim_policy.yaml, which preflight
 # checks, and to the `policy_grasp_tcp` marker in inspire_hand_on_flange.xml.
-POLICY_TOOL_OFFSET_XYZ = (-0.059067, -0.028773, 0.173311)
+POLICY_TOOL_OFFSET_XYZ = (-0.058208, -0.028713, 0.173779)
 POLICY_TOOL_OFFSET_RPY = (0.0, 0.0, 0.0)
 
 
@@ -1367,9 +1272,7 @@ def _hardware_node_class():
             max_state_age_s,
             max_frame_skew_s,
             use_sim_time=False,
-            thumb_overlay=True,
             profile=None,
-            hand_map=None,
             fingertip_force_topic=None,
             arm_torque_source=None,
             arm_torque_topics=None,
@@ -1386,42 +1289,16 @@ def _hardware_node_class():
 
             from rclpy.parameter import Parameter
 
-            super().__init__(
-                "fr3_policy_rollout",
-                parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, use_sim_time)],
-            )
-            self.use_sim_time = bool(use_sim_time)
-            # Whether the hand driver runs its thumb-yaw overlay, i.e. whether
-            # its reported pose has to be inverted into the policy's logical
-            # coordinate (physical_hand_state_to_policy).
-            self.thumb_overlay = bool(thumb_overlay)
-            # An RH56 student's hand goes through the linkage map both ways.
             self.profile = profile or fo.MIMIC_M24_PROFILE
-            self.hand_map = hand_map
-            if (self.profile.hand == "rh56") != (hand_map is not None):
-                raise ValueError("an RH56 task profile needs its hand map, and only it")
-            # The hand topic carries joint states (mimic) or the register readout (RH56).
-            self._hand_arrays = (
-                hand_joint_state_to_arrays if hand_map is None else hand_register_state_to_arrays
-            )
             self.last_tip_separation_m = None
             self.calibration = calibration
             self.config = config
             self.max_state_age_s = float(max_state_age_s)
             self.max_frame_skew_s = float(max_frame_skew_s)
             self._rgbd = RgbdFrameSynchronizer(self.max_frame_skew_s)
-            # The grasp frame is rebuilt in the training asset's hand geometry,
-            # not the workspace URDF's; see TrainingHandKinematics. The trained
-            # reference uses the training hand; the live tips use whichever
-            # follower model the hand map describes (the old hand model's mimic
-            # couplings for LinearHandMap).
+            # The grasp frame is rebuilt from the hand model's geometry.
             self._training_hand = TrainingHandKinematics(self.profile)
-            live_followers = getattr(hand_map, "followers", "linkage")
-            self._live_hand = (
-                self._training_hand
-                if live_followers == "linkage"
-                else TrainingHandKinematics(self.profile, followers=live_followers)
-            )
+            self._live_hand = self._training_hand
             self._policy_hand_position = None
             controller = "/" + config["cartesian"]["controller_name"].strip("/")
             # Preclipped goals plus the live grasp frame; the controller does
@@ -1657,7 +1534,7 @@ def _hardware_node_class():
             indices = [arm_columns[name] for name in ARM_JOINTS]
             q_arm = np.asarray(arm.feedback.positions, dtype=float)[indices]
             dq_arm = np.asarray(arm.feedback.velocities, dtype=float)[indices]
-            q_hand, dq_hand = self._hand_arrays(messages["hand"])
+            q_hand, dq_hand = hand_joint_state_to_arrays(messages["hand"])
             rgb, _ = image_message_to_numpy(messages["rgb"])
             depth, depth_units = image_message_to_numpy(messages["depth"])
             controller_pose = messages["cartesian"].target
@@ -1740,7 +1617,7 @@ def _hardware_node_class():
             # The grasp frame is rebuilt from these logical hand joints rather
             # than read from TF, so keep the latest ones for _hand_frames.
             self._policy_hand_position = physical_hand_state_to_policy(
-                sample.hand_position, sample.hand_velocity, thumb_overlay=self.thumb_overlay, hand_map=self.hand_map
+                sample.hand_position, sample.hand_velocity
             )[0]
             return sample
 
@@ -1806,7 +1683,7 @@ def _hardware_node_class():
 
         def policy_hand_state(self, sample: LiveSample) -> tuple[np.ndarray, np.ndarray]:
             return physical_hand_state_to_policy(
-                sample.hand_position, sample.hand_velocity, thumb_overlay=self.thumb_overlay, hand_map=self.hand_map
+                sample.hand_position, sample.hand_velocity
             )
 
         def policy_hand_positions(self) -> np.ndarray:
@@ -1824,7 +1701,7 @@ def _hardware_node_class():
             if message is None:
                 raise RuntimeError("missing live inputs: hand")
             return physical_hand_state_to_policy(
-                *self._hand_arrays(message), thumb_overlay=self.thumb_overlay, hand_map=self.hand_map
+                *hand_joint_state_to_arrays(message)
             )[0]
 
         def _hand_frames(self):
@@ -1957,18 +1834,11 @@ def _hardware_node_class():
             message = JointState()
             message.header.stamp = self.get_clock().now().to_msg()
             message.name = list(HAND_JOINTS)
-            if self.hand_map is not None:
-                from .rh56_hand import command_open_ratios
-
-                message.position = command_open_ratios(self.hand_map, pinch, HAND_JOINTS)
-            else:
-                radians = np.concatenate(
-                    (SUPPORT_FINGER_TARGETS, [pinch[2], pinch[1], pinch[0]])
-                )
-                message.position = [
-                    kin.rad_to_open_ratio(kin.dof_index(name), value)
-                    for name, value in zip(HAND_JOINTS, radians)
-                ]
+            radians = np.concatenate((SUPPORT_FINGER_TARGETS, [pinch[2], pinch[1], pinch[0]]))
+            message.position = [
+                kin.rad_to_open_ratio(kin.dof_index(name), value)
+                for name, value in zip(HAND_JOINTS, radians)
+            ]
             self.hand_publisher.publish(message)
 
         def publish_turn(self, values):
@@ -2012,46 +1882,12 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
     from utils.data_collection import RolloutDataCollector, create_rollout_dir
 
     sim = bool(getattr(args, "sim", False))
-    # ros-sim's driver runs without the thumb-yaw overlay (sim_policy.launch.py);
-    # the physical driver keeps it. --thumb-overlay on/off overrides.
-    thumb_overlay = bool(getattr(args, "thumb_overlay_enabled", not sim))
     hand_start = str(getattr(args, "hand_start", "release"))
     profile = fo.resolve_task_profile(getattr(args, "task_profile", "auto"), runner.path)
-    hand_map = None
-    pinch_actions = None
-    if profile.hand == "rh56":
-        from .rh56_hand import (
-            LinearHandMap,
-            RegisterPinchActions,
-            driver_radians_for_leaders,
-            load_hand_map,
-        )
-
-        if thumb_overlay:
-            raise ValueError(
-                f"task profile {profile.name} commands RH56 registers; run the hand driver "
-                "without its thumb-yaw overlay and pass --thumb-overlay off"
-            )
-        if runner.config.hand_velocity_observation != "omitted":
-            raise ValueError("the RH56 reports no finger velocity; this student observes it")
-        # Training's action -> register -> angle step always uses the linkage
-        # map. --rh56-hand-model linear reads and commands the physical hand
-        # through the old model instead (linear map, mimic followers), so the
-        # student's angles mean that model's hand.
-        pinch_actions = RegisterPinchActions(load_hand_map(), profile)
-        rh56_hand_model = getattr(args, "rh56_hand_model", "linkage")
-        hand_map = LinearHandMap() if rh56_hand_model == "linear" else load_hand_map()
-        print(f"RH56 hand model for readings and commands: {rh56_hand_model}", flush=True)
     config = load_config(args.config)
     home_arm, home_hand = load_home(args.home)
     if np.max(np.abs(home_arm - np.asarray(profile.arm_reset_joints))) > args.max_home_delta:
         raise ValueError(f"home arm pose does not match the {profile.name} reset pose")
-    if hand_map is not None:
-        # The home file holds leader angles; the homing client speaks the
-        # driver's linear radians. Same order as HAND_JOINTS.
-        home_hand = driver_radians_for_leaders(
-            hand_map, [home_hand[5], home_hand[4], home_hand[3]], HAND_JOINTS
-        )
 
     # Only a force-observing student subscribes, so the others run without a
     # force source. ros-sim's plugin publishes the projected channels; hardware
@@ -2102,13 +1938,9 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             # Needed to rebuild the physical hand pose from the recorded
             # logical joints (analyze_rollout_motion) and to know how the
             # episode started.
-            "thumb_abduction_overlay": thumb_overlay,
-            "hand_calibration": _hand_calibration_id() if thumb_overlay else None,
+            "hand_calibration": _hand_calibration_id(),
             "hand_start": hand_start,
             "task_profile": profile.name,
-            "rh56_hand_model": (
-                getattr(args, "rh56_hand_model", "linkage") if profile.hand == "rh56" else None
-            ),
         },
         record_rgbd=args.record_rgbd,
     )
@@ -2123,25 +1955,18 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
 
     rclpy.init(args=None, signal_handler_options=SignalHandlerOptions.NO)
     home_client = CoordinatedReplayClient(
-        config, args.hand_topic, args.hand_state_topic, thumb_abduction_overlay=thumb_overlay
+        config, args.hand_topic, args.hand_state_topic
     )
     arm_client = CartesianReplayClient(config, node_name="policy_arm_setup")
     node = _hardware_node_class()(
         calibration,
         config,
         hand_command_topic=args.hand_topic,
-        # An RH56 student reads the registers; the homing client keeps joint states.
-        hand_state_topic=(
-            args.hand_state_topic
-            if hand_map is None
-            else getattr(args, "hand_register_topic", "/inspire_hand/state")
-        ),
+        hand_state_topic=args.hand_state_topic,
         max_state_age_s=args.max_state_age,
         max_frame_skew_s=args.max_frame_skew,
         use_sim_time=sim,
-        thumb_overlay=thumb_overlay,
         profile=profile,
-        hand_map=hand_map,
         fingertip_force_topic=fingertip_force_topic,
         arm_torque_source=arm_torque_source,
         arm_torque_topics=arm_torque_topics,
@@ -2189,7 +2014,6 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
     artifact = None
     error = None
     details = {
-        "thumb_abduction_overlay": thumb_overlay,
         "hand_start": hand_start,
     }
     try:
@@ -2714,11 +2538,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             # at 1 kHz with the grasp frame this tick measured.
             goal_position, goal_quaternion = policy_goal_base(frame, filtered, profile)
             node.publish_policy_goal(goal_position, goal_quaternion, tool_in_flange, home_arm)
-            pinch_target = (
-                fo.pinch_targets(filtered, profile=profile)
-                if pinch_actions is None
-                else pinch_actions.pinch_targets(filtered)
-            )
+            pinch_target = fo.pinch_targets(filtered, profile=profile)
             if thumb_hold is not None:
                 was_holding = thumb_hold.active
                 pinch_target = thumb_hold.apply(
@@ -3000,7 +2820,6 @@ __all__ = [
     "assess_hardware_readiness",
     "grasp_frame_from_tips",
     "hand_joint_state_to_arrays",
-    "hand_register_state_to_arrays",
     "grasp_z_transport_at_reset",
     "assert_policy_camera_frames",
     "grasp_in_flange",

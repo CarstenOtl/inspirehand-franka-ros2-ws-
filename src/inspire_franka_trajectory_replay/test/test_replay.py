@@ -16,6 +16,7 @@ from inspire_franka_trajectory_replay.replay import (
     _hand_stream_native, _prepare_arm, _prepare_cartesian, _stream_hand,
     CoordinatedReplayClient, PositionReplayClient, main,
 )
+from inspire_franka_trajectory_replay.replay import HAND_LOWER as _HAND_LOWER, HAND_UPPER as _HAND_UPPER
 from inspire_franka_trajectory_replay.joint_trajectory_client import JointTrajectoryClient
 from franka_trajectory_replay.cartesian_replay_client import (
     CONTROLLER_TYPE as CARTESIAN_CONTROLLER_TYPE, CartesianReplayClient,
@@ -514,8 +515,6 @@ def test_hand_stream_follows_the_arm_trajectory_clock_across_pause():
 @pytest.mark.parametrize("client_type", [CoordinatedReplayClient, PositionReplayClient])
 def test_wait_for_hand_republishes_home_command_until_feedback_arrives(client_type):
     """Hand homing uses wait_until's progress callback to recover a lost command."""
-    from inspire_franka_trajectory_replay.trajectory import driver_reported_hand
-
     node = client_type.__new__(client_type)
     node._hand_lock = threading.Lock()
     node._hand_position = np.ones(6)
@@ -526,7 +525,7 @@ def test_wait_for_hand_republishes_home_command_until_feedback_arrives(client_ty
         with node._hand_lock:
             # Emulate the driver's universal actuator-facing overlay while
             # retaining the raw target received on its ROS command topic.
-            node._hand_position = driver_reported_hand(target)
+            node._hand_position = np.asarray(target)
 
     node.command_hand = command_hand
     target = np.zeros(6)
@@ -612,7 +611,7 @@ def test_command_hand_converts_radians_to_open_ratios():
     node.command_hand(HAND_UPPER)
     assert list(published[-1].position) == [0.0] * len(HAND_JOINTS)
 
-    node.command_hand(0.5 * HAND_UPPER)
+    node.command_hand(0.5 * (HAND_LOWER + HAND_UPPER))
     assert list(published[-1].position) == pytest.approx([0.5] * len(HAND_JOINTS))
 
     assert list(published[-1].name) == list(HAND_JOINTS)
@@ -640,11 +639,11 @@ def test_float32_undershoot_at_a_limit_is_snapped_not_rejected():
     from inspire_franka_trajectory_replay.replay import HAND_LOWER, _validate_hand
 
     values = np.tile(HAND_LOWER, (3, 1))
-    values[1, 3] = -2.09e-6  # index_proximal, as the pickplace capture records it
+    values[1, 3] = HAND_LOWER[3] - 2.09e-6  # index_proximal, as the pickplace capture records it
 
     snapped = _validate_hand(values, "trajectory")
 
-    assert snapped[1, 3] == 0.0
+    assert snapped[1, 3] == HAND_LOWER[3]
     assert np.all(snapped >= HAND_LOWER)
 
 
@@ -695,7 +694,9 @@ def _gentle_capture(duration=3.0, rate=15.0, amplitude=0.05):
     envelope = np.sin(np.pi * time / duration) ** 2
     for joint in range(7):
         arm[:, joint] += amplitude * envelope * np.sin(2 * np.pi * (0.2 + 0.05 * joint) * time)
-    hand = np.full((len(time), 6), 0.1)
+    from inspire_franka_trajectory_replay.replay import HAND_LOWER, HAND_UPPER
+
+    hand = np.tile(np.clip(0.1, HAND_LOWER, HAND_UPPER), (len(time), 1))
     return SimpleNamespace(time=time, arm=arm, hand=hand, source="synthetic.npz",
                            duration=float(time[-1]), cycle=None, segment=None)
 
@@ -822,7 +823,7 @@ def _write_capture(tmp_path):
     home = tmp_path / "homing.yaml"
     home.write_text(yaml.safe_dump({
         "joint_names": [f"fr3_joint{i}" for i in range(1, 8)] + hand_names,
-        "positions": [float(v) for v in capture.arm[0]] + [0.1] * 6,
+        "positions": [float(v) for v in capture.arm[0]] + [float(v) for v in np.clip(0.1, _HAND_LOWER, _HAND_UPPER)],
     }))
     return npz, home
 
@@ -1024,7 +1025,7 @@ def _write_flagged_capture(tmp_path, release_sample=10):
     home = tmp_path / "flagged_home.yaml"
     home.write_text(yaml.safe_dump({
         "joint_names": [f"fr3_joint{i}" for i in range(1, 8)] + hand_names,
-        "positions": [float(v) for v in capture.arm[0]] + [0.1] * 6,
+        "positions": [float(v) for v in capture.arm[0]] + [float(v) for v in np.clip(0.1, _HAND_LOWER, _HAND_UPPER)],
     }))
     return directory, home
 

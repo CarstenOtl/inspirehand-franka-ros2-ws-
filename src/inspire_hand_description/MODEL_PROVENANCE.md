@@ -1,8 +1,8 @@
 Model provenance
 
-`urdf/inspire_hand_{right,left}.macro.xacro` and everything under `meshes/` are
-**generated**. The generator is `scripts/vendor_from_training_urdf.py`; edit
-that, not its output.
+`urdf/inspire_hand_{right,left}.macro.xacro` and everything under `meshes/` were
+vendored from the training URDF. The thumb and index limits and couplings have
+since been fitted to the real hand; see the hardware fit below.
 
 | | |
 |---|---|
@@ -11,6 +11,23 @@ that, not its output.
 | Upstream of that | Open-X-Humanoid's official `TienKung_URDF`, `tiangong2pro_urdf`, commit `5c221783fb92fcc4af891ef1dc0502963caf2266`; see forgeUltra's `assets/fr3_inspirehand/OFFICIAL_HAND_SOURCE.md` |
 | Licence | No licence or notice file is present in the upstream package |
 | Vendored on | 2026-10-16 |
+
+## Hardware fit (2026-11-09)
+
+The thumb and index limits and the follower couplings in the macros are not the
+training URDF's. They were fitted to the real hand by a 1080p camera sweep of
+the registers, so a joint angle means the real joint angle, and the driver's
+`kinematics.py` is the single table they come from:
+
+| Follower | Leader | Multiplier | Offset |
+|---|---|---|---|
+| `index_intermediate_joint` | `index_proximal_joint` | 0.8867 | 0.0275 |
+| `thumb_intermediate_joint` | `thumb_proximal_pitch_joint` | 1.2092 | 0.0252 |
+| `thumb_distal_joint` | `thumb_intermediate_joint` | 0.5592 | 0.0062 |
+
+The middle, ring and pinky fingers were not swept and keep 1.1169. Geometry
+and masses are the training URDF's. Thumb yaw commands are scaled onto registers
+250 to 1000, the range the fitted yaw limits describe.
 
 ## Why this model
 

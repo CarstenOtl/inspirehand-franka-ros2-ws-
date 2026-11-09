@@ -55,12 +55,12 @@ HAND_JOINTS = (
     "thumb_proximal_yaw_joint",
 )
 HAND_MIMICS = (
-    ("index_intermediate_joint", "index_proximal_joint", 1.1169),
+    ("index_intermediate_joint", "index_proximal_joint", 0.8867),
     ("middle_intermediate_joint", "middle_proximal_joint", 1.1169),
     ("ring_intermediate_joint", "ring_proximal_joint", 1.1169),
     ("pinky_intermediate_joint", "pinky_proximal_joint", 1.1169),
-    ("thumb_intermediate_joint", "thumb_proximal_pitch_joint", 1.1425),
-    ("thumb_distal_joint", "thumb_intermediate_joint", 0.7508),
+    ("thumb_intermediate_joint", "thumb_proximal_pitch_joint", 1.2092),
+    ("thumb_distal_joint", "thumb_intermediate_joint", 0.5592),
 )
 HAND_FOLLOWERS = tuple(follower for follower, _, _ in HAND_MIMICS)
 HAND_JOINT_LABELS = (

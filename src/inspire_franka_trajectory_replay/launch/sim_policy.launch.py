@@ -65,8 +65,6 @@ import yaml
 CONTROLLER = "trajectory_replay_controller"
 CARTESIAN_CONTROLLER = "cartesian_trajectory_replay_controller"
 SCENE = "inspire_franka_policy_scene.xml"
-#: hand_model -> scene (apps/policy_rollout/utils/make_ros_sim_scene.py writes both).
-SCENES = {"mimic": SCENE, "rh56": "inspire_franka_policy_scene_rh56.xml"}
 #: task_profile -> scene, for the mimic-hand students whose reset is not the default scene's.
 TASK_PROFILE_SCENES = {"mimic_windback45_tilt30": "inspire_franka_policy_scene_windback45_tilt30.xml"}
 MJCF_CAMERA = "policy_d415"
@@ -184,17 +182,7 @@ def launch_setup(context, *args, **kwargs):
     prefix = rgbd_topic.rsplit("/", 1)[0]
     pose = camera["world_pose"]
 
-    hand_model = arg("hand_model")
-    if hand_model not in SCENES:
-        raise RuntimeError(f"hand_model must be one of {sorted(SCENES)}, got {hand_model!r}")
-    task_profile = arg("task_profile")
-    if task_profile and task_profile not in TASK_PROFILE_SCENES:
-        raise RuntimeError(
-            f"task_profile must be empty or one of {sorted(TASK_PROFILE_SCENES)}, got {task_profile!r}"
-        )
-    if task_profile and hand_model != "mimic":
-        raise RuntimeError(f"task_profile:={task_profile} is a mimic-hand student; it needs hand_model:=mimic")
-    base_scene = TASK_PROFILE_SCENES.get(task_profile, SCENES[hand_model])
+    base_scene = TASK_PROFILE_SCENES.get(task_profile, SCENE)
     arm_friction_scale = float(arg("arm_friction_scale"))
     arm_armature_scale = float(arg("arm_armature_scale"))
     if arm_friction_scale < 0.0 or arm_armature_scale < 0.0:
@@ -242,10 +230,6 @@ def launch_setup(context, *args, **kwargs):
     hand_chain = arg("hand_chain")
     if hand_chain not in ("isaac", "driver"):
         raise RuntimeError(f"hand_chain must be 'isaac' or 'driver', got {hand_chain!r}")
-    if hand_model == "rh56" and hand_chain != "isaac":
-        # The mock driver maps registers onto the joints linearly; only the relay
-        # knows the linkage.
-        raise RuntimeError("hand_model:=rh56 needs hand_chain:=isaac")
     if hand_chain == "isaac":
         # Isaac's way: the pinch target goes straight into the joint drives and
         # the runner observes the simulated joints (see isaac_hand_relay.py).
@@ -257,8 +241,6 @@ def launch_setup(context, *args, **kwargs):
                 parameters=[
                     {
                         "use_sim_time": True,
-                        "hand_model": hand_model,
-                        "force_stop_n": float(arg("rh56_force_stop")),
                     }
                 ],
             )
@@ -272,10 +254,8 @@ def launch_setup(context, *args, **kwargs):
                 "mock": "true",
                 "node_name": "inspire_hand",
                 "publish_description": "false",
-                # The simulated hand is the training hand, whose thumb can use its
-                # whole range: the policy's logical thumb yaw is the pose. The
-                # physical hand keeps the overlay (and the runner inverts it on
-                # feedback) until the bench says the training posture is reachable.
+                # The simulated hand's registers are the model, so it has no
+                # thumb yaw register scale.
                 "thumb_abduction_overlay": "false",
             }.items(),
         )
@@ -383,25 +363,11 @@ def generate_launch_description():
                 "state rather than the simulated fingers'; rehearses the driver contract.",
             ),
             DeclareLaunchArgument(
-                "hand_model",
-                default_value="mimic",
-                description="'mimic' (default): the official hand the run06..run10 students "
-                "trained on. 'rh56': the RH56 linkage hand of the RH56 students "
-                "(inspire_franka_policy_scene_rh56.xml; the relay serves the hand's register "
-                "interface, see isaac_hand_relay.py). Run those with --thumb-overlay off.",
-            ),
-            DeclareLaunchArgument(
                 "task_profile",
                 default_value="",
-                description="Empty (default): the scene of hand_model. "
+                description="Empty (default): the default policy scene. "
                 "'mimic_windback45_tilt30': the old-hand exp_19 student's scene, the mimic hand "
                 "at the reset wound 45 deg and tilted 30 deg, with the nut at its spawn yaw.",
-            ),
-            DeclareLaunchArgument(
-                "rh56_force_stop",
-                default_value="50.0",
-                description="hand_model:=rh56: the rod force stop, N. 50 (default) is the middle "
-                "of the threading recipe's 42.5..57.5 N; training draws it per episode.",
             ),
             DeclareLaunchArgument(
                 "camera_view",

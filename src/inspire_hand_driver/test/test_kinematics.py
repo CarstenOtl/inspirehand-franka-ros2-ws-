@@ -68,18 +68,18 @@ URDF_MIMICS = {
     "pinky_intermediate_joint": (1.1169, 0.0),
     "ring_intermediate_joint": (1.1169, 0.0),
     "middle_intermediate_joint": (1.1169, 0.0),
-    "index_intermediate_joint": (1.1169, 0.0),
-    "thumb_intermediate_joint": (1.1425, 0.0),
-    "thumb_distal_joint": (0.7508, 0.0),
+    "index_intermediate_joint": (0.8867, 0.0275),
+    "thumb_intermediate_joint": (1.2092, 0.0252),
+    "thumb_distal_joint": (0.5592, 0.0062),
 }
 
 URDF_LIMITS = {
     "pinky_intermediate_joint": (0.0, 1.527),
     "ring_intermediate_joint": (0.0, 1.527),
     "middle_intermediate_joint": (0.0, 1.527),
-    "index_intermediate_joint": (0.0, 1.527),
-    "thumb_intermediate_joint": (0.0, 0.3578),
-    "thumb_distal_joint": (0.0, 0.2775),
+    "index_intermediate_joint": (-0.02, 1.527),
+    "thumb_intermediate_joint": (-0.08, 0.51),
+    "thumb_distal_joint": (-0.04, 0.31),
 }
 
 
@@ -98,47 +98,10 @@ def test_coupling_limits_match_the_urdf_limits():
         assert couplings[joint].upper == pytest.approx(upper)
 
 
-def test_followers_sit_at_their_open_limit_when_the_hand_is_open():
-    fully_open = dict(zip(kin.ALL_JOINTS, kin.joint_positions([1.0] * 6)))
-    for joint, (lower, _) in URDF_LIMITS.items():
-        assert fully_open[joint] == pytest.approx(lower, abs=1e-6)
-
-
 def test_the_thumb_distal_follows_the_intermediate_not_the_pitch():
     couplings = {c.joint: c for d in kin.DOFS for c in d.couplings}
     assert couplings["thumb_distal_joint"].source == "thumb_intermediate_joint"
     assert couplings["thumb_intermediate_joint"].source == ""
-
-
-def test_the_thumb_intermediate_clamps_and_the_distal_stops_with_it():
-    # 1.1425 * 0.48 = 0.548 would overshoot the intermediate's 0.3578 limit, so
-    # it clamps from about two thirds closed. The distal follows the clamped
-    # intermediate (0.7508 * 0.3578 = 0.26864), short of its own 0.2775 limit.
-    fully_closed = dict(zip(kin.ALL_JOINTS, kin.joint_positions([0.0] * 6)))
-    assert fully_closed["thumb_intermediate_joint"] == pytest.approx(0.3578, abs=1e-12)
-    assert fully_closed["thumb_distal_joint"] == pytest.approx(0.7508 * 0.3578, abs=1e-12)
-
-
-def test_the_thumb_followers_stop_moving_once_the_intermediate_clamps():
-    thumb = kin.dof_index("thumb_proximal_pitch_joint")
-    ratios = [1.0] * 6
-    ratios[thumb] = 0.1  # pitch 0.432 rad, past the clamp at 0.313
-    rates = kin.joint_velocities(ratios, [0.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-    by_name = dict(zip(kin.ALL_JOINTS, rates))
-    assert by_name["thumb_intermediate_joint"] == 0.0
-    assert by_name["thumb_distal_joint"] == 0.0
-    ratios[thumb] = 0.9  # pitch 0.048 rad, well before it
-    by_name = dict(zip(kin.ALL_JOINTS, kin.joint_velocities(ratios, [0, 0, 0, 0, 1.0, 0])))
-    assert by_name["thumb_intermediate_joint"] == pytest.approx(1.1425)
-    assert by_name["thumb_distal_joint"] == pytest.approx(1.1425 * 0.7508)
-
-
-def test_the_finger_followers_stop_short_of_their_limit():
-    # 1.1169 * 1.333 = 1.48883, about 2.2 deg inside the 1.527 limit.
-    # Not a bug to "fix" by widening the multiplier: the limit is loose, and the
-    # multiplier is what the linkage actually does.
-    fully_closed = dict(zip(kin.ALL_JOINTS, kin.joint_positions([0.0] * 6)))
-    assert fully_closed["index_intermediate_joint"] == pytest.approx(1.48883, abs=1e-5)
 
 
 def test_joint_positions_stay_within_limits_across_the_whole_range():
@@ -169,3 +132,26 @@ def test_passive_joints_are_not_addressable():
 def test_joint_positions_rejects_the_wrong_number_of_ratios():
     with pytest.raises(ValueError):
         kin.joint_positions([1.0] * 5)
+
+
+def test_the_fitted_followers_track_their_leaders_at_the_ends_of_the_range():
+    closed = dict(zip(kin.ALL_JOINTS, kin.joint_positions([0.0] * 6)))
+    assert closed["thumb_intermediate_joint"] == pytest.approx(1.2092 * 0.394 + 0.0252)
+    assert closed["thumb_distal_joint"] == pytest.approx(
+        0.5592 * closed["thumb_intermediate_joint"] + 0.0062
+    )
+    assert closed["index_intermediate_joint"] == pytest.approx(0.8867 * 1.283 + 0.0275)
+
+
+def test_the_thumb_followers_move_with_the_fitted_rates():
+    ratios = [1.0] * 6
+    ratios[kin.dof_index("thumb_proximal_pitch_joint")] = 0.5
+    rates = dict(zip(kin.ALL_JOINTS, kin.joint_velocities(ratios, [0, 0, 0, 0, 1.0, 0])))
+    assert rates["thumb_intermediate_joint"] == pytest.approx(1.2092)
+    assert rates["thumb_distal_joint"] == pytest.approx(1.2092 * 0.5592)
+
+
+def test_the_model_limits_are_the_fitted_angles():
+    assert (kin.DOFS[kin.dof_index("thumb_proximal_yaw_joint")].lower, kin.DOFS[kin.dof_index("thumb_proximal_yaw_joint")].upper) == (0.246, 1.2554)
+    assert (kin.DOFS[kin.dof_index("thumb_proximal_pitch_joint")].lower, kin.DOFS[kin.dof_index("thumb_proximal_pitch_joint")].upper) == (-0.086, 0.394)
+    assert (kin.DOFS[kin.dof_index("index_proximal_joint")].lower, kin.DOFS[kin.dof_index("index_proximal_joint")].upper) == (-0.05, 1.283)

@@ -188,25 +188,15 @@ between one cycle and the next -- which is the only workable way to find
 numbers for something whose test is pushing on it with a finger. Values the law
 rejects are refused by the parameter callback instead of being applied.
 
-Thumb calibration
------------------
-Every angle command path receives the final calibration from
-:mod:`inspire_hand_driver.command_overlays`. Commands are in the URDF model's
-coordinates; the thumb's registers are not (fitted from camera depth on
-2026-11-09)::
-
-    register yaw = 0.75 * model yaw       (command 0.0 -> 250, 1.0 -> 1000)
-    real flexion = 0.73 * register flexion - 0.03 rad
-
-The driver writes the register that puts the thumb at the commanded model
-angle. The other four DOF are unchanged. Inputs are still validated against the
-public ``[0, 1]`` command range before the calibration is applied. The
-``thumb_abduction_overlay`` parameter switches both thumb joints.
-
-``~/joint_states`` reports the angle the *registers* imply, not the commanded
-model angle, so it differs from the commanded yaw. Callers that need to
-compare feedback against a command should map the command forward with
-:func:`~inspire_hand_driver.command_overlays.apply_open_ratio_overlay`.
+Hand model and thumb yaw scale
+------------------------------
+Commands and ``~/joint_states`` are in the fitted hand model
+(:mod:`inspire_hand_driver.kinematics`), so a joint angle means the real joint
+angle. Thumb yaw commands are scaled onto registers 250 to 1000
+(:mod:`inspire_hand_driver.command_overlays`), and its feedback is scaled back,
+so a yaw angle reads the same going out as it does coming in. The
+``thumb_abduction_overlay`` parameter switches that scale, for simulated hands
+whose registers are the model.
 
 Commanding in ratios, not radians
 ---------------------------------
@@ -843,6 +833,12 @@ class InspireHandNode(Node):
         joint_state = JointState()
         joint_state.header.stamp = stamp
         joint_state.name = list(self._joint_names)
+        # Thumb yaw reports through the same scale its commands go through.
+        ratios[command_overlays.THUMB_ABDUCTION_DOF] = command_overlays.invert_open_ratio_overlay(
+            command_overlays.THUMB_ABDUCTION_DOF,
+            ratios[command_overlays.THUMB_ABDUCTION_DOF],
+            self._thumb_overlay,
+        )
         positions = kin.joint_positions(ratios)
         joint_state.position = positions
         if self._publish_velocity:

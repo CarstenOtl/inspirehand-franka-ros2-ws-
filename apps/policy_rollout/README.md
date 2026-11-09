@@ -429,7 +429,7 @@ live fingertip midpoint, which travels about 20 mm over a threading cycle. A
 fixed offset cannot follow that, so the policy profiles use the midpoint frozen
 at the threading grip:
 
-    tool_offset_xyz: [-0.059067, -0.028773, 0.173311]
+    tool_offset_xyz: [-0.058208, -0.028713, 0.173779]
 
 That is `POLICY_TOOL_OFFSET_XYZ` in `policy_rollout/hardware.py`, mirrored in
 `controllers_policy.yaml` and `controllers_sim_policy.yaml` and checked at

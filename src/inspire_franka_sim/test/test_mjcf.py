@@ -42,12 +42,12 @@ HAND_DRIVEN = [
 # The training hand's couplings (forgeUltra's official URDF). The thumb's
 # distal joint follows the intermediate, not the pitch.
 COUPLINGS = {
-    "index_intermediate_joint": ("index_proximal_joint", 1.1169, 0.0),
+    "index_intermediate_joint": ("index_proximal_joint", 0.8867, 0.0275),
     "middle_intermediate_joint": ("middle_proximal_joint", 1.1169, 0.0),
     "ring_intermediate_joint": ("ring_proximal_joint", 1.1169, 0.0),
     "pinky_intermediate_joint": ("pinky_proximal_joint", 1.1169, 0.0),
-    "thumb_intermediate_joint": ("thumb_proximal_pitch_joint", 1.1425, 0.0),
-    "thumb_distal_joint": ("thumb_intermediate_joint", 0.7508, 0.0),
+    "thumb_intermediate_joint": ("thumb_proximal_pitch_joint", 1.2092, 0.0252),
+    "thumb_distal_joint": ("thumb_intermediate_joint", 0.5592, 0.0062),
 }
 
 # Must match hand_bench_xyz in

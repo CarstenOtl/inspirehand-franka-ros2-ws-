@@ -31,21 +31,18 @@ def test_measured_depth_ignores_holes():
     assert np.isnan(measured_depth(depth, np.array([-5.0, 10.0])))
 
 
-def test_policy_hand_removes_the_drivers_thumb_overlay():
-    # The registers that put the real thumb on the exp19 reset (1.185, 0.0506).
+def test_policy_hand_expands_the_followers_from_the_reported_joints():
     reported = {
         "pinky_proximal_joint": 1.33,
         "ring_proximal_joint": 1.33,
         "middle_proximal_joint": 1.33,
         "index_proximal_joint": 0.2147,
-        "thumb_proximal_pitch_joint": 0.1104,
-        "thumb_proximal_yaw_joint": 1.185 * 0.75,
+        "thumb_proximal_pitch_joint": 0.0506,
+        "thumb_proximal_yaw_joint": 1.185,
     }
-    with_overlay = policy_hand_joints(reported, thumb_overlay=True)
-    assert with_overlay["thumb_proximal_yaw_joint"] == pytest.approx(1.185, abs=1.0e-3)
-    assert with_overlay["thumb_proximal_pitch_joint"] == pytest.approx(0.0506, abs=1.0e-3)
-    assert with_overlay["index_proximal_joint"] == pytest.approx(0.2147)
-    assert with_overlay["index_intermediate_joint"] > 0.0
-
-    without = policy_hand_joints(reported, thumb_overlay=False)
-    assert without["thumb_proximal_yaw_joint"] == pytest.approx(1.185 * 0.75)
+    joints = policy_hand_joints(reported)
+    assert joints["thumb_proximal_yaw_joint"] == pytest.approx(1.185)
+    assert joints["thumb_proximal_pitch_joint"] == pytest.approx(0.0506)
+    assert joints["index_proximal_joint"] == pytest.approx(0.2147)
+    assert joints["thumb_intermediate_joint"] == pytest.approx(1.2092 * 0.0506 + 0.0252)
+    assert joints["index_intermediate_joint"] == pytest.approx(0.8867 * 0.2147 + 0.0275)

@@ -108,7 +108,7 @@ ros-sim a valid test of it.
 
 Done:
 
-- **#2 friction.** The rollout hands (`--isaac`, `--rh56`) carry 1.25 on the pad
+- **#2 friction.** The rollout hand (`--isaac`) carries 1.25 on the pad
   links (`thumb_distal`, `index_intermediate`) and 0.875 on the rest, the nut
   0.875: MuJoCo's maximum then gives training's pad-nut 1.25 and link-nut 0.875.
   The plain replay hand is unchanged.

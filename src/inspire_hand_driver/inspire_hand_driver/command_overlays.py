@@ -1,103 +1,60 @@
-"""Final command calibration applied after the hand's normal command scaling.
+"""Thumb yaw's register scale, applied after the hand's normal command scaling.
 
-Keep task-specific calibration here rather than changing the generic
-open-ratio/radian kinematics. Every driver command path passes through this
-module immediately before conversion to the hand's integer registers.
-
-Commands arrive in the URDF model's coordinates. The thumb's registers do not
-read in those coordinates: its real pose, fitted from camera depth against the
-model on 2026-11-09, differs from the angle the register implies. So commands
-are moved from the model's angle onto the register that puts the thumb there,
-and anything holding a register reading comes back through the inverse.
+The hand model in :mod:`inspire_hand_driver.kinematics` is fitted to the real
+hand, so a joint angle means the real joint angle and most channels map an open
+ratio straight onto a register. Thumb yaw is the exception: its command range
+stops short of the register's closed end, because past register 250 the thumb
+reaches its motor's end stop, where it has been seen to shift. Command 0.0 is
+therefore register 250, 1.0 is register 1000, and the commands between are
+scaled linearly.
 """
 
 from __future__ import annotations
 
-from typing import Dict, NamedTuple
-
 from . import kinematics
-
-
-class ThumbFit(NamedTuple):
-    """``real_rad = gain * register_rad + offset_rad`` for one thumb joint."""
-
-    gain: float
-    offset_rad: float
-
 
 THUMB_ABDUCTION_JOINT = "thumb_proximal_yaw_joint"
 THUMB_ABDUCTION_DOF = kinematics.dof_index(THUMB_ABDUCTION_JOINT)
-THUMB_FLEXION_JOINT = "thumb_proximal_pitch_joint"
-THUMB_FLEXION_DOF = kinematics.dof_index(THUMB_FLEXION_JOINT)
 
-#: The register open ratio that a yaw command of 0.0 (fully closed) lands on:
-#: register 250 of 1000. The opening end is unchanged, 1.0 stays register 1000,
-#: and the commands between are scaled linearly onto that range.
+#: The register open ratio that a yaw command of 0.0 (fully closed) lands on.
 THUMB_ABDUCTION_ZERO_OPEN_RATIO = 0.25
 
-#: Register-to-model fits. Yaw is the scale above. Flexion comes from the two
-#: sweeps run on the calibrated driver (registers 0.106 to 0.48 rad); the
-#: model's followers tie the distal links to it.
-THUMB_CALIBRATION: Dict[int, ThumbFit] = {
-    THUMB_ABDUCTION_DOF: ThumbFit(gain=1.0 / (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO), offset_rad=0.0),
-    THUMB_FLEXION_DOF: ThumbFit(gain=0.73, offset_rad=-0.03),
-}
-
-#: Names this calibration in a recording's metadata, so an analysis can tell
-#: which mapping turned its logical joints into registers.
-HAND_CALIBRATION_ID = "thumb_camera_fit_20261109_yaw_cap250"
+#: Names this mapping in a recording's metadata.
+HAND_CALIBRATION_ID = "hardware_fit_20261109"
 
 
 def apply_open_ratio_overlay(index: int, open_ratio: float, enabled: bool = True) -> float:
-    """The register open ratio that puts a joint at a commanded model angle.
+    """The register open ratio for a commanded open ratio.
 
-    The result is limited to the register's range. Thumb yaw covers registers
-    250 (command 0.0) to 1000 (command 1.0), so the registers below 250 stay
-    unused.
-
-    ``enabled=False`` turns the calibration off (the driver's
-    ``thumb_abduction_overlay`` parameter): the command passes through
-    unchanged, which is what a simulated hand needs, since its registers are
-    the model.
+    ``enabled=False`` turns the scale off (the driver's
+    ``thumb_abduction_overlay`` parameter), which a simulated hand needs, since
+    its registers are the model.
     """
     ratio = float(open_ratio)
-    fit = THUMB_CALIBRATION.get(index)
-    if not enabled or fit is None:
+    if not enabled or index != THUMB_ABDUCTION_DOF:
         return ratio
-    dof = kinematics.DOFS[index]
-    span = dof.upper - dof.lower
-    model_rad = dof.lower + (1.0 - ratio) * span
-    register_rad = (model_rad - fit.offset_rad) / fit.gain
-    return max(0.0, min(1.0, 1.0 - (register_rad - dof.lower) / span))
+    zero = THUMB_ABDUCTION_ZERO_OPEN_RATIO
+    return max(0.0, min(1.0, zero + ratio * (1.0 - zero)))
 
 
 def invert_open_ratio_overlay(index: int, open_ratio: float, enabled: bool = True) -> float:
-    """The model's open ratio for a register open ratio.
+    """The commanded open ratio that a register open ratio corresponds to.
 
-    The hand reports its registers, so anything comparing feedback against a
-    model-space command needs one side moved onto the other. Prefer applying
-    the calibration forward to the command; this exists for the cases that only
-    hold the register value. A register outside the model's reach gives a ratio
-    outside ``[0, 1]`` rather than a clamped one, so the caller can see that.
-    With ``enabled=False`` it is the identity.
+    A register outside the commanded range gives a ratio outside ``[0, 1]``
+    rather than a clamped one, so the caller can see that.
     """
     ratio = float(open_ratio)
-    fit = THUMB_CALIBRATION.get(index)
-    if not enabled or fit is None:
+    if not enabled or index != THUMB_ABDUCTION_DOF:
         return ratio
-    dof = kinematics.DOFS[index]
-    span = dof.upper - dof.lower
-    register_rad = dof.lower + (1.0 - ratio) * span
-    model_rad = fit.gain * register_rad + fit.offset_rad
-    return 1.0 - (model_rad - dof.lower) / span
+    zero = THUMB_ABDUCTION_ZERO_OPEN_RATIO
+    return (ratio - zero) / (1.0 - zero)
 
 
 def model_rate_gain(index: int, enabled: bool = True) -> float:
-    """Model joint rate per unit of register joint rate."""
-    fit = THUMB_CALIBRATION.get(index)
-    if not enabled or fit is None:
+    """Commanded open-ratio rate per unit of register open-ratio rate."""
+    if not enabled or index != THUMB_ABDUCTION_DOF:
         return 1.0
-    return fit.gain
+    return 1.0 / (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO)
 
 
 __all__ = [
@@ -105,10 +62,6 @@ __all__ = [
     "THUMB_ABDUCTION_DOF",
     "THUMB_ABDUCTION_JOINT",
     "THUMB_ABDUCTION_ZERO_OPEN_RATIO",
-    "THUMB_CALIBRATION",
-    "THUMB_FLEXION_DOF",
-    "THUMB_FLEXION_JOINT",
-    "ThumbFit",
     "apply_open_ratio_overlay",
     "invert_open_ratio_overlay",
     "model_rate_gain",

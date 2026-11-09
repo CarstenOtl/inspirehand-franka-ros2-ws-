@@ -130,11 +130,6 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--hand-topic", default="/inspire_hand/command")
     parser.add_argument("--hand-state-topic", default="/inspire_hand/joint_states")
     parser.add_argument(
-        "--hand-register-topic",
-        default="/inspire_hand/state",
-        help="the hand's register readout (open ratios), which RH56 students observe through",
-    )
-    parser.add_argument(
         "--fingertip-force-topic",
         default=None,
         help=(
@@ -196,30 +191,6 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
             "the grasp, as a fast reset does. 'auto' (default) follows the task profile "
             "in ros-sim and is 'release' on hardware, which needs the open hand to tare "
             "the pad forces."
-        ),
-    )
-    parser.add_argument(
-        "--thumb-overlay",
-        choices=["auto", "on", "off"],
-        default="auto",
-        help=(
-            "whether the hand driver runs its thumb-yaw overlay, so feedback is "
-            "inverted into the policy's logical coordinate: 'auto' is on for hardware "
-            "and off for ros-sim (sim_policy.launch.py starts the mock driver without it). "
-            "RH56 students command registers and need it off."
-        ),
-    )
-    parser.add_argument(
-        "--rh56-hand-model",
-        choices=["linkage", "linear"],
-        default="linkage",
-        help=(
-            "RH56 students only: how the runner converts between the physical hand's "
-            "registers and the student's joint angles. 'linkage' (default; what ros-sim "
-            "simulates) is ForgeUltra's measured linkage table; 'linear' is the old hand "
-            "model, the driver's linear map with the mimic followers, which matched "
-            "this workcell's hand better on 2026-11-06. The student's own action -> "
-            "register step is training's either way."
         ),
     )
     parser.add_argument(
@@ -426,16 +397,9 @@ def _resolve_execution(args):
     return device
 
 
-def resolve_thumb_overlay(choice: str, sim: bool) -> bool:
-    """Whether the hand driver this backend talks to runs the thumb-yaw overlay."""
-
-    return {"auto": not sim, "on": True, "off": False}[choice]
-
-
 #: Each task profile's homing YAML: its reset arm joints and entry pinch.
 POLICY_HOME_CONFIGS = {
     "mimic_m24": APP_ROOT / "config/policy_home.yaml",
-    "rh56_windback45_tilt30": APP_ROOT / "config/policy_home_rh56_windback45_tilt30.yaml",
     "mimic_windback45_tilt30": APP_ROOT / "config/policy_home_windback45_tilt30.yaml",
 }
 
@@ -488,7 +452,6 @@ def _run_hardware(argv, sim: bool = False) -> int:
         raise ValueError("--release-signal nut-twist needs ros-sim's simulated nut")
     if args.min_fingertip_separation < 0 or args.max_proxy_step_deg <= 0:
         raise ValueError("--min-fingertip-separation and --max-proxy-step-deg must be valid")
-    args.thumb_overlay_enabled = resolve_thumb_overlay(args.thumb_overlay, sim)
 
     from policy_rollout import forge_osc as fo
 

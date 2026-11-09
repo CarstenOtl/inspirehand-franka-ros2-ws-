@@ -27,13 +27,6 @@ runs on DH kinematics with no coriolis term, and gravity is off as libfranka
 compensates it on the real arm), RealSense depth noise, and the hand's RS485
 timing.
 
-``--task-profile rh56_windback45_tilt30`` writes the RH56 students' scene,
-``inspire_franka_policy_scene_rh56.xml`` (``sim_policy.launch.py
-hand_model:=rh56``): the RH56 linkage hand (``inspire_hand_on_flange_rh56.xml``,
-its followers on IsaacHandPlugin's linkage curves), the task profile's reset
-joints, the nut at the profile's spawn yaw, and the hand keyframe on the linkage
-with the support fingers at register 100.
-
 ``--task-profile mimic_windback45_tilt30`` writes the old-hand wound students'
 scene, ``inspire_franka_policy_scene_windback45_tilt30.xml``
 (``sim_policy.launch.py task_profile:=mimic_windback45_tilt30``): the default
@@ -43,7 +36,6 @@ Regenerate after changing the camera profile; ``tests/test_ros_sim_scene.py``
 fails while a checked-in file is stale:
 
     python3 apps/policy_rollout/utils/make_ros_sim_scene.py
-    python3 apps/policy_rollout/utils/make_ros_sim_scene.py --task-profile rh56_windback45_tilt30
     python3 apps/policy_rollout/utils/make_ros_sim_scene.py --task-profile mimic_windback45_tilt30
 """
 
@@ -74,8 +66,6 @@ from utils.camera_calibration import load_camera_calibration  # noqa: E402
 
 SIM_MJCF_DIR = WORKSPACE_ROOT / "src" / "inspire_franka_sim" / "mjcf"
 SCENE_NAME = "inspire_franka_policy_scene.xml"
-#: Each task profile's scene and hand (``sim_policy.launch.py hand_model``).
-SCENE_NAMES = {"mimic": SCENE_NAME, "rh56": "inspire_franka_policy_scene_rh56.xml"}
 #: Profiles whose reset is not the default scene of their hand
 #: (``sim_policy.launch.py task_profile``).
 PROFILE_SCENE_NAMES = {
@@ -86,7 +76,7 @@ PROFILE_SCENE_NAMES = {
 def scene_file_name(task_profile) -> str:
     """The checked-in scene file of ``task_profile``."""
 
-    return PROFILE_SCENE_NAMES.get(task_profile.name, SCENE_NAMES[task_profile.hand])
+    return PROFILE_SCENE_NAMES.get(task_profile.name, SCENE_NAME)
 
 
 # inspire_franka_sim's hand generator holds the Isaac hand tables the scene's
@@ -99,9 +89,6 @@ import make_hand_mjcf as hand  # noqa: E402
 #: simulates it with during training (make_hand_mjcf.py with the isaac flag;
 #: the remainder is IsaacHandPlugin's, configured by isaac_hand_custom_xml).
 END_EFFECTOR = "inspire_hand_on_flange_isaac.xml"
-#: The RH56 students' hand: the same official hand with the RH56 profile's
-#: drives and stroke-wide ranges (make_hand_mjcf.py with the rh56 flag).
-END_EFFECTORS = {"mimic": END_EFFECTOR, "rh56": "inspire_hand_on_flange_rh56.xml"}
 #: The arm: MuJoCo Menagerie's FR3 v2 under the workspace's fr3_ names (the
 #: model training moves to as well), see inspire_franka_sim's MJCF_PROVENANCE.md.
 ARM_MJCF = "fr3v2.xml"
@@ -307,59 +294,23 @@ def thread_equality_xml() -> str:
 """
 
 
-#: MJCF caps a <numeric>'s data below one full 257-point curve (514 values), so
-#: the plugin gets every second table point. Thinned, the curves stay within
-#: 5e-5 rad of the table (RH56_CURVE_TOLERANCE_RAD, checked on export).
-RH56_CURVE_STRIDE = 2
-RH56_CURVE_TOLERANCE_RAD = 1.0e-4
-
-
-def rh56_linkage_curves() -> list:
-    """``(follower, leader, leader angles, follower angles)`` per RH56 follower, workspace names."""
-
-    from inspire_hand_driver.rh56_linkage import WORKSPACE_JOINT, load_joint_table
-
-    table = load_joint_table()
-    curves = []
-    for channel, (leader, _, _) in table.channels.items():
-        for follower, (xs, ys) in table.follower_curves(channel).items():
-            keep = sorted(set(range(0, len(xs), RH56_CURVE_STRIDE)) | {len(xs) - 1})
-            error = np.max(np.abs(np.interp(xs, xs[keep], ys[keep]) - ys))
-            if error > RH56_CURVE_TOLERANCE_RAD:
-                raise ValueError(f"thinned {follower} curve is {error:.2e} rad off the table")
-            curves.append((WORKSPACE_JOINT[follower], WORKSPACE_JOINT[leader], xs[keep], ys[keep]))
-    return curves
-
-
-def isaac_hand_custom_xml(task_profile=fo.MIMIC_M24_PROFILE) -> str:
+def isaac_hand_custom_xml() -> str:
     """IsaacHandPlugin's configuration, from make_hand_mjcf.py's Isaac tables.
 
     The velocity limit and the PhysX joint friction coefficient per hand joint,
     and the target-level mimic map in coupling order (the thumb's distal joint
-    follows the intermediate, so the intermediate has to come first). The RH56
-    hand carries the linkage curves instead, every follower on its channel's
-    leader, and the RH56 profile's velocity limit.
+    follows the intermediate, so the intermediate has to come first).
     """
 
-    rh56 = task_profile.hand == "rh56"
-    velocity_limit = hand.RH56_VELOCITY_LIMIT if rh56 else hand.ISAAC_VELOCITY_LIMIT
+    velocity_limit = hand.ISAAC_VELOCITY_LIMIT
     lines = [
         "  <custom>",
         "    <!-- IsaacHandPlugin (inspire_franka_sim): Isaac Lab's hand dynamics that",
-        "         MJCF cannot express. From make_hand_mjcf.py's ISAAC tables"
-        + (" and inspire_hand_driver.rh56_linkage. -->" if rh56 else ". -->"),
+        "         MJCF cannot express. From make_hand_mjcf.py's ISAAC tables. -->",
         f'    <numeric name="isaac_hand/velocity_limit" data="{_fmt((velocity_limit,))}"/>',
     ]
     for joint, coefficient in hand.ISAAC_JOINT_FRICTION.items():
         lines.append(f'    <numeric name="isaac_hand/joint/{joint}" data="{_fmt((coefficient,))}"/>')
-    if rh56:
-        for follower, leader, xs, ys in rh56_linkage_curves():
-            lines.append(
-                f'    <numeric name="isaac_hand/linkage/{follower}" data="{_fmt((*xs, *ys))}"/>'
-            )
-            lines.append(f'    <text name="isaac_hand/linkage_leader/{follower}" data="{leader}"/>')
-        lines.append("  </custom>\n")
-        return "\n".join(lines)
     for follower, leader, multiplier, offset in hand.COUPLINGS:
         lines.append(
             f'    <numeric name="isaac_hand/mimic/{follower}" data="{_fmt((multiplier, offset))}"/>'
@@ -371,7 +322,7 @@ def isaac_hand_custom_xml(task_profile=fo.MIMIC_M24_PROFILE) -> str:
 
 def scene_xml(profile, keyframe: str = "", task_profile=fo.MIMIC_M24_PROFILE) -> str:
     scene_name = scene_file_name(task_profile)
-    end_effector = END_EFFECTORS[task_profile.hand]
+    end_effector = END_EFFECTOR
     bolt, _ = training_world_to_link0(fo.BOLT_BASE_POSITION, (1.0, 0.0, 0.0, 0.0))
     _, bolt_quat = training_world_to_link0(
         fo.BOLT_BASE_POSITION, fo.quat_from_euler_xyz(0.0, 0.0, math.radians(TRAINING_BOLT_YAW_DEG))
@@ -472,28 +423,17 @@ def scene_xml(profile, keyframe: str = "", task_profile=fo.MIMIC_M24_PROFILE) ->
   </contact>
 
 {thread_equality_xml()}
-{isaac_hand_custom_xml(task_profile)}{keyframe}</mujoco>
+{isaac_hand_custom_xml()}{keyframe}</mujoco>
 """
-
-
-def rh56_home_hand(task_profile) -> dict:
-    """Every RH56 hand joint (workspace names) at the profile's grasp, support fingers at register 100."""
-
-    from inspire_hand_driver.rh56_linkage import WORKSPACE_JOINT
-    from policy_rollout.rh56_hand import expand_followers
-
-    leaders = {name: task_profile.grasp_posture[name] for name in fo.PINCH_JOINTS}
-    return {WORKSPACE_JOINT[j]: q for j, q in expand_followers(leaders).items()}
 
 
 def _keyframe(model, task_profile=fo.MIMIC_M24_PROFILE) -> str:
     import mujoco
 
-    rh56 = task_profile.hand == "rh56"
     qpos = model.qpos0.copy()
     for index, value in enumerate(task_profile.arm_reset_joints, start=1):
         qpos[model.jnt_qposadr[model.joint(f"fr3_joint{index}").id]] = value
-    for name, value in (rh56_home_hand(task_profile) if rh56 else POLICY_HOME_HAND).items():
+    for name, value in POLICY_HOME_HAND.items():
         qpos[model.jnt_qposadr[model.joint(name).id]] = value
     # The nut's start pose on the bolt, as ThreadingScene.reset sets it. The
     # axial slide carries the offset, so the carrier itself sits at the bolt
@@ -505,8 +445,7 @@ def _keyframe(model, task_profile=fo.MIMIC_M24_PROFILE) -> str:
     # The hand has no equality couplings any more (Isaac's are target-level),
     # so expand them here, in order: the thumb's distal follows the
     # intermediate.
-    # The RH56 followers are already on the linkage (rh56_home_hand).
-    for follower, leader, multiplier, offset in () if rh56 else hand.COUPLINGS:
+    for follower, leader, multiplier, offset in hand.COUPLINGS:
         x = qpos[model.jnt_qposadr[model.joint(leader).id]]
         qpos[model.jnt_qposadr[model.joint(follower).id]] = multiplier * x + offset
     # The remaining joint equalities (the thread coupling). Two passes, in case

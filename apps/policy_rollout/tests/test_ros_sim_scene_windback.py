@@ -31,29 +31,6 @@ def test_checked_in_windback_scene_is_current():
     )
 
 
-def test_windback_scene_mounts_the_old_hand_with_its_mimic_followers(model):
-    assert scene.END_EFFECTORS[PROFILE.hand] in SCENE_PATH.read_text()
-    assert scene.END_EFFECTOR in SCENE_PATH.read_text()
-    names = [model.numeric(i).name for i in range(model.nnumeric)]
-    assert not [n for n in names if "/linkage/" in n]
-    mimics = {n.rsplit("/", 1)[1] for n in names if n.startswith("isaac_hand/mimic/")}
-    assert mimics == {follower for follower, _, _, _ in scene.hand.COUPLINGS}
-    velocity = model.numeric("isaac_hand/velocity_limit").id
-    assert model.numeric_data[model.numeric_adr[velocity]] == pytest.approx(scene.hand.ISAAC_VELOCITY_LIMIT)
-
-
-def test_windback_keyframe_is_the_profile_reset_with_the_mimic_coupled_hand(model):
-    data = mujoco.MjData(model)
-    mujoco.mj_resetDataKeyframe(model, data, model.key(scene.KEYFRAME_NAME).id)
-    q = lambda n: data.qpos[model.jnt_qposadr[model.joint(n).id]]  # noqa: E731
-    assert [q(f"fr3_joint{i}") for i in range(1, 8)] == pytest.approx(PROFILE.arm_reset_joints)
-    assert q("thumb_proximal_yaw_joint") == pytest.approx(PROFILE.grasp_posture["thumb_joint_0"], abs=1e-6)
-    assert q("thumb_proximal_pitch_joint") == pytest.approx(PROFILE.grasp_posture["thumb_joint_1"], abs=1e-6)
-    assert q("index_proximal_joint") == pytest.approx(PROFILE.grasp_posture["index_joint_0"], abs=1e-6)
-    for follower, leader, multiplier, offset in scene.hand.COUPLINGS:
-        assert q(follower) == pytest.approx(multiplier * q(leader) + offset, abs=1e-6), follower
-
-
 def test_windback_nut_starts_at_the_profile_spawn_yaw(model):
     w, _, _, z = model.body_quat[model.body("m24_nut").id]
     yaw = math.degrees(2.0 * math.atan2(z, w))

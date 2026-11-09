@@ -17,7 +17,7 @@ training scene's world (FR3 base at ``(1.2, 0, 0)`` yawed by pi, table at z=0).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 import math
 
 import numpy as np
@@ -112,12 +112,12 @@ PINCH_RANGES = ((0.0, 1.246165), (0.0, 0.3578 / 1.1425), (0.0, 1.333))
 # pinch to 0.4 mm / 0.8 deg, against 3.9 mm / 6.7 deg with the closed posture.
 ISAAC_ENTRY_PINCH = (1.0717, 0.0246, 0.214675498)
 MIMIC_JOINT_MAP = {
-    "index_joint_1": ("index_joint_0", 1.1169, 0.0),
+    "index_joint_1": ("index_joint_0", 0.8867, 0.0275),
     "middle_joint_1": ("middle_joint_0", 1.1169, 0.0),
     "ring_joint_1": ("ring_joint_0", 1.1169, 0.0),
     "little_joint_1": ("little_joint_0", 1.1169, 0.0),
-    "thumb_joint_2": ("thumb_joint_1", 1.1425, 0.0),
-    "thumb_joint_3": ("thumb_joint_2", 0.7508, 0.0),
+    "thumb_joint_2": ("thumb_joint_1", 1.2092, 0.0252),
+    "thumb_joint_3": ("thumb_joint_2", 0.5592, 0.0062),
 }
 
 
@@ -129,18 +129,10 @@ class TaskProfile:
 
     The checkpoint's ``flow_config.json`` records the observation and action
     layout but not these: the reset pose, the orientation-action frame and its
-    yaw seam, and the hand model the pinch actions drive. They come from the
-    task YAML the teacher data was collected with.
-
-    ``hand``: ``"mimic"`` is the official Inspire profile, whose pinch actions
-    are joint angles about the grasp (``pinch_targets``) and whose driver map
-    is linear. ``"rh56"`` is the RH56 linkage hand (``hand_asset_profile:
-    rh56``, ``rh56_register_finger_actions: true``): the pinch actions are
-    registers about the grasp register, see ``policy_rollout.rh56_hand``.
+    yaw seam. They come from the task YAML the teacher data was collected with.
     """
 
     name: str
-    hand: str
     arm_reset_joints: tuple
     ee_base_orn_euler: tuple
     yaw_wrap_upper_deg: float
@@ -154,16 +146,10 @@ class TaskProfile:
     # closing into it.
     fast_reset: bool = False
 
-    def __post_init__(self):
-        if self.hand not in ("mimic", "rh56"):
-            raise ValueError(f"unknown hand profile {self.hand!r}")
-
-
 #: The run06..run10 students on the official (mimic) Inspire hand, reset pose
 #: reset_pose_m24.yaml. Every checkpoint before 2026-11-06.
 MIMIC_M24_PROFILE = TaskProfile(
     name="mimic_m24",
-    hand="mimic",
     arm_reset_joints=tuple(FRANKA_ARM_RESET_JOINTS_M24),
     ee_base_orn_euler=EE_BASE_ORN_EULER,
     yaw_wrap_upper_deg=235.0,
@@ -174,39 +160,6 @@ MIMIC_M24_PROFILE = TaskProfile(
     source="config/reset_pose_m24.yaml, m24_threading_fr3v2*.yaml",
 )
 
-#: exp_17 (2026-11-05): FR3 v2 arm, RH56 linkage hand with register pinch
-#: actions, the FR3 joint-limit guard, and a reset pose wound 45 deg about the
-#: bolt and tilted 30 deg wrist-up (ForgeUltra 6c9b02a,
-#: m24_threading_fr3v2_rh56_joint_limit_guard_windback45_tilt30_adr80.yaml,
-#: reset_poses/windback45_tilt30/reset_pose_m24.yaml).
-RH56_WINDBACK45_TILT30_PROFILE = TaskProfile(
-    name="rh56_windback45_tilt30",
-    hand="rh56",
-    arm_reset_joints=(
-        -0.37278786, 0.492949065, 0.065723061, -1.587632918, 0.991015147, 1.710693789, -1.177360717,
-    ),
-    # The orientation-action frame turned +45 deg about world z with the hand,
-    # and the controller's yaw-clip seam with it (235 -> 280 deg).
-    ee_base_orn_euler=(math.pi, 0.0, math.pi / 4.0),
-    yaw_wrap_upper_deg=280.0,
-    # The reset pose file's hand section, unchanged from the mimic profile's.
-    grasp_posture=THREADING_GRASP_POSTURE,
-    # assets/fr3_inspirehand/rh56/joint_map.py JOINT_LIMITS: the full linkage
-    # strokes, not the mimic profile's URDF caps.
-    pinch_ranges=((0.0, 1.308), (0.0, 0.716), (0.0, 1.470)),
-    # Not measured: the fast reset (reset_settle_time_s 0) starts the episode
-    # with the hand at the reset posture, so the entry pinch should be the grasp
-    # posture itself. Confirm against an RH56 reference episode.
-    entry_pinch=(
-        THREADING_GRASP_POSTURE["thumb_joint_0"],
-        THREADING_GRASP_POSTURE["thumb_joint_1"],
-        THREADING_GRASP_POSTURE["index_joint_0"],
-    ),
-    nut_spawn_yaw_deg=75.0,
-    source="ForgeUltra 6c9b02a reset_poses/windback45_tilt30/reset_pose_m24.yaml",
-    fast_reset=True,
-)
-
 #: exp_19 (2026-11-09): exp_17's wound, tilted reset on the official (mimic)
 #: Inspire hand of run06..run10: joint-angle pinch actions about the grasp over
 #: the URDF's ranges, linear driver map, mimic followers. Task
@@ -215,25 +168,38 @@ RH56_WINDBACK45_TILT30_PROFILE = TaskProfile(
 #: (untracked on the training machine). The run's provenance lists no untracked
 #: reset pose, so it is the tracked windback45_tilt30 file exp_17 used. As for
 #: exp_17 the entry pinch is inferred from the fast reset, not measured.
-MIMIC_WINDBACK45_TILT30_PROFILE = replace(
-    RH56_WINDBACK45_TILT30_PROFILE,
+MIMIC_WINDBACK45_TILT30_PROFILE = TaskProfile(
     name="mimic_windback45_tilt30",
-    hand="mimic",
+    arm_reset_joints=(
+        -0.37278786, 0.492949065, 0.065723061, -1.587632918, 0.991015147, 1.710693789, -1.177360717,
+    ),
+    # The orientation-action frame turned +45 deg about world z with the hand,
+    # and the controller's yaw-clip seam with it (235 -> 280 deg).
+    ee_base_orn_euler=(math.pi, 0.0, math.pi / 4.0),
+    yaw_wrap_upper_deg=280.0,
+    grasp_posture=THREADING_GRASP_POSTURE,
     pinch_ranges=PINCH_RANGES,
+    # Not measured: the fast reset (reset_settle_time_s 0) starts the episode
+    # with the hand at the reset posture, so the entry pinch should be the grasp
+    # posture itself.
+    entry_pinch=(
+        THREADING_GRASP_POSTURE["thumb_joint_0"],
+        THREADING_GRASP_POSTURE["thumb_joint_1"],
+        THREADING_GRASP_POSTURE["index_joint_0"],
+    ),
+    nut_spawn_yaw_deg=75.0,
     source="ForgeUltra 6c9b02a reset_poses/windback45_tilt30/reset_pose_m24.yaml, mimic hand",
+    fast_reset=True,
 )
 
 TASK_PROFILES = {
     p.name: p
-    for p in (MIMIC_M24_PROFILE, RH56_WINDBACK45_TILT30_PROFILE, MIMIC_WINDBACK45_TILT30_PROFILE)
+    for p in (MIMIC_M24_PROFILE, MIMIC_WINDBACK45_TILT30_PROFILE)
 }
 
 #: Training-run names (the directory above ``nn/``) whose profile is not the
 #: mimic default. The run name does not say which hand it was trained on.
 CHECKPOINT_TASK_PROFILES = {
-    "m24-dp3-exp17r01-windback45tilt30-rollback3-noclock-force-nohv-da-s0-20261106-132547-951759": (
-        RH56_WINDBACK45_TILT30_PROFILE.name
-    ),
     "m24-dp3-exp19r01-windback45tilt30-clock-force-nohv-da-s0-20261109-105240-553825": (
         MIMIC_WINDBACK45_TILT30_PROFILE.name
     ),
@@ -600,14 +566,9 @@ def compute_dof_torque(
 # --- hand targets ---------------------------------------------------------------
 def pinch_targets(filtered_action, closed_posture=None, profile=None):
     """``generate_ctrl_signals`` with finger_action_relative_to_grasp=True.
-
-    Mimic profile only: an RH56 student's pinch actions are registers
-    (``rh56_hand.RegisterPinchActions``), not angles about the grasp.
     """
 
     profile = profile or MIMIC_M24_PROFILE
-    if profile.hand != "mimic":
-        raise ValueError(f"pinch_targets decodes mimic-hand actions, not {profile.hand!r}")
     closed = closed_posture or profile.grasp_posture
     a = np.asarray(filtered_action, dtype=float)[-3:]
     out = np.zeros(3)
@@ -665,7 +626,6 @@ __all__ = [
     "THREADING_GRASP_POSTURE",
     "ISAAC_ENTRY_PINCH",
     "MIMIC_M24_PROFILE",
-    "RH56_WINDBACK45_TILT30_PROFILE",
     "TASK_PROFILES",
     "TaskProfile",
     "resolve_task_profile",

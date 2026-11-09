@@ -118,7 +118,7 @@
     <numeric name="isaac_hand/joint/middle_intermediate_joint" data="0.01276"/>
     <numeric name="isaac_hand/joint/ring_intermediate_joint" data="0.01276"/>
     <numeric name="isaac_hand/joint/pinky_intermediate_joint" data="0.01276"/>
-    <numeric name="isaac_hand/mimic/index_intermediate_joint" data="1.1169 0"/>
+    <numeric name="isaac_hand/mimic/index_intermediate_joint" data="0.8867 0.0275"/>
     <text name="isaac_hand/mimic_leader/index_intermediate_joint" data="index_proximal_joint"/>
     <numeric name="isaac_hand/mimic/middle_intermediate_joint" data="1.1169 0"/>
     <text name="isaac_hand/mimic_leader/middle_intermediate_joint" data="middle_proximal_joint"/>
@@ -126,13 +126,13 @@
     <text name="isaac_hand/mimic_leader/ring_intermediate_joint" data="ring_proximal_joint"/>
     <numeric name="isaac_hand/mimic/pinky_intermediate_joint" data="1.1169 0"/>
     <text name="isaac_hand/mimic_leader/pinky_intermediate_joint" data="pinky_proximal_joint"/>
-    <numeric name="isaac_hand/mimic/thumb_intermediate_joint" data="1.1425 0"/>
+    <numeric name="isaac_hand/mimic/thumb_intermediate_joint" data="1.2092 0.0252"/>
     <text name="isaac_hand/mimic_leader/thumb_intermediate_joint" data="thumb_proximal_pitch_joint"/>
-    <numeric name="isaac_hand/mimic/thumb_distal_joint" data="0.7508 0"/>
+    <numeric name="isaac_hand/mimic/thumb_distal_joint" data="0.5592 0.0062"/>
     <text name="isaac_hand/mimic_leader/thumb_distal_joint" data="thumb_intermediate_joint"/>
   </custom>
   <keyframe>
-    <key name="policy_home" qpos="-0.37278786 0.492949065 0.065723061 -1.58763292 0.991015147 1.71069379 -1.17736072 1.18507856 0.050614548 0.0578271211 0.0434166025 0.214675498 0.239771064 1.333 1.4888277 1.333 1.4888277 1.333 1.4888277 0.00766 0"
-      ctrl="0 0 0 0 0 0 0 1.18507856 0.050614548 0.0578271211 0.0434166025 0.214675498 0.239771064 1.333 1.4888277 1.333 1.4888277 1.333 1.4888277"/>
+    <key name="policy_home" qpos="-0.37278786 0.492949065 0.065723061 -1.58763292 0.991015147 1.71069379 -1.17736072 1.18507856 0.050614548 0.0864031114 0.0545166199 0.214675498 0.217852764 1.333 1.4888277 1.333 1.4888277 1.333 1.4888277 0.00766 0"
+      ctrl="0 0 0 0 0 0 0 1.18507856 0.050614548 0.0864031114 0.0545166199 0.214675498 0.217852764 1.333 1.4888277 1.333 1.4888277 1.333 1.4888277"/>
   </keyframe>
 </mujoco>

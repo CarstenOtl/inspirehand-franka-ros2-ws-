@@ -69,12 +69,12 @@ MODEL_TO_RECORDED_JOINT = {
 # official TienKung mimic relationships. The source recording's follower
 # coordinates came from a different hand model and cannot be applied directly.
 OFFICIAL_FOLLOWERS = {
-    "index_joint_1": ("index_joint_0", 1.1169),
-    "middle_joint_1": ("middle_joint_0", 1.1169),
-    "ring_joint_1": ("ring_joint_0", 1.1169),
-    "little_joint_1": ("little_joint_0", 1.1169),
-    "thumb_joint_2": ("thumb_joint_1", 1.1425),
-    "thumb_joint_3": ("thumb_joint_2", 0.7508),
+    "index_joint_1": ("index_joint_0", 0.8867, 0.0275),
+    "middle_joint_1": ("middle_joint_0", 1.1169, 0.0),
+    "ring_joint_1": ("ring_joint_0", 1.1169, 0.0),
+    "little_joint_1": ("little_joint_0", 1.1169, 0.0),
+    "thumb_joint_2": ("thumb_joint_1", 1.2092, 0.0252),
+    "thumb_joint_3": ("thumb_joint_2", 0.5592, 0.0062),
 }
 
 
@@ -326,11 +326,11 @@ def apply_sample(
         ]
 
     local_bindings = {binding.local_name: binding for binding in bindings}
-    for follower_name, (driver_name, multiplier) in OFFICIAL_FOLLOWERS.items():
+    for follower_name, (driver_name, multiplier, offset) in OFFICIAL_FOLLOWERS.items():
         follower = local_bindings[follower_name]
         driver = local_bindings[driver_name]
         data.qpos[follower.qpos_address] = (
-            multiplier * data.qpos[driver.qpos_address]
+            multiplier * data.qpos[driver.qpos_address] + offset
         )
         data.qvel[follower.qvel_address] = (
             multiplier * data.qvel[driver.qvel_address]
@@ -528,9 +528,9 @@ def test_replay_contract_and_official_geometry() -> None:
     bindings_by_name = {binding.local_name: binding for binding in bindings}
     for binding in bindings:
         if binding.local_name in OFFICIAL_FOLLOWERS:
-            driver_name, multiplier = OFFICIAL_FOLLOWERS[binding.local_name]
+            driver_name, multiplier, offset = OFFICIAL_FOLLOWERS[binding.local_name]
             driver = bindings_by_name[driver_name]
-            expected = multiplier * data.qpos[driver.qpos_address]
+            expected = multiplier * data.qpos[driver.qpos_address] + offset
         else:
             expected = trajectory.joint_pos[0, binding.source_column]
         assert np.isclose(data.qpos[binding.qpos_address], expected)

@@ -46,7 +46,6 @@ from .trajectory import (
     ARM_JOINTS,
     FINGER_FLEXION_JOINTS,
     HAND_JOINTS,
-    driver_reported_hand,
     load_trajectory,
     scale_finger_flexion,
 )
@@ -378,17 +377,11 @@ def _check_home(home_arm, first, home_path, tolerance):
 class HandReplayMixin:
     """The hand's position link shared by the hardware and legacy sim clients."""
 
-    #: Whether the driver on the hand topic runs its thumb-yaw overlay (its
-    #: ``thumb_abduction_overlay`` parameter); the physical driver does.
-    thumb_abduction_overlay = True
-
-    def __init__(self, config, hand_topic, hand_state_topic, thumb_abduction_overlay=True):
+    def __init__(self, config, hand_topic, hand_state_topic):
         super().__init__(
             config,
             node_name="inspire_franka_trajectory_replay",
         )
-        # Decides what physical pose a radian command is waited for at.
-        self.thumb_abduction_overlay = bool(thumb_abduction_overlay)
         self._hand_publisher = self.create_publisher(JointState, hand_topic, 10)
         self._hand_lock = threading.Lock()
         self._hand_position = None
@@ -447,12 +440,7 @@ class HandReplayMixin:
         """Command ``target`` until feedback reaches it, on ``indices`` only if given."""
         target = np.asarray(target, dtype=float)
         chosen = list(range(len(target))) if indices is None else list(indices)
-        # Publish the original target. Only the driver applies the thumb
-        # calibration; feedback reports the registers, so it is compared with
-        # the register angles that calibration writes.
-        effective_target = (
-            driver_reported_hand(target) if self.thumb_abduction_overlay else target
-        )
+        effective_target = target
 
         def arrived():
             with self._hand_lock:

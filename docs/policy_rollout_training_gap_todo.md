@@ -724,7 +724,7 @@ in `test_cartesian_impedance.cpp`.
 
 Evidence. Training applies the wrench at the live thumb/index midpoint, which travels about
 20 mm over a threading cycle. The policy profile froze it at the threading grip
-(`POLICY_TOOL_OFFSET_XYZ = (-0.059067, -0.028773, 0.173311)`); the commanded pose was
+(`POLICY_TOOL_OFFSET_XYZ = (-0.058208, -0.028713, 0.173779)`); the commanded pose was
 retargeted, the spring anchor was not. Distance to the live midpoint over the reference
 episode: mean 11.5 mm, range 3.2 to 23.0 mm.
 

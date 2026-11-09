@@ -8,7 +8,6 @@ from typing import Optional, Union
 import numpy as np
 
 from franka_trajectory_replay.limits import VELOCITY_MAX
-from inspire_hand_driver.command_overlays import THUMB_CALIBRATION
 from inspire_hand_driver import kinematics as hand_kinematics
 
 
@@ -104,26 +103,6 @@ def scale_finger_flexion(hand, scale):
         dof = hand_kinematics.DOFS[hand_kinematics.dof_index(HAND_JOINTS[index])]
         scaled[..., index] = np.clip(scaled[..., index] * scale, dof.lower, dof.upper)
     return scaled
-
-
-def driver_reported_hand(hand):
-    """What ``~/joint_states`` reads once the driver has reached ``hand``.
-
-    Replay artifacts and homing poses stay in the model's radians, and the
-    driver alone applies the thumb calibration when it writes the registers.
-    Feedback reports those registers, so a target has to be moved the same way
-    before it is compared with feedback. Every other joint is copied unchanged.
-    """
-    if hand is None:
-        raise ValueError("the thumb calibration requires Inspire hand positions")
-    reported = np.array(hand, dtype=float, copy=True)
-    for dof_index, fit in THUMB_CALIBRATION.items():
-        dof = hand_kinematics.DOFS[dof_index]
-        column = HAND_JOINTS.index(dof.joint)
-        reported[..., column] = np.clip(
-            (reported[..., column] - fit.offset_rad) / fit.gain, dof.lower, dof.upper
-        )
-    return reported
 
 
 def resolve_trajectory(path: str) -> Path:

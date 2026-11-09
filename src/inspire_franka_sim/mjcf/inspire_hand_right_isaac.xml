@@ -25,22 +25,22 @@
         <geom type="mesh" group="3" friction="0.875" rgba="1 1 1 1" mesh="hand_base_link"/>
         <body name="thumb_proximal_base" pos="0.01696 0.02045 0.06635">
           <inertial pos="0.000853491 0.00482217 -0.00482" quat="0.62265 0.746734 -0.185656 -0.142219" mass="0.00483" diaginertia="0.0100002 0.0100002 0.0100001"/>
-          <joint name="thumb_proximal_yaw_joint" range="0 1.24616" actuatorfrcrange="-0.5 0.5" armature="0.0032" axis="0 0 -1" actuatorfrclimited="true"/>
+          <joint name="thumb_proximal_yaw_joint" range="0.246 1.2554" actuatorfrcrange="-0.5 0.5" armature="0.0032" axis="0 0 -1" actuatorfrclimited="true"/>
           <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" density="0" mesh="thumb_proximal_base"/>
           <geom type="mesh" group="3" friction="0.875" rgba="1 1 1 1" mesh="thumb_proximal_base"/>
           <body name="thumb_proximal" pos="0.010735 0.0090002 -0.0065" quat="0.561736 0.561738 0.429479 0.429477">
             <inertial pos="0.0194641 0.016298 -0.00803857" quat="0.638977 0.30145 -0.639673 0.302745" mass="0.05759" diaginertia="0.010017 0.0100143 0.0100053"/>
-            <joint name="thumb_proximal_pitch_joint" range="0 0.48" actuatorfrcrange="-0.5 0.5" armature="0.0032" actuatorfrclimited="true"/>
+            <joint name="thumb_proximal_pitch_joint" range="-0.086 0.394" actuatorfrcrange="-0.5 0.5" armature="0.0032" actuatorfrclimited="true"/>
             <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" density="0" mesh="thumb_proximal"/>
             <geom type="mesh" group="3" friction="0.875" rgba="1 1 1 1" mesh="thumb_proximal"/>
             <body name="thumb_intermediate" pos="0.037617 0.041486 -0.0008">
               <inertial pos="0.00946652 0.00207631 -0.00720001" quat="0.540569 0.455787 -0.540629 0.45581" mass="0.00985" diaginertia="0.0100013 0.0100012 0.0100006"/>
-              <joint name="thumb_intermediate_joint" range="0 0.3578" actuatorfrcrange="-50 50" armature="0.00265" actuatorfrclimited="true"/>
+              <joint name="thumb_intermediate_joint" range="-0.08 0.51" actuatorfrcrange="-50 50" armature="0.00265" actuatorfrclimited="true"/>
               <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" density="0" mesh="thumb_intermediate"/>
               <geom type="mesh" group="3" friction="0.875" rgba="1 1 1 1" mesh="thumb_intermediate"/>
               <body name="thumb_distal" pos="0.014957 0.017012 -0.0012">
                 <inertial pos="0.00604905 0.00861523 -0.00600329" quat="0.552019 0.437851 -0.554425 0.442915" mass="0.00552" diaginertia="0.0100003 0.0100003 0.0100001"/>
-                <joint name="thumb_distal_joint" range="0 0.2775" actuatorfrcrange="-50 50" armature="0.0006" actuatorfrclimited="true"/>
+                <joint name="thumb_distal_joint" range="-0.04 0.31" actuatorfrcrange="-50 50" armature="0.0006" actuatorfrclimited="true"/>
                 <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" density="0" mesh="thumb_distal"/>
                 <geom type="mesh" group="3" friction="1.25" rgba="1 1 1 1" mesh="thumb_distal"/>
                 <body name="thumb_tip" pos="0.00214444 0.0178998 -0.00745">
@@ -52,12 +52,12 @@
         </body>
         <body name="index_proximal" pos="-0.000285 0.020275 0.136946" quat="0.719336 0.694662 0 0">
           <inertial pos="0.000852715 0.0119736 -0.00599987" quat="0.525442 0.472889 -0.526818 0.471963" mass="0.01229" diaginertia="0.0100021 0.010002 0.0100005"/>
-          <joint name="index_proximal_joint" range="0 1.333" actuatorfrcrange="-0.5 0.5" armature="0.00265" axis="0 -0.069756 -0.997564" actuatorfrclimited="true"/>
+          <joint name="index_proximal_joint" range="-0.05 1.283" actuatorfrcrange="-0.5 0.5" armature="0.00265" axis="0 -0.069756 -0.997564" actuatorfrclimited="true"/>
           <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" density="0" mesh="index_proximal"/>
           <geom type="mesh" group="3" friction="0.875" rgba="1 1 1 1" mesh="index_proximal"/>
           <body name="index_intermediate" pos="0.008099 0.031095 -0.001">
             <inertial pos="0.00408343 0.0192601 -0.005" quat="0.596349 0.380057 -0.596308 0.379923" mass="0.00633" diaginertia="0.0100011 0.0100011 0.0100001"/>
-            <joint name="index_intermediate_joint" range="0 1.527" actuatorfrcrange="-50 50" armature="0.0006" axis="0 0 -1" actuatorfrclimited="true"/>
+            <joint name="index_intermediate_joint" range="-0.02 1.527" actuatorfrcrange="-50 50" armature="0.0006" axis="0 0 -1" actuatorfrclimited="true"/>
             <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="1 1 1 1" density="0" mesh="index_intermediate"/>
             <geom type="mesh" group="3" friction="1.25" rgba="1 1 1 1" mesh="index_intermediate"/>
             <body name="index_tip" pos="0.0157444 0.0316562 -0.00605">
@@ -131,17 +131,17 @@
   </contact>
 
   <actuator>
-    <general name="thumb_proximal_yaw_joint" joint="thumb_proximal_yaw_joint" ctrlrange="0 1.24616" ctrllimited="true" forcelimited="true" forcerange="-0.5 0.5" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
-    <general name="thumb_proximal_pitch_joint" joint="thumb_proximal_pitch_joint" ctrlrange="0 0.48" ctrllimited="true" forcelimited="true" forcerange="-0.5 0.5" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
-    <general name="thumb_intermediate_joint" joint="thumb_intermediate_joint" ctrlrange="0 0.3578" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="4.76" biasprm="0 -4.76 -0.21"/>
-    <general name="thumb_distal_joint" joint="thumb_distal_joint" ctrlrange="0 0.2775" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="0.9" biasprm="0 -0.9 -0.042"/>
-    <general name="index_proximal_joint" joint="index_proximal_joint" ctrlrange="0 1.333" ctrllimited="true" forcelimited="true" forcerange="-0.5 0.5" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
-    <general name="index_intermediate_joint" joint="index_intermediate_joint" ctrlrange="0 1.527" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="0.9" biasprm="0 -0.9 -0.042"/>
+    <general name="thumb_proximal_yaw_joint" joint="thumb_proximal_yaw_joint" ctrlrange="0.246 1.2554" ctrllimited="true" forcelimited="true" forcerange="-0.5 0.5" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
+    <general name="thumb_proximal_pitch_joint" joint="thumb_proximal_pitch_joint" ctrlrange="-0.086 0.394" ctrllimited="true" forcelimited="true" forcerange="-0.5 0.5" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
+    <general name="thumb_intermediate_joint" joint="thumb_intermediate_joint" ctrlrange="-0.08 0.51" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
+    <general name="thumb_distal_joint" joint="thumb_distal_joint" ctrlrange="-0.04 0.31" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
+    <general name="index_proximal_joint" joint="index_proximal_joint" ctrlrange="-0.05 1.283" ctrllimited="true" forcelimited="true" forcerange="-0.5 0.5" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
+    <general name="index_intermediate_joint" joint="index_intermediate_joint" ctrlrange="-0.02 1.527" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
     <general name="middle_proximal_joint" joint="middle_proximal_joint" ctrlrange="0 1.333" ctrllimited="true" forcelimited="true" forcerange="-1.864 1.864" biastype="affine" gainprm="4.76" biasprm="0 -4.76 -0.21"/>
-    <general name="middle_intermediate_joint" joint="middle_intermediate_joint" ctrlrange="0 1.527" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="0.9" biasprm="0 -0.9 -0.042"/>
+    <general name="middle_intermediate_joint" joint="middle_intermediate_joint" ctrlrange="0 1.527" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
     <general name="ring_proximal_joint" joint="ring_proximal_joint" ctrlrange="0 1.333" ctrllimited="true" forcelimited="true" forcerange="-1.864 1.864" biastype="affine" gainprm="4.76" biasprm="0 -4.76 -0.21"/>
-    <general name="ring_intermediate_joint" joint="ring_intermediate_joint" ctrlrange="0 1.527" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="0.9" biasprm="0 -0.9 -0.042"/>
+    <general name="ring_intermediate_joint" joint="ring_intermediate_joint" ctrlrange="0 1.527" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
     <general name="pinky_proximal_joint" joint="pinky_proximal_joint" ctrlrange="0 1.333" ctrllimited="true" forcelimited="true" forcerange="-1.864 1.864" biastype="affine" gainprm="4.76" biasprm="0 -4.76 -0.21"/>
-    <general name="pinky_intermediate_joint" joint="pinky_intermediate_joint" ctrlrange="0 1.527" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="0.9" biasprm="0 -0.9 -0.042"/>
+    <general name="pinky_intermediate_joint" joint="pinky_intermediate_joint" ctrlrange="0 1.527" ctrllimited="true" forcelimited="true" forcerange="-50 50" biastype="affine" gainprm="30" biasprm="0 -30 -3"/>
   </actuator>
 </mujoco>

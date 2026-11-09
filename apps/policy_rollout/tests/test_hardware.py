@@ -76,38 +76,6 @@ def test_image_decoder_ignores_row_padding():
     assert image.tolist() == [[[1, 2, 3], [4, 5, 6]]]
 
 
-def test_physical_hand_feedback_is_mapped_back_to_policy_coordinates():
-    from inspire_hand_driver import command_overlays
-    from inspire_hand_driver import kinematics as kin
-
-    logical_q = np.array([1.08, 0.05, 0.22])
-    logical_dq = np.array([0.4, -0.2, 0.1])
-    physical_positions = np.array([1.0, 1.1, 1.2, logical_q[2], logical_q[1], 0.0])
-    physical_velocities = np.array([0.0, 0.0, 0.0, logical_dq[2], logical_dq[1], 0.0])
-    thumb_dof = kin.dof_index(command_overlays.THUMB_ABDUCTION_JOINT)
-    logical_ratio = kin.rad_to_open_ratio(thumb_dof, logical_q[0])
-    physical_ratio = command_overlays.apply_open_ratio_overlay(
-        thumb_dof, logical_ratio
-    )
-    physical_positions[-1] = kin.open_ratio_to_rad(thumb_dof, physical_ratio)
-    physical_velocities[-1] = logical_dq[0] / command_overlays.model_rate_gain(thumb_dof)
-    flexion_dof = kin.dof_index(command_overlays.THUMB_FLEXION_JOINT)
-    physical_positions[4] = kin.open_ratio_to_rad(
-        flexion_dof,
-        command_overlays.apply_open_ratio_overlay(
-            flexion_dof, kin.rad_to_open_ratio(flexion_dof, logical_q[1])
-        ),
-    )
-    physical_velocities[4] = logical_dq[1] / command_overlays.model_rate_gain(flexion_dof)
-
-    q_policy, dq_policy = physical_hand_state_to_policy(
-        physical_positions, physical_velocities
-    )
-
-    assert q_policy == pytest.approx(logical_q)
-    assert dq_policy == pytest.approx(logical_dq)
-
-
 def test_policy_camera_frames_must_all_be_registered_to_colour():
     def message(frame_id):
         return SimpleNamespace(header=SimpleNamespace(frame_id=frame_id))
@@ -546,20 +514,6 @@ def test_finger_sweep_fires_when_the_contact_leaves_the_pads():
     assert _feed(coordinator, pinch + closed_unloaded, reset_q)[-1] == "release_started"
 
 
-def test_finger_sweep_accepts_the_rh56s_widest_loaded_pinch():
-    """hardware-20261103-161413-264559: the real tips closed to 7.8 mm, not 2-3."""
-
-    reset_q = _reset_grasp_quaternion()
-    coordinator = _sweep_coordinator(reset_q)
-    ticks = [
-        (0.0220, [4.3, 10.2], 0.46), (0.0134, [0.6, 7.0], 0.57), (0.0099, [3.0, 8.0], 0.65),
-        (0.0079, [6.9, 8.3], 0.72), (0.0079, [11.5, 10.7], 0.72), (0.0119, [5.1, 7.8], 0.74),
-        (0.0165, [4.5, 7.3], 0.79), (0.0185, [4.7, 7.3], 0.82),
-    ]
-    events = _feed(coordinator, ticks, reset_q)
-    assert events.index("release_started") == len(ticks) - 1
-
-
 def test_measured_twist_still_wins_over_the_finger_sweep():
     reset_q = _reset_grasp_quaternion()
     coordinator = _sweep_coordinator(reset_q)
@@ -696,8 +650,8 @@ def test_grasp_frame_transport_follows_flange_rotation():
 
 # The student was distilled on ForgeUltra's hand geometry, not the workspace
 # URDF's. These pin the frame the rollout now commands in.
-TRAINING_GRASP_MIDPOINT_IN_FLANGE = np.array([-0.059067, -0.028773, 0.173311])
-TRAINING_TIP_SEPARATION_M = 0.0578
+TRAINING_GRASP_MIDPOINT_IN_FLANGE = np.array([-0.058208, -0.028713, 0.173779])
+TRAINING_TIP_SEPARATION_M = 0.057577
 
 
 def _training_hand():
@@ -808,27 +762,6 @@ def test_the_previous_action_seed_encodes_the_entry_grasp_like_isaac_s_reset():
     teacher = np.array([-0.175, 0.003, 0.207, 0.0, -0.077, 0.538, -0.091, -0.083, 0.0]) * scale
     np.testing.assert_allclose(seed[0:3], teacher[0:3], atol=0.03)
     assert seed[5] == pytest.approx(teacher[5], abs=0.03)
-
-
-def test_physical_hand_feedback_passes_through_without_the_overlay():
-    """ros-sim runs the driver without the thumb-yaw overlay: nothing to invert."""
-
-    from policy_rollout.hardware import HAND_JOINTS, physical_hand_state_to_policy
-
-    positions = np.zeros(len(HAND_JOINTS))
-    velocities = np.zeros(len(HAND_JOINTS))
-    columns = {name: index for index, name in enumerate(HAND_JOINTS)}
-    positions[columns["thumb_proximal_yaw_joint"]] = 1.185
-    velocities[columns["thumb_proximal_yaw_joint"]] = 0.3
-    positions[columns["index_proximal_joint"]] = 0.2147
-    q, dq = physical_hand_state_to_policy(positions, velocities, thumb_overlay=False)
-    np.testing.assert_allclose(q, [1.185, 0.0, 0.2147])
-    np.testing.assert_allclose(dq, [0.3, 0.0, 0.0])
-    # With the calibration on, the same logical 1.185 rad is register yaw 0.889.
-    positions[columns["thumb_proximal_yaw_joint"]] = 1.185 * 0.75
-    q_on, dq_on = physical_hand_state_to_policy(positions, velocities, thumb_overlay=True)
-    assert q_on[0] == pytest.approx(1.185, abs=1e-6)
-    assert dq_on[0] == pytest.approx(0.3 / 0.75)
 
 
 def test_training_hand_tips_do_not_depend_on_the_arm():
@@ -1028,18 +961,6 @@ def test_hand_joint_state_to_arrays_orders_the_driven_joints():
     assert velocities.shape == (len(HAND_JOINTS),)
 
 
-def test_hand_joint_state_to_arrays_rejects_a_partial_hand():
-    from policy_rollout.hardware import HAND_JOINTS, hand_joint_state_to_arrays
-
-    message = SimpleNamespace(
-        name=list(HAND_JOINTS[:-1]),
-        position=[0.0] * (len(HAND_JOINTS) - 1),
-        velocity=[0.0] * (len(HAND_JOINTS) - 1),
-    )
-    with pytest.raises(RuntimeError, match="all driven RH56 joints"):
-        hand_joint_state_to_arrays(message)
-
-
 def test_turn_monitor_values_are_degrees_in_field_order_and_nan_without_a_nut():
     import math
 
@@ -1077,17 +998,6 @@ def test_fingertip_force_reads_the_sim_channels_in_newtons():
     force, raw = fingertip_force_message_to_newtons(message)
     assert force.tolist() == pytest.approx([1.5, 0.25])
     assert not raw
-
-
-def test_fingertip_force_reads_the_rh56_thumb_bend_and_index_in_grams():
-    # Driver order: pinky, ring, middle, index, thumb_bend, thumb_rotation.
-    message = SimpleNamespace(
-        name=["1", "2", "3", "4", "5", "6"],
-        effort=[0.0, 0.0, 0.0, 200.0, 1000.0, 50.0],
-    )
-    force, raw = fingertip_force_message_to_newtons(message)
-    assert force.tolist() == pytest.approx([9.80665, 1.96133])
-    assert raw
 
 
 def test_external_torques_are_read_by_name_in_fr3_joint_order():
@@ -1152,33 +1062,6 @@ def test_a_failing_or_interrupted_shutdown_step_is_reported_not_raised(capsys):
     out = capsys.readouterr().out
     assert "'abort ramp' failed: KeyboardInterrupt" in out
     assert "'abort' failed: RuntimeError" in out
-
-
-def test_a_thumb_settled_just_past_its_yaw_limit_is_not_a_mapping_fault():
-    pytest.importorskip("inspire_hand_driver")
-    from inspire_hand_driver import command_overlays
-    from inspire_hand_driver import kinematics as kin
-    from policy_rollout.hardware import HAND_JOINTS
-
-    thumb_dof = kin.dof_index(command_overlays.THUMB_ABDUCTION_JOINT)
-    # 2026-10-29: logical open ratio -0.0227 at the yaw limit.
-    physical_ratio = command_overlays.apply_open_ratio_overlay(thumb_dof, -0.0227)
-    position = np.zeros(len(HAND_JOINTS))
-    position[HAND_JOINTS.index("thumb_proximal_yaw_joint")] = kin.open_ratio_to_rad(thumb_dof, physical_ratio)
-    q, _ = physical_hand_state_to_policy(position, np.zeros(len(HAND_JOINTS)))
-    # Clamped onto the end of the logical range rather than refused.
-    assert q[0] == pytest.approx(kin.open_ratio_to_rad(thumb_dof, 0.0))
-    # 2026-11-03, force threshold 1000 g: -0.0307 at the yaw limit.
-    position[HAND_JOINTS.index("thumb_proximal_yaw_joint")] = kin.open_ratio_to_rad(
-        thumb_dof, command_overlays.apply_open_ratio_overlay(thumb_dof, -0.0307)
-    )
-    q, _ = physical_hand_state_to_policy(position, np.zeros(len(HAND_JOINTS)))
-    assert q[0] == pytest.approx(kin.open_ratio_to_rad(thumb_dof, 0.0))
-    position[HAND_JOINTS.index("thumb_proximal_yaw_joint")] = kin.open_ratio_to_rad(
-        thumb_dof, command_overlays.apply_open_ratio_overlay(thumb_dof, -0.06)
-    )
-    with pytest.raises(ValueError, match="outside the overlaid policy range"):
-        physical_hand_state_to_policy(position, np.zeros(len(HAND_JOINTS)))
 
 
 def test_joint_limit_guard_stops_before_the_fr3_reflex():

@@ -1,15 +1,8 @@
 <?xml version="1.0"?>
 <!--
-  GENERATED FILE - do not edit.
-
-  Produced by inspire_hand_description/scripts/vendor_from_training_urdf.py
-  from forgeUltra's inspirehand_right.urdf, the hand the policy was trained on.
-  See MODEL_PROVENANCE.md. This left hand is the exact mirror of the right one;
-  there is no official left hand to check it against.
-
-  Regenerate by running that script; it takes the source URDF as its
-  "source" argument. XML comments cannot contain a double hyphen, which is
-  why the command line is described rather than shown.
+  Geometry and masses from forgeUltra's inspirehand_right.urdf, the hand the policy
+  was trained on. Thumb and index limits and the follower couplings are fitted to
+  the real hand; see MODEL_PROVENANCE.md and inspire_hand_driver/kinematics.py.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -348,7 +341,7 @@
       <parent link="${prefix}hand_base_link" />
       <child link="${prefix}thumb_proximal_base" />
       <axis xyz="0 0 1" />
-      <limit lower="0" upper="1.246165" effort="1" velocity="0.5" />
+      <limit lower="0.246" upper="1.2554" effort="1" velocity="0.5" />
     </joint>
 
     <joint name="${prefix}index_proximal_joint" type="revolute">
@@ -356,7 +349,7 @@
       <parent link="${prefix}hand_base_link" />
       <child link="${prefix}index_proximal" />
       <axis xyz="0 -0.069756 0.997564" />
-      <limit lower="0" upper="1.333" effort="1" velocity="0.5" />
+      <limit lower="-0.05" upper="1.283" effort="1" velocity="0.5" />
     </joint>
 
     <joint name="${prefix}middle_proximal_joint" type="revolute">
@@ -415,8 +408,8 @@
       <parent link="${prefix}index_proximal" />
       <child link="${prefix}index_intermediate" />
       <axis xyz="0 0 1" />
-      <limit lower="0" upper="1.527" effort="1" velocity="0.5" />
-      <mimic joint="${prefix}index_proximal_joint" multiplier="1.1169" offset="0" />
+      <limit lower="-0.02" upper="1.527" effort="1" velocity="0.5" />
+      <mimic joint="${prefix}index_proximal_joint" multiplier="0.8867" offset="0.0275" />
     </joint>
 
     <joint name="${prefix}thumb_proximal_pitch_joint" type="revolute">
@@ -424,7 +417,7 @@
       <parent link="${prefix}thumb_proximal_base" />
       <child link="${prefix}thumb_proximal" />
       <axis xyz="0 0 -1" />
-      <limit lower="0" upper="0.48" effort="1" velocity="0.5" />
+      <limit lower="-0.086" upper="0.394" effort="1" velocity="0.5" />
     </joint>
 
     <joint name="${prefix}thumb_intermediate_joint" type="revolute">
@@ -432,8 +425,8 @@
       <parent link="${prefix}thumb_proximal" />
       <child link="${prefix}thumb_intermediate" />
       <axis xyz="0 0 -1" />
-      <limit lower="0" upper="0.3578" effort="1" velocity="0.5" />
-      <mimic joint="${prefix}thumb_proximal_pitch_joint" multiplier="1.1425" offset="0" />
+      <limit lower="-0.08" upper="0.51" effort="1" velocity="0.5" />
+      <mimic joint="${prefix}thumb_proximal_pitch_joint" multiplier="1.2092" offset="0.0252" />
     </joint>
 
     <joint name="${prefix}thumb_distal_joint" type="revolute">
@@ -441,8 +434,8 @@
       <parent link="${prefix}thumb_intermediate" />
       <child link="${prefix}thumb_distal" />
       <axis xyz="0 0 -1" />
-      <limit lower="0" upper="0.2775" effort="1" velocity="0.5" />
-      <mimic joint="${prefix}thumb_intermediate_joint" multiplier="0.7508" offset="0" />
+      <limit lower="-0.04" upper="0.31" effort="1" velocity="0.5" />
+      <mimic joint="${prefix}thumb_intermediate_joint" multiplier="0.5592" offset="0.0062" />
     </joint>
 
     <joint name="${prefix}thumb_tip_joint" type="fixed">

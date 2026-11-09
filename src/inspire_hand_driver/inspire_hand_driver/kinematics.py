@@ -30,22 +30,21 @@ its *upper* limit at the closed pose. So::
 
     angle_rad = lower + (1 - open_ratio) * (upper - lower)
 
-Where the coupling ratios come from
------------------------------------
-Straight out of the vendored URDF's ``<mimic>`` tags -- the training hand's
-numbers (forgeUltra's official Tiangong 2.0 Pro URDF), not a re-derivation, and
-the ranges with them. They are *not* what you get by assuming a follower
-reaches its limit exactly when its driver does. The fingers follow at 1.1169,
-so at the closed pose (1.333 rad) the follower stops at 1.489 rad, about 2.2 deg
-short of its own 1.527 rad limit. The thumb goes the other way: its
-intermediate follows the pitch at 1.1425 and reaches its 0.3578 rad limit at
-0.313 rad of pitch, about two thirds of the way closed, and stays there. The
-thumb's distal joint follows the *intermediate* (0.7508), not the pitch, so it
-stops with it. That chain is why a :class:`Coupling` names its source joint.
+Where the numbers come from
+---------------------------
+Fitted to the real hand from a 1080p camera sweep of the registers on
+2026-11-09, so a joint angle here means the real joint angle. The limits are
+where the fingers really are at the two ends of the command range, and the
+follower couplings are the measured ones. The middle, ring and pinky fingers
+were not swept and keep the training hand's 1.1169 ratio.
 
-This is a *linear* approximation of a four-bar, so it is good enough for TF,
-RViz and collision checking, but it is not a substitute for a calibrated linkage
-model if you need fingertip accuracy better than a few millimetres mid-travel.
+The thumb's distal joint follows the *intermediate*, not the pitch, so it is the
+last link in a chain. That chain is why a :class:`Coupling` names its source
+joint.
+
+Couplings are linear fits of a four-bar linkage. The index distal coupling is
+fitted up to a proximal angle of 0.8 rad; the camera reads it bending further
+than the line near the fully closed end.
 """
 
 from __future__ import annotations
@@ -98,16 +97,25 @@ class Dof(NamedTuple):
     """Passive joints that follow this one."""
 
 
-def _finger(channel: str, name: str, prefix: str) -> Dof:
+def _finger(
+    channel: str,
+    name: str,
+    prefix: str,
+    lower: float = 0.0,
+    upper: float = 1.333,
+    multiplier: float = 1.1169,
+    offset: float = 0.0,
+    follower_lower: float = 0.0,
+) -> Dof:
     """One of the four fingers: proximal driven, intermediate following."""
     return Dof(
         channel=channel,
         name=name,
         joint=f"{prefix}_proximal_joint",
-        lower=0.0,
-        upper=1.333,
+        lower=lower,
+        upper=upper,
         couplings=(
-            Coupling(f"{prefix}_intermediate_joint", 1.1169, 0.0, 0.0, 1.527),
+            Coupling(f"{prefix}_intermediate_joint", multiplier, offset, follower_lower, 1.527),
         ),
     )
 
@@ -117,17 +125,17 @@ DOFS: Tuple[Dof, ...] = (
     _finger("1", "pinky", "pinky"),
     _finger("2", "ring", "ring"),
     _finger("3", "middle", "middle"),
-    _finger("4", "index", "index"),
+    _finger("4", "index", "index", -0.05, 1.283, 0.8867, 0.0275, -0.02),
     Dof(
         channel="5",
         name="thumb_bend",
         joint="thumb_proximal_pitch_joint",
-        lower=0.0,
-        upper=0.48,
+        lower=-0.086,
+        upper=0.394,
         couplings=(
-            Coupling("thumb_intermediate_joint", 1.1425, 0.0, 0.0, 0.3578),
+            Coupling("thumb_intermediate_joint", 1.2092, 0.0252, -0.08, 0.51),
             Coupling(
-                "thumb_distal_joint", 0.7508, 0.0, 0.0, 0.2775,
+                "thumb_distal_joint", 0.5592, 0.0062, -0.04, 0.31,
                 source="thumb_intermediate_joint",
             ),
         ),
@@ -136,10 +144,11 @@ DOFS: Tuple[Dof, ...] = (
         channel="6",
         name="thumb_rotation",
         # Adduction/abduction of the thumb across the palm. It has no follower:
-        # the yaw axis drives a single rigid body.
+        # the yaw axis drives a single rigid body. The register range is 250 to
+        # 1000 (see command_overlays), and these are the real angles there.
         joint="thumb_proximal_yaw_joint",
-        lower=0.0,
-        upper=1.246165,
+        lower=0.246,
+        upper=1.2554,
         couplings=(),
     ),
 )

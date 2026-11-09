@@ -81,22 +81,6 @@ def test_every_task_profile_homes_to_its_own_reset():
         assert hand["index_proximal_joint"] == pytest.approx(profile.entry_pinch[2], abs=1e-6), name
 
 
-def test_thumb_overlay_follows_the_backend_unless_overridden():
-    """ros-sim's mock driver runs without the overlay; hardware's with it."""
-
-    assert cli.resolve_thumb_overlay("auto", sim=False) is True
-    assert cli.resolve_thumb_overlay("auto", sim=True) is False
-    assert cli.resolve_thumb_overlay("on", sim=True) is True
-    assert cli.resolve_thumb_overlay("off", sim=False) is False
-    args = cli._hardware_parser(sim=True).parse_args([])
-    assert args.thumb_overlay == "auto"
-    assert args.hand_start == "auto"
-    assert args.max_home_grasp_error == 0.002
-    assert args.min_fingertip_separation == 0.030
-    assert args.max_proxy_step_deg == 20.0
-    assert args.expected_load_mass_kg is None
-
-
 def test_hardware_parser_enables_matplotlib_viewer():
     args = cli._hardware_parser().parse_args(
         [

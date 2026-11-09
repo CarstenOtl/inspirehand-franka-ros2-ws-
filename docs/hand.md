@@ -107,9 +107,9 @@ ever disagree, so this table cannot drift from the description:
 | pinky          | 1  | pinky_proximal_joint       | 0.000 rad        | 1.333 rad          | 0.00133               |
 | ring           | 2  | ring_proximal_joint        | 0.000 rad        | 1.333 rad          | 0.00133               |
 | middle         | 3  | middle_proximal_joint      | 0.000 rad        | 1.333 rad          | 0.00133               |
-| index          | 4  | index_proximal_joint       | 0.000 rad        | 1.333 rad          | 0.00133               |
-| thumb_bend     | 5  | thumb_proximal_pitch_joint | 0.000 rad        | 0.480 rad          | 0.00048               |
-| thumb_rotation | 6  | thumb_proximal_yaw_joint   | 0.000 rad        | 1.246 rad          | 0.00125               |
+| index          | 4  | index_proximal_joint       | -0.050 rad       | 1.283 rad          | 0.00133               |
+| thumb_bend     | 5  | thumb_proximal_pitch_joint | -0.086 rad       | 0.394 rad          | 0.00048               |
+| thumb_rotation | 6  | thumb_proximal_yaw_joint   | 0.246 rad        | 1.255 rad (register 250) | 0.00135         |
 
 These are the training hand's ranges (forgeUltra's official Tiangong 2.0 Pro
 URDF) since 2026-10-16. Before that the description was dex-urdf's, with

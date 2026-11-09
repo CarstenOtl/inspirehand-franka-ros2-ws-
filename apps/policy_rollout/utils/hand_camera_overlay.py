@@ -14,9 +14,6 @@ separates them:
 - the arm outline (white) is off too: the camera calibration, whose own fit
   residual is 9.7 mm / 1.0 deg, so a few pixels here are expected;
 - the arm lines up and the fingers do not: the hand model or the joint readings;
-- the two thumbs (policy, driver) bracket the real one: the driver's thumb-yaw
-  overlay. "policy" is the logical angle the student observes, "driver" is the
-  angle the driver reports with the overlay still in it.
 
 The nut and bolt (yellow) are where training puts them, not a measurement.
 """
@@ -71,7 +68,7 @@ def project(points, rotation, translation, camera_matrix) -> tuple[np.ndarray, n
     return np.column_stack([u, v]), depth
 
 
-def policy_hand_joints(hand_positions: dict[str, float], thumb_overlay: bool) -> dict[str, float]:
+def policy_hand_joints(hand_positions: dict[str, float]) -> dict[str, float]:
     """The logical hand the student observes, on the scene's joint names."""
 
     from policy_rollout.hardware import (
@@ -84,7 +81,6 @@ def policy_hand_joints(hand_positions: dict[str, float], thumb_overlay: bool) ->
     leaders, _ = physical_hand_state_to_policy(
         [hand_positions[name] for name in HAND_JOINTS],
         np.zeros(len(HAND_JOINTS)),
-        thumb_overlay=thumb_overlay,
     )
     targets = dict(zip(fo.PINCH_JOINTS, leaders))
     targets.update(TRAINING_INACTIVE_FINGERS)
@@ -184,7 +180,7 @@ def _cross(canvas, pixel, colour, label) -> None:
     cv2.putText(canvas, label, (point[0] + 6, point[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.35, colour, 1, cv2.LINE_AA)
 
 
-def compose(projector, image_bgr, depth_m, camera_matrix, arm, hand_reported, thumb_overlay):
+def compose(projector, image_bgr, depth_m, camera_matrix, arm, hand_reported):
     """The annotated frame and the tip readings for one set of inputs."""
 
     import cv2
@@ -201,13 +197,8 @@ def compose(projector, image_bgr, depth_m, camera_matrix, arm, hand_reported, th
         uv, depth = project(projector.body_position(body)[None], projector.rotation, projector.translation, camera_matrix)
         return TipReading(label, uv[0], float(depth[0]), measured_depth(depth_m, uv[0]))
 
-    # The driver's own reading: only its thumb differs from the policy's hand.
-    projector.set_joints({**arm, **hand_reported})
-    outlines += [(hull, MAGENTA) for hull in hulls(projector.geoms(HAND_VISUAL_GROUP, ("thumb_",)))]
-    driver_thumb = tip("thumb_tip", "thumb driver")
-
     # The hand the student believes it has.
-    projector.set_joints({**arm, **policy_hand_joints(hand_reported, thumb_overlay)})
+    projector.set_joints({**arm, **policy_hand_joints(hand_reported)})
     for group, prefixes, colour in (
         (ARM_VISUAL_GROUP, ("fr3_link",), WHITE),
         (HAND_VISUAL_GROUP, ("hand_base", "hand_mount", "middle_", "ring_", "pinky_"), GREY),
@@ -220,9 +211,9 @@ def compose(projector, image_bgr, depth_m, camera_matrix, arm, hand_reported, th
         if hull is not None:
             outlines.append((hull, YELLOW))
 
-    thumb, index = tip("thumb_tip", "thumb policy"), tip("index_tip", "index")
-    readings = [driver_thumb, thumb, index]
-    marks += [(driver_thumb.pixel, MAGENTA, ""), (thumb.pixel, GREEN, "T"), (index.pixel, CYAN, "I")]
+    thumb, index = tip("thumb_tip", "thumb"), tip("index_tip", "index")
+    readings = [thumb, index]
+    marks += [(thumb.pixel, GREEN, "T"), (index.pixel, CYAN, "I")]
 
     zoom = _zoom_panel(canvas, thumb, index, camera_matrix, outlines, marks)
     for hull, colour in outlines:
@@ -232,8 +223,7 @@ def compose(projector, image_bgr, depth_m, camera_matrix, arm, hand_reported, th
 
     legend = [
         ("white arm  grey palm", WHITE),
-        ("green thumb: policy angle", GREEN),
-        ("magenta thumb: driver angle", MAGENTA),
+        ("green thumb", GREEN),
         ("cyan index", CYAN),
         ("yellow nut/bolt: training spot", YELLOW),
     ]
@@ -289,11 +279,6 @@ def main(argv=None) -> int:
     parser.add_argument("--live", action="store_true", help="open a window instead of saving one frame")
     parser.add_argument("--scene", type=Path, default=SCENE)
     parser.add_argument("--out", type=Path, default=None, help="default: debug/hand_overlay_<time>.png")
-    parser.add_argument(
-        "--no-thumb-overlay",
-        action="store_true",
-        help="the hand driver runs without its thumb-yaw overlay (thumb_abduction_overlay false)",
-    )
     parser.add_argument("--timeout", type=float, default=15.0)
     args = parser.parse_args(argv)
 
@@ -339,7 +324,7 @@ def main(argv=None) -> int:
         hand = dict(zip(latest["hand"].name, latest["hand"].position))
         if len(arm) != 7:
             raise RuntimeError(f"{ARM_STATE_TOPIC} carried {len(arm)} arm joints, not 7")
-        return compose(projector, bgr, depth, latest["info"].k, arm, hand, not args.no_thumb_overlay)
+        return compose(projector, bgr, depth, latest["info"].k, arm, hand)
 
     def save(frame, readings) -> Path:
         path = args.out or WORKSPACE_ROOT / "debug" / f"hand_overlay_{datetime.now():%Y%m%d_%H%M%S}.png"

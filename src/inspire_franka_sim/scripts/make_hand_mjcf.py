@@ -3,15 +3,12 @@
 
     python3 scripts/make_hand_mjcf.py --side right
     python3 scripts/make_hand_mjcf.py --isaac
-    python3 scripts/make_hand_mjcf.py --rh56
 
 Writes ``mjcf/inspire_hand_<side>.xml`` and the meshes it needs into
 ``mjcf/assets_hand/``. Both are committed, so this only has to be re-run when
 the description is re-vendored. ``--isaac`` writes the same hand with Isaac
 Lab's training-time dynamics instead (``mjcf/inspire_hand_right_isaac.xml`` and
-its flange wrapper), for the policy rollout scene; see ISAAC_DRIVES. ``--rh56``
-writes the RH56 linkage hand the RH56-trained students saw instead
-(``inspire_hand_right_rh56.xml`` and its wrapper); see RH56_DRIVES.
+its flange wrapper), for the policy rollout scene; see ISAAC_DRIVES.
 
 Why a generator and not a hand-written model
 --------------------------------------------
@@ -68,12 +65,12 @@ from pathlib import Path
 # training hand's URDF; an equality on a follower chains the way the mimic does.
 COUPLINGS = (
     # (follower, driver, multiplier, offset)
-    ("index_intermediate_joint", "index_proximal_joint", 1.1169, 0.0),
+    ("index_intermediate_joint", "index_proximal_joint", 0.8867, 0.0275),
     ("middle_intermediate_joint", "middle_proximal_joint", 1.1169, 0.0),
     ("ring_intermediate_joint", "ring_proximal_joint", 1.1169, 0.0),
     ("pinky_intermediate_joint", "pinky_proximal_joint", 1.1169, 0.0),
-    ("thumb_intermediate_joint", "thumb_proximal_pitch_joint", 1.1425, 0.0),
-    ("thumb_distal_joint", "thumb_intermediate_joint", 0.7508, 0.0),
+    ("thumb_intermediate_joint", "thumb_proximal_pitch_joint", 1.2092, 0.0252),
+    ("thumb_distal_joint", "thumb_intermediate_joint", 0.5592, 0.0062),
 )
 
 #: The six driven joints, in the register order the driver uses.
@@ -112,7 +109,7 @@ JOINT_DYNAMICS = dict(damping=0.1, armature=0.002, frictionloss=0.005)
 # so the two simulators agree, not a claim about the hardware.
 CONTACT_FRICTION = (0.75, 0.005, 0.0001)
 
-# The rollout hands (--isaac, --rh56) carry the friction training's contacts
+# The rollout hand (--isaac) carries the friction training's contacts
 # have against the nut. ForgeUltra sets the nut to 1.0, the two pad links to 1.5
 # and the rest of the hand to 0.75, and PhysX averages the two materials: 1.25
 # at the pads, 0.875 elsewhere. MuJoCo takes the element-wise maximum, so the
@@ -196,13 +193,14 @@ ISAAC_DRIVES = {
     "middle_proximal_joint": (4.76, 0.21, 1.864),
     "ring_proximal_joint": (4.76, 0.21, 1.864),
     "pinky_proximal_joint": (4.76, 0.21, 1.864),
-    # Followers keep robot.py's _HAND_STIFFNESS / _HAND_DAMPING and effort 50.
-    "thumb_intermediate_joint": (4.76, 0.21, 50.0),
-    "thumb_distal_joint": (0.9, 0.042, 50.0),
-    "index_intermediate_joint": (0.9, 0.042, 50.0),
-    "middle_intermediate_joint": (0.9, 0.042, 50.0),
-    "ring_intermediate_joint": (0.9, 0.042, 50.0),
-    "pinky_intermediate_joint": (0.9, 0.042, 50.0),
+    # The followers are a rigid linkage on the real hand: stiff drives that
+    # IsaacHandPlugin points at the measured leader.
+    "thumb_intermediate_joint": (30.0, 3.0, 50.0),
+    "thumb_distal_joint": (30.0, 3.0, 50.0),
+    "index_intermediate_joint": (30.0, 3.0, 50.0),
+    "middle_intermediate_joint": (30.0, 3.0, 50.0),
+    "ring_intermediate_joint": (30.0, 3.0, 50.0),
+    "pinky_intermediate_joint": (30.0, 3.0, 50.0),
 }
 
 #: robot.py _HAND_ARMATURE, kg m^2.
@@ -251,47 +249,6 @@ ISAAC_VELOCITY_LIMIT = 1.0
 ISAAC_HAND_INERTIA_OFFSET = 0.01
 #: Palm, five thumb bodies, and three per finger; hand_mount is not one of them.
 ISAAC_HAND_BODY_COUNT = 18
-
-# ForgeUltra's RH56 profile (hand_asset_profile: rh56, assets/fr3_inspirehand/rh56/
-# robot_cfg.py) drives the same official hand differently: one linkage actuator
-# per register channel owns EVERY joint of its finger, followers included, as
-# stiff implicit position drives on the linkage path (no mimic), and widens each
-# joint's limits to the measured linkage stroke. The frozen_hand_* overrides of
-# the mimic hand do not apply. The register-to-joint path itself is
-# IsaacHandPlugin's (linkage curves from inspire_hand_driver.rh56_linkage) and
-# the rod-speed slew isaac_hand_relay.py's.
-
-#: robot_cfg.GAINS per channel type (N m/rad, N m s/rad), EFFORT_LIMIT 50 N m.
-RH56_DRIVES = {
-    joint: (*gains, 50.0)
-    for joints, gains in (
-        (("thumb_proximal_yaw_joint",), (60.0, 0.6)),
-        (("thumb_proximal_pitch_joint", "thumb_intermediate_joint", "thumb_distal_joint"), (60.0, 0.6)),
-        (
-            (
-                "index_proximal_joint", "index_intermediate_joint",
-                "middle_proximal_joint", "middle_intermediate_joint",
-                "ring_proximal_joint", "ring_intermediate_joint",
-                "pinky_proximal_joint", "pinky_intermediate_joint",
-            ),
-            (40.0, 0.4),
-        ),
-    )
-    for joint in joints
-}
-
-#: rh56/joint_map.py VELOCITY_LIMIT, rad/s (the rod speed is the real limit).
-RH56_VELOCITY_LIMIT = 50.0
-
-
-def rh56_joint_ranges() -> dict:
-    """Each workspace hand joint's full linkage stroke (rh56 joint_map.JOINT_LIMITS)."""
-
-    from inspire_hand_driver.rh56_linkage import load_joint_table
-
-    table = load_joint_table()
-    return {joint: table.joint_range(isaac) for joint, isaac in ISAAC_JOINT_NAMES.items()}
-
 
 #: The training URDF's <material> colour (assets/fr3_inspirehand/urdf/
 #: inspirehand_right.urdf: rgba 1 1 1 1 on every link). The policy sees the
@@ -362,24 +319,17 @@ def add_isaac_inertia_offset(spec) -> None:
         raise SystemExit(f"expected {ISAAC_HAND_BODY_COUNT} hand bodies, offset {count}")
 
 
-def build(spec, side: str, isaac: bool = False, rh56: bool = False) -> None:
+def build(spec, side: str, isaac: bool = False) -> None:
     """Add everything the URDF could not say.
 
     ``isaac`` builds the hand as Isaac Lab simulates it instead (see
     ISAAC_DRIVES): position actuators on all twelve joints, Isaac's armature
     and inertia offset, no passive damping or friction, and no equality
-    couplings. ``rh56`` (with ``isaac``) is the RH56 linkage profile:
-    RH56_DRIVES and the stroke-wide joint ranges, without the inertia offset.
+    couplings.
     """
     import mujoco
 
-    drives = RH56_DRIVES if rh56 else ISAAC_DRIVES
-    if rh56:
-        if not isaac:
-            raise ValueError("the RH56 hand is an Isaac-dynamics variant")
-        for joint_name, (lower, upper) in rh56_joint_ranges().items():
-            joint = spec.joint(joint_name)
-            joint.range = [lower, upper]
+    drives = ISAAC_DRIVES
 
     for joint in spec.joints:
         if joint.type != mujoco.mjtJoint.mjJNT_HINGE:
@@ -460,8 +410,7 @@ def build(spec, side: str, isaac: bool = False, rh56: bool = False) -> None:
         raise SystemExit(f"URDF is missing expected joints: {sorted(missing)}")
 
     if isaac:
-        if not rh56:
-            add_isaac_inertia_offset(spec)
+        add_isaac_inertia_offset(spec)
         # One drive per joint, followers included, in the URDF's joint order.
         for joint in spec.joints:
             if joint.name not in drives:
@@ -518,15 +467,7 @@ def main(argv=None) -> int:
         help="write inspire_hand_<side>_isaac.xml (the hand as Isaac Lab simulates "
         "it, see ISAAC_DRIVES) and inspire_hand_on_flange_isaac.xml instead",
     )
-    parser.add_argument(
-        "--rh56",
-        action="store_true",
-        help="write inspire_hand_<side>_rh56.xml (the RH56 linkage hand of the RH56-trained "
-        "students, see RH56_DRIVES) and inspire_hand_on_flange_rh56.xml instead",
-    )
     args = parser.parse_args(argv)
-    if args.rh56:
-        args.isaac = True
     if args.isaac and args.side != "right":
         raise SystemExit("--isaac: training only has the right hand")
 
@@ -557,10 +498,9 @@ def main(argv=None) -> int:
     finally:
         scratch.unlink(missing_ok=True)
 
-    suffix = "rh56" if args.rh56 else "isaac"
-    variant = f"inspire_hand_{args.side}" + (f"_{suffix}" if args.isaac else "")
+    variant = f"inspire_hand_{args.side}" + ("_isaac" if args.isaac else "")
     spec.modelname = variant
-    build(spec, args.side, isaac=args.isaac, rh56=args.rh56)
+    build(spec, args.side, isaac=args.isaac)
 
     # Compile before writing: a spec that will not compile is not worth saving,
     # and the error is far more legible here than at controller_manager startup.
@@ -595,8 +535,8 @@ def main(argv=None) -> int:
     out.write_text(xml)
     if args.isaac:
         flange = mjcf_dir / FLANGE_WRAPPER
-        isaac_flange = mjcf_dir / FLANGE_WRAPPER.replace(".xml", f"_{suffix}.xml")
-        isaac_flange.write_text(isaac_flange_wrapper(flange.read_text(), out.name, suffix))
+        isaac_flange = mjcf_dir / FLANGE_WRAPPER.replace(".xml", "_isaac.xml")
+        isaac_flange.write_text(isaac_flange_wrapper(flange.read_text(), out.name, "isaac"))
         print(f"{isaac_flange.relative_to(args.package_root)}: {FLANGE_WRAPPER} on {out.name}")
 
     print(

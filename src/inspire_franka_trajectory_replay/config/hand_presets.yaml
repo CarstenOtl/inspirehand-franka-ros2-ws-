@@ -40,9 +40,8 @@ reserved_keys: ["s", "c", "q", "?"]
 # disagree about what "the same grasp" was.
 #
 # 0.0 is the minimum of the *commanded* range, not a mechanical stop. The
-# driver's thumb calibration maps it onto register yaw 0.976 rad, where the real
-# thumb is at the model's 1.246 rad limit -- see
-# inspire_hand_driver.command_overlays. A preset that names this joint with any
+# driver's thumb yaw scale puts it on register 250, the closing end of the
+# fitted yaw range.
 # other value is refused.
 fixed_open_ratio:
   thumb_proximal_yaw_joint: 0.0

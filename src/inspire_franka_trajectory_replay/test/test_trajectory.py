@@ -2,12 +2,11 @@ import numpy as np
 import pytest
 import json
 
+from inspire_hand_driver import kinematics as hand_kinematics
 from inspire_franka_trajectory_replay.trajectory import (
     ALL_CYCLES, ARM_JOINTS, FINGER_FLEXION_INDICES, HAND_JOINTS, load_trajectory, resample,
-    driver_reported_hand, scale_finger_flexion,
+    scale_finger_flexion,
 )
-from inspire_hand_driver import command_overlays
-from inspire_hand_driver import kinematics as hand_kinematics
 
 
 def test_finger_flexion_scale_changes_only_index_and_thumb_mcp_waypoints():
@@ -26,7 +25,7 @@ def test_finger_flexion_scale_changes_only_index_and_thumb_mcp_waypoints():
 def test_finger_flexion_scale_saturates_at_the_joint_range():
     hand = np.zeros((3, 6))
     flexion = list(FINGER_FLEXION_INDICES)
-    hand[0, flexion] = -0.000075
+    hand[0, flexion] = -1.0
     hand[1, flexion] = 0.05
     hand[2, flexion] = 1.4
 
@@ -36,7 +35,11 @@ def test_finger_flexion_scale_saturates_at_the_joint_range():
         hand_kinematics.DOFS[hand_kinematics.dof_index(HAND_JOINTS[i])].upper
         for i in flexion
     ]
-    assert scaled[0, flexion] == pytest.approx([0.0, 0.0])
+    lower = [
+        hand_kinematics.DOFS[hand_kinematics.dof_index(HAND_JOINTS[i])].lower
+        for i in flexion
+    ]
+    assert scaled[0, flexion] == pytest.approx(lower)
     assert scaled[1, flexion] == pytest.approx([0.085, 0.085])
     assert scaled[2, flexion] == pytest.approx(upper)
 
@@ -50,52 +53,6 @@ def test_finger_flexion_scale_rejects_nonpositive_or_nonfinite_values(scale):
 def test_finger_flexion_scale_requires_recorded_hand_positions():
     with pytest.raises(ValueError, match="requires Inspire hand positions"):
         scale_finger_flexion(None, 1.3)
-
-
-YAW_COLUMN = HAND_JOINTS.index("thumb_proximal_yaw_joint")
-FLEXION_COLUMN = HAND_JOINTS.index("thumb_proximal_pitch_joint")
-
-
-def test_driver_reported_hand_moves_only_the_two_thumb_joints():
-    hand = np.arange(24, dtype=float).reshape(4, 6) / 60.0 + 0.3
-    original = hand.copy()
-
-    reported = driver_reported_hand(hand)
-
-    untouched = [i for i in range(6) if i not in (YAW_COLUMN, FLEXION_COLUMN)]
-    assert reported[:, untouched] == pytest.approx(original[:, untouched])
-    assert reported[:, YAW_COLUMN] == pytest.approx(original[:, YAW_COLUMN] * 0.75)
-    assert hand == pytest.approx(original)
-
-
-@pytest.mark.parametrize("column", [YAW_COLUMN, FLEXION_COLUMN])
-@pytest.mark.parametrize("commanded_ratio", [0.0, 0.25, 0.5, 0.75, 1.0])
-def test_driver_reported_hand_agrees_with_what_the_driver_writes(column, commanded_ratio):
-    dof = hand_kinematics.dof_index(HAND_JOINTS[column])
-    hand = np.zeros(6)
-    hand[column] = hand_kinematics.open_ratio_to_rad(dof, commanded_ratio)
-
-    written = command_overlays.apply_open_ratio_overlay(dof, commanded_ratio)
-
-    assert driver_reported_hand(hand)[column] == pytest.approx(
-        hand_kinematics.open_ratio_to_rad(dof, written)
-    )
-
-
-def test_driver_reported_hand_covers_a_one_dimensional_homing_pose():
-    home = np.zeros(6)
-    home[YAW_COLUMN] = 1.185
-    home[FLEXION_COLUMN] = 0.0506
-
-    reported = driver_reported_hand(home)
-
-    assert reported[YAW_COLUMN] == pytest.approx(1.185 * 0.75)
-    assert reported[FLEXION_COLUMN] == pytest.approx(0.1104, abs=1.0e-3)
-
-
-def test_driver_reported_hand_requires_recorded_hand_positions():
-    with pytest.raises(ValueError, match="requires Inspire hand positions"):
-        driver_reported_hand(None)
 
 
 def test_load_and_resample_arm_only(tmp_path):
