@@ -195,7 +195,7 @@ Every angle command path receives the final calibration from
 coordinates; the thumb's registers are not (fitted from camera depth on
 2026-11-09)::
 
-    real yaw     = register yaw + 0.27 rad
+    register yaw = 0.75 * model yaw       (command 0.0 -> 250, 1.0 -> 1000)
     real flexion = 0.73 * register flexion - 0.03 rad
 
 The driver writes the register that puts the thumb at the commanded model
@@ -204,7 +204,7 @@ public ``[0, 1]`` command range before the calibration is applied. The
 ``thumb_abduction_overlay`` parameter switches both thumb joints.
 
 ``~/joint_states`` reports the angle the *registers* imply, not the commanded
-model angle, so it reads ``0.27`` rad under the real yaw. Callers that need to
+model angle, so it differs from the commanded yaw. Callers that need to
 compare feedback against a command should map the command forward with
 :func:`~inspire_hand_driver.command_overlays.apply_open_ratio_overlay`.
 

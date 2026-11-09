@@ -840,6 +840,64 @@ class FingerSweepReleaseDetector:
         return self.pinched and float(index_rad) >= self.index_closed_rad
 
 
+class ThumbGripHold:
+    """Diagnostic: keep the thumb flexion target closed while a pinch is loaded.
+
+    The exp19r01 reduced-randomization student backs its thumb target off about
+    0.4 s into a loaded pinch, driven by its own action history. This holds the
+    target at its peak so a run shows whether the nut turns once the grip lasts.
+    Only the command sent to the hand changes: the policy still sees its own
+    previous action, so the rest of its sequence stays as trained.
+
+    A hold starts when both pads reach ``load_force_n`` and ends when the policy
+    opens the index or after ``max_hold_s``. The next one needs the pads free.
+    """
+
+    def __init__(
+        self,
+        *,
+        load_force_n=5.0,
+        open_force_n=1.0,
+        release_index_target_rad=0.5,
+        max_hold_s=3.0,
+    ):
+        self.load_force_n = float(load_force_n)
+        self.open_force_n = float(open_force_n)
+        self.release_index_target_rad = float(release_index_target_rad)
+        self.max_hold_s = float(max_hold_s)
+        self.reset()
+
+    def reset(self) -> None:
+        self.active = False
+        self.spent = False
+        self.peak_rad = 0.0
+        self.started_s = 0.0
+
+    def apply(self, pinch, fingertip_force_n, now_s) -> np.ndarray:
+        """The ``[yaw, flexion, index]`` target to send this tick."""
+
+        target = np.array(pinch, dtype=float)
+        if fingertip_force_n is None:
+            return target
+        forces = np.asarray(fingertip_force_n, dtype=float)
+        if self.spent and forces.max() < self.open_force_n:
+            self.spent = False
+        if not self.active and not self.spent and forces.min() >= self.load_force_n:
+            self.active = True
+            self.started_s = float(now_s)
+            self.peak_rad = float(target[1])
+        if self.active and (
+            target[2] < self.release_index_target_rad
+            or float(now_s) - self.started_s > self.max_hold_s
+        ):
+            self.active = False
+            self.spent = True
+        if self.active:
+            self.peak_rad = max(self.peak_rad, float(target[1]))
+            target[1] = self.peak_rad
+        return target
+
+
 class GripCycleCoordinator:
     """Physical release/return phase state from measured grasp rotation.
 
@@ -2478,6 +2536,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             flush=True,
         )
         session.reset(previous_filtered_native_action=first_previous_action, seed=args.seed)
+        thumb_hold = ThumbGripHold() if args.hold_thumb_grip else None
         coordinator = GripCycleCoordinator(
             rate_hz=args.rate,
             max_cycles=args.cycles,
@@ -2602,6 +2661,8 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             if fingertip_force_topic:
                 extras["fingertip_force_n"] = sample.fingertip_force_n
                 extras["arm_joint_torque_nm"] = sample.arm_joint_torque_nm
+            if thumb_hold is not None:
+                extras["thumb_hold_active"] = [float(thumb_hold.active)]
             if sample.arm_torque_candidates_nm is not None:
                 for name, value in sample.arm_torque_candidates_nm.items():
                     extras[f"arm_torque_{name}_nm"] = value
@@ -2653,11 +2714,22 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             # at 1 kHz with the grasp frame this tick measured.
             goal_position, goal_quaternion = policy_goal_base(frame, filtered, profile)
             node.publish_policy_goal(goal_position, goal_quaternion, tool_in_flange, home_arm)
-            node.publish_hand_target(
+            pinch_target = (
                 fo.pinch_targets(filtered, profile=profile)
                 if pinch_actions is None
                 else pinch_actions.pinch_targets(filtered)
             )
+            if thumb_hold is not None:
+                was_holding = thumb_hold.active
+                pinch_target = thumb_hold.apply(
+                    pinch_target, sample.fingertip_force_n, tick_started
+                )
+                if thumb_hold.active != was_holding:
+                    print(
+                        f"thumb hold {'on' if thumb_hold.active else 'off'} at step {steps}: "
+                        f"flexion target {pinch_target[1]:.3f} rad"
+                    )
+            node.publish_hand_target(pinch_target)
             if debug_viz is not None:
                 debug_viz.publish(
                     prepared=result.prepared,
@@ -2923,6 +2995,7 @@ __all__ = [
     "HardwareReadiness",
     "MAX_HOME_PRECOMPENSATION_RAD",
     "RgbdFrameSynchronizer",
+    "ThumbGripHold",
     "TrainingFrameAdapter",
     "assess_hardware_readiness",
     "grasp_frame_from_tips",

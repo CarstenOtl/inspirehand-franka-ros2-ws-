@@ -32,6 +32,32 @@ checkpoints/
       nn/best.pt                       DP3 vision-head pretraining checkpoint (provenance only)
 ```
 
+## `m24-dp3-exp19r01-proprio-friction-rollback3-clock-force-nohv-da-s0-20261109-143521-315193-20261109T170730Z-1-001/m24-dp3-exp19r01-.../nn/checkpoint.pt`
+
+The exp19 teacher below, collected with a reduced randomization set. The network
+layout and observations match the student below; only the progress horizon
+differs. Same `mimic_windback45_tilt30` task profile, resolved automatically.
+Not `DEFAULT_CHECKPOINT`.
+
+- randomized: proprioception noise (EE pose, fingertip force, FR3 joint torque),
+  FR3 joint friction (x0.8 to x2.0), hand pad friction, head-camera pose and
+  visual textures;
+- nominal: nut spawn yaw and depth, contact and thread physics, FR3 armature and
+  damping, controller gains and dead zone.
+
+Because it trained against arm friction, `controllers_policy_no_friction_comp.yaml`
+is the matching hardware controller config.
+
+| field | value |
+|---|---|
+| sha256 | `bf3cda5fac37a62baa65661336999db6840f8ef3e7df56ff20aeb0aef42717b9` |
+| size | 106 MB |
+| conditioning | trajectory progress (114.7 s / 1720 steps) and cyclic process phase |
+| training | ForgeUltra b968687 (clean), collection recipe `m24_threading_fr3v2_joint_limit_guard_windback45_tilt30_obsnoise_sequential_collection_proprio_friction.yaml` |
+| training data | 40 `sequential-threading-dual-supervision-20261109-133804-877920` episodes |
+| Isaac closed loop, nominal | 3 episodes x 16 environments, return gate 10 mm / 10 deg: 356 cycles, 31/48 completed 10, 1 transition failure |
+| Isaac closed loop, proprio-friction | same: 269 cycles, 23/48 completed 10, 0 transition failures |
+
 ## `m24-dp3-exp19r01-windback45tilt30-clock-force-nohv-da-s0-20261109-105240-553825-20261109T123227Z-1-001/m24-dp3-exp19r01-.../nn/checkpoint.pt`
 
 exp_17's wound, tilted reset on the old hand of run09 and run10 (official

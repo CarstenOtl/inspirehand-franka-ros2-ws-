@@ -64,7 +64,7 @@ def test_driver_reported_hand_moves_only_the_two_thumb_joints():
 
     untouched = [i for i in range(6) if i not in (YAW_COLUMN, FLEXION_COLUMN)]
     assert reported[:, untouched] == pytest.approx(original[:, untouched])
-    assert reported[:, YAW_COLUMN] == pytest.approx(original[:, YAW_COLUMN] - 0.27)
+    assert reported[:, YAW_COLUMN] == pytest.approx(original[:, YAW_COLUMN] * 0.75)
     assert hand == pytest.approx(original)
 
 
@@ -89,7 +89,7 @@ def test_driver_reported_hand_covers_a_one_dimensional_homing_pose():
 
     reported = driver_reported_hand(home)
 
-    assert reported[YAW_COLUMN] == pytest.approx(0.915)
+    assert reported[YAW_COLUMN] == pytest.approx(1.185 * 0.75)
     assert reported[FLEXION_COLUMN] == pytest.approx(0.1104, abs=1.0e-3)
 
 

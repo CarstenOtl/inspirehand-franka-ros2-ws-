@@ -43,9 +43,15 @@ def test_checkpoints_resolve_to_their_task_profile():
         fo.resolve_task_profile("rh57", nested)
 
 
-def test_exp19_is_the_old_hand_at_the_wound_reset():
-    run = "m24-dp3-exp19r01-windback45tilt30-clock-force-nohv-da-s0-20261109-105240-553825"
-    nested = f"checkpoints/{run}-20261109T123227Z-1-001/{run}/nn/checkpoint.pt"
+@pytest.mark.parametrize(
+    ("run", "export"),
+    (
+        ("m24-dp3-exp19r01-windback45tilt30-clock-force-nohv-da-s0-20261109-105240-553825", "20261109T123227Z"),
+        ("m24-dp3-exp19r01-proprio-friction-rollback3-clock-force-nohv-da-s0-20261109-143521-315193", "20261109T170730Z"),
+    ),
+)
+def test_exp19_is_the_old_hand_at_the_wound_reset(run, export):
+    nested = f"checkpoints/{run}-{export}-1-001/{run}/nn/checkpoint.pt"
     profile = fo.task_profile_for_checkpoint(nested)
     assert profile is fo.MIMIC_WINDBACK45_TILT30_PROFILE
     # The old hand: mimic, its URDF pinch ranges, joint-angle actions about the grasp.

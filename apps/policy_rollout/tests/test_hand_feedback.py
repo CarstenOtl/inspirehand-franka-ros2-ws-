@@ -60,7 +60,7 @@ def test_a_thumb_far_outside_the_overlaid_range_is_still_a_fault():
 
 def test_the_exp19_reset_registers_read_as_the_exp19_reset():
     q = np.zeros(len(HAND_JOINTS))
-    q[HAND_JOINTS.index(co.THUMB_ABDUCTION_JOINT)] = 1.185 - 0.27
+    q[HAND_JOINTS.index(co.THUMB_ABDUCTION_JOINT)] = 1.185 * 0.75
     q[HAND_JOINTS.index(co.THUMB_FLEXION_JOINT)] = (0.0506 + 0.03) / 0.73
     q_policy, _ = physical_hand_state_to_policy(q, np.zeros(len(HAND_JOINTS)))
     assert q_policy[0] == pytest.approx(1.185)
@@ -71,13 +71,13 @@ def test_a_flexion_register_more_open_than_the_model_reads_as_the_models_zero():
     # The hand as it powers up, before the driver has written a calibrated command.
     q_policy, _ = physical_hand_state_to_policy(np.zeros(len(HAND_JOINTS)), np.zeros(len(HAND_JOINTS)))
     assert q_policy[1] == pytest.approx(0.0)
-    assert q_policy[0] == pytest.approx(0.27)
+    assert q_policy[0] == pytest.approx(0.0)
 
 
-def test_only_the_flexion_rate_is_scaled():
+def test_both_thumb_rates_are_scaled_by_their_fits():
     rates = np.zeros(len(HAND_JOINTS))
     rates[HAND_JOINTS.index(co.THUMB_ABDUCTION_JOINT)] = 0.4
     rates[HAND_JOINTS.index(co.THUMB_FLEXION_JOINT)] = 0.2
     _, dq_policy = physical_hand_state_to_policy(np.zeros(len(HAND_JOINTS)), rates)
-    assert dq_policy[0] == pytest.approx(0.4)
+    assert dq_policy[0] == pytest.approx(0.4 / 0.75)
     assert dq_policy[1] == pytest.approx(0.2 * 0.73)

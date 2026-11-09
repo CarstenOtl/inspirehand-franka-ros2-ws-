@@ -16,6 +16,7 @@ from policy_rollout.hardware import (
     GripCycleCoordinator,
     joint_limit_violation,
     RgbdFrameSynchronizer,
+    ThumbGripHold,
     TrainingFrameAdapter,
     assert_policy_camera_frames,
     grasp_frame_from_tips,
@@ -89,7 +90,7 @@ def test_physical_hand_feedback_is_mapped_back_to_policy_coordinates():
         thumb_dof, logical_ratio
     )
     physical_positions[-1] = kin.open_ratio_to_rad(thumb_dof, physical_ratio)
-    physical_velocities[-1] = logical_dq[0]
+    physical_velocities[-1] = logical_dq[0] / command_overlays.model_rate_gain(thumb_dof)
     flexion_dof = kin.dof_index(command_overlays.THUMB_FLEXION_JOINT)
     physical_positions[4] = kin.open_ratio_to_rad(
         flexion_dof,
@@ -508,6 +509,33 @@ def test_finger_sweep_needs_the_pinch_and_the_close_in_one_grasp():
     assert _feed(coordinator, pinch + closed_loaded, reset_q)[-1] == "release_started"
 
 
+def test_thumb_hold_keeps_the_peak_until_the_policy_opens_the_index():
+    hold = ThumbGripHold()
+    loaded = [13.0, 14.0]
+    assert hold.apply([1.246, 0.10, 0.60], [0.1, 0.1], 0.0)[1] == 0.10
+    assert hold.apply([1.246, 0.19, 0.85], loaded, 0.1)[1] == pytest.approx(0.19)
+    assert hold.active
+    assert hold.apply([1.246, 0.05, 0.86], [3.0, 7.0], 0.5)[1] == pytest.approx(0.19)
+    assert hold.apply([1.1, 0.04, 0.24], [3.0, 7.0], 0.9)[1] == pytest.approx(0.04)
+    assert not hold.active
+    # Still loaded while opening: no second hold until the pads are free.
+    assert hold.apply([1.1, 0.04, 0.60], loaded, 1.0)[1] == pytest.approx(0.04)
+    assert not hold.active
+    hold.apply([1.1, 0.04, 0.0], [0.1, 0.1], 1.2)
+    assert hold.apply([1.246, 0.18, 0.85], loaded, 2.0)[1] == pytest.approx(0.18)
+    assert hold.active
+
+
+def test_thumb_hold_gives_up_after_the_time_limit_and_needs_both_pads():
+    hold = ThumbGripHold(max_hold_s=1.0)
+    assert hold.apply([1.246, 0.19, 0.85], [2.0, 14.0], 0.0)[1] == pytest.approx(0.19)
+    assert not hold.active
+    hold.apply([1.246, 0.19, 0.85], [13.0, 14.0], 0.1)
+    assert hold.active
+    assert hold.apply([1.246, 0.05, 0.85], [13.0, 14.0], 1.2)[1] == pytest.approx(0.05)
+    assert not hold.active
+
+
 def test_finger_sweep_fires_when_the_contact_leaves_the_pads():
     """Under 2x arm friction the index pad read 0 N at the end of a 61 deg turn."""
 
@@ -796,11 +824,11 @@ def test_physical_hand_feedback_passes_through_without_the_overlay():
     q, dq = physical_hand_state_to_policy(positions, velocities, thumb_overlay=False)
     np.testing.assert_allclose(q, [1.185, 0.0, 0.2147])
     np.testing.assert_allclose(dq, [0.3, 0.0, 0.0])
-    # With the calibration on, the same logical 1.185 rad is register yaw 0.915.
-    positions[columns["thumb_proximal_yaw_joint"]] = 1.185 - 0.27
+    # With the calibration on, the same logical 1.185 rad is register yaw 0.889.
+    positions[columns["thumb_proximal_yaw_joint"]] = 1.185 * 0.75
     q_on, dq_on = physical_hand_state_to_policy(positions, velocities, thumb_overlay=True)
     assert q_on[0] == pytest.approx(1.185, abs=1e-6)
-    assert dq_on[0] == pytest.approx(0.3)
+    assert dq_on[0] == pytest.approx(0.3 / 0.75)
 
 
 def test_training_hand_tips_do_not_depend_on_the_arm():

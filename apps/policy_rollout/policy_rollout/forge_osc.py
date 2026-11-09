@@ -237,6 +237,10 @@ CHECKPOINT_TASK_PROFILES = {
     "m24-dp3-exp19r01-windback45tilt30-clock-force-nohv-da-s0-20261109-105240-553825": (
         MIMIC_WINDBACK45_TILT30_PROFILE.name
     ),
+    # The same exp19 teacher, collected with the reduced randomization set.
+    "m24-dp3-exp19r01-proprio-friction-rollback3-clock-force-nohv-da-s0-20261109-143521-315193": (
+        MIMIC_WINDBACK45_TILT30_PROFILE.name
+    ),
 }
 
 

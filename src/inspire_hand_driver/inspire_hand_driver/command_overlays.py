@@ -30,34 +30,30 @@ THUMB_ABDUCTION_DOF = kinematics.dof_index(THUMB_ABDUCTION_JOINT)
 THUMB_FLEXION_JOINT = "thumb_proximal_pitch_joint"
 THUMB_FLEXION_DOF = kinematics.dof_index(THUMB_FLEXION_JOINT)
 
-#: The real thumb sits this far past its register's yaw at every stop of the
-#: sweep (+0.26 to +0.31 rad against the reported angle, no visible hysteresis).
-THUMB_ABDUCTION_OFFSET_RAD = 0.27
+#: The register open ratio that a yaw command of 0.0 (fully closed) lands on:
+#: register 250 of 1000. The opening end is unchanged, 1.0 stays register 1000,
+#: and the commands between are scaled linearly onto that range.
+THUMB_ABDUCTION_ZERO_OPEN_RATIO = 0.25
 
-#: Register-to-model fits. Yaw is a pure shift. Flexion comes from the two
-#: sweeps run on the calibrated driver (registers 0.106 to 0.48 rad, yaw held at
-#: the confirmed offset); the model's followers tie the distal links to it.
+#: Register-to-model fits. Yaw is the scale above. Flexion comes from the two
+#: sweeps run on the calibrated driver (registers 0.106 to 0.48 rad); the
+#: model's followers tie the distal links to it.
 THUMB_CALIBRATION: Dict[int, ThumbFit] = {
-    THUMB_ABDUCTION_DOF: ThumbFit(gain=1.0, offset_rad=THUMB_ABDUCTION_OFFSET_RAD),
+    THUMB_ABDUCTION_DOF: ThumbFit(gain=1.0 / (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO), offset_rad=0.0),
     THUMB_FLEXION_DOF: ThumbFit(gain=0.73, offset_rad=-0.03),
 }
 
 #: Names this calibration in a recording's metadata, so an analysis can tell
 #: which mapping turned its logical joints into registers.
-HAND_CALIBRATION_ID = "thumb_camera_fit_20261109"
-
-#: The register open ratio that a command of 0.0 lands on. The real thumb
-#: reaches the model's closed limit there, so the registers below it stay unused.
-_YAW = kinematics.DOFS[THUMB_ABDUCTION_DOF]
-THUMB_ABDUCTION_ZERO_OPEN_RATIO = THUMB_ABDUCTION_OFFSET_RAD / (_YAW.upper - _YAW.lower)
+HAND_CALIBRATION_ID = "thumb_camera_fit_20261109_yaw_cap250"
 
 
 def apply_open_ratio_overlay(index: int, open_ratio: float, enabled: bool = True) -> float:
     """The register open ratio that puts a joint at a commanded model angle.
 
-    The result is limited to the register's range. A yaw command under the
-    offset is not reachable (the thumb's open stop is already past it), so it
-    lands on the open stop, and the feedback reports where the thumb really is.
+    The result is limited to the register's range. Thumb yaw covers registers
+    250 (command 0.0) to 1000 (command 1.0), so the registers below 250 stay
+    unused.
 
     ``enabled=False`` turns the calibration off (the driver's
     ``thumb_abduction_overlay`` parameter): the command passes through
@@ -108,7 +104,6 @@ __all__ = [
     "HAND_CALIBRATION_ID",
     "THUMB_ABDUCTION_DOF",
     "THUMB_ABDUCTION_JOINT",
-    "THUMB_ABDUCTION_OFFSET_RAD",
     "THUMB_ABDUCTION_ZERO_OPEN_RATIO",
     "THUMB_CALIBRATION",
     "THUMB_FLEXION_DOF",

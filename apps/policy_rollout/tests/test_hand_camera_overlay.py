@@ -39,7 +39,7 @@ def test_policy_hand_removes_the_drivers_thumb_overlay():
         "middle_proximal_joint": 1.33,
         "index_proximal_joint": 0.2147,
         "thumb_proximal_pitch_joint": 0.1104,
-        "thumb_proximal_yaw_joint": 0.9151,
+        "thumb_proximal_yaw_joint": 1.185 * 0.75,
     }
     with_overlay = policy_hand_joints(reported, thumb_overlay=True)
     assert with_overlay["thumb_proximal_yaw_joint"] == pytest.approx(1.185, abs=1.0e-3)
@@ -48,4 +48,4 @@ def test_policy_hand_removes_the_drivers_thumb_overlay():
     assert with_overlay["index_intermediate_joint"] > 0.0
 
     without = policy_hand_joints(reported, thumb_overlay=False)
-    assert without["thumb_proximal_yaw_joint"] == pytest.approx(0.9151)
+    assert without["thumb_proximal_yaw_joint"] == pytest.approx(1.185 * 0.75)

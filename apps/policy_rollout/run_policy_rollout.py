@@ -263,6 +263,15 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--hold-thumb-grip",
+        action="store_true",
+        help=(
+            "diagnostic: hold the thumb flexion target at its peak while both pads are "
+            "loaded, until the policy opens the index or 3 s pass, to see whether the "
+            "nut turns once the grip lasts. Mimic-hand students only."
+        ),
+    )
+    parser.add_argument(
         "--release-signal",
         choices=("auto", "nut-twist", "finger-sweep", "grasp-yaw"),
         default="auto",
@@ -485,6 +494,8 @@ def _run_hardware(argv, sim: bool = False) -> int:
 
     profile = fo.resolve_task_profile(args.task_profile, args.checkpoint)
     args.task_profile = profile.name
+    if args.hold_thumb_grip and profile.hand != "mimic":
+        raise ValueError("--hold-thumb-grip applies to mimic-hand students only")
     args.hand_start = resolve_hand_start(args.hand_start, profile, sim)
     if args.home is None:
         args.home = str(POLICY_HOME_CONFIGS[profile.name])
