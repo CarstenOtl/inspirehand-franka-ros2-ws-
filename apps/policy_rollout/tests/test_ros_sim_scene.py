@@ -156,27 +156,53 @@ def test_policy_scene_thread_pair_matches_the_training_plant():
     assert _thread_parameters(rehearsal) == _thread_parameters(training)
 
 
-def test_policy_scene_nut_is_grippable_and_the_bolt_is_only_visual():
+def test_policy_scene_nut_is_grippable_and_the_nut_bolt_pair_is_excluded():
     mujoco = pytest.importorskip("mujoco")
     model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / scene.SCENE_NAME))
 
     nut = model.geom("m24_nut_geom")
     assert nut.contype[0] and nut.conaffinity[0]
     bolt = model.geom("m24_bolt_geom")
-    assert not bolt.contype[0] and not bolt.conaffinity[0], (
-        "the thread coupling holds the nut on the bolt; meshing the hulls fights it"
-    )
+    assert not bolt.contype[0] and not bolt.conaffinity[0]
+    assert model.geom("m24_bolt_collision").contype[0]
+    excluded = {(int(signature) >> 16, int(signature) & 0xFFFF) for signature in model.exclude_signature}
+    pair = sorted((model.body("m24_bolt").id, model.body("m24_nut").id))
+    assert (pair[0], pair[1]) in excluded, "the thread coupling holds the nut; meshing them fights it"
 
-    # MuJoCo takes the element-wise maximum of two geoms' friction, so the pads
-    # and the nut both have to carry training's value for a contact to see it.
-    pads = {
-        round(float(model.geom_friction[g][0]), 9)
-        for g in range(model.ngeom)
-        if model.geom_contype[g]
-        and model.body(model.geom_bodyid[g]).name.startswith(("thumb", "index"))
-    }
-    assert pads == {scene.NUT_FRICTION[0]}, f"finger pad friction is {pads}"
-    assert round(float(nut.friction[0]), 9) == scene.NUT_FRICTION[0]
+    # MuJoCo takes the element-wise maximum of two geoms' friction: 1.25 at the
+    # pads and 0.875 on the rest of the hand are training's averages.
+    def hand_friction(bodies):
+        return {
+            round(float(model.geom_friction[g][0]), 9)
+            for g in range(model.ngeom)
+            if model.geom_contype[g] and model.body(model.geom_bodyid[g]).name in bodies
+        }
+
+    assert hand_friction({"thumb_distal", "index_intermediate"}) == {1.25}
+    assert hand_friction({"thumb_intermediate", "index_proximal", "middle_proximal"}) == {0.875}
+    assert round(float(nut.friction[0]), 9) == scene.NUT_FRICTION[0] == 0.875
+
+
+def test_policy_scene_static_colliders_do_not_touch_the_robot_at_home():
+    mujoco = pytest.importorskip("mujoco")
+    for name in (scene.SCENE_NAME, scene.scene_file_name(fo.MIMIC_WINDBACK45_TILT30_PROFILE)):
+        model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / name))
+        for geom in ("table_top", "m24_bolt_collision", "bolt_holder_plate", "bolt_holder_collar"):
+            assert model.geom(geom).contype[0] and model.geom(geom).conaffinity[0], geom
+        data = mujoco.MjData(model)
+        mujoco.mj_resetDataKeyframe(model, data, model.key(scene.KEYFRAME_NAME).id)
+        mujoco.mj_forward(model, data)
+        assert data.ncon == 0, name
+
+
+def test_policy_scene_bolt_head_sits_in_the_holder_pocket():
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_path(str(scene.SIM_MJCF_DIR / scene.SCENE_NAME))
+    w, _, _, z = model.body_quat[model.body("m24_bolt").id]
+    # fr3_link0 is the training world yawed by pi; the hex repeats every 60 deg
+    # and the pocket's corners are at 45 deg mod 60.
+    yaw = math.degrees(2.0 * math.atan2(z, w)) + 180.0
+    assert yaw % 60.0 == pytest.approx(45.0, abs=1e-4)
 
 
 def test_policy_scene_thread_turns_the_nut_down_the_bolt():
@@ -190,12 +216,17 @@ def test_policy_scene_thread_turns_the_nut_down_the_bolt():
     axial = model.jnt_qposadr[model.joint("nut_axial").id]
     twist = model.jnt_qposadr[model.joint("nut_twist").id]
     twist_dof = model.jnt_dofadr[model.joint("nut_twist").id]
+    coupling = model.equality("thread_coupling").id
+    start_offset, slope = (float(v) for v in model.eq_data[coupling][:2])
+    assert int(model.eq_obj2id[coupling]) == -1, "the coupling must name only the axial joint (one-way)"
 
     def run(twist_torque, seconds=1.0):
         mujoco.mj_resetDataKeyframe(model, data, model.key(scene.KEYFRAME_NAME).id)
         mujoco.mj_forward(model, data)
         start = (data.qpos[axial], data.qpos[twist])
         for _ in range(int(seconds / model.opt.timestep)):
+            # What the thread pair plugin does before every physics step.
+            model.eq_data[coupling][0] = start_offset + slope * data.qpos[twist]
             data.qfrc_applied[:] = 0.0
             data.qfrc_applied[twist_dof] = twist_torque
             mujoco.mj_step(model, data)
@@ -207,19 +238,19 @@ def test_policy_scene_thread_turns_the_nut_down_the_bolt():
     assert data.qpos[axial] == pytest.approx(te.NUT_START_AXIAL_OFFSET_M)
     assert data.qpos[twist] == pytest.approx(0.0)
 
-    # Unloaded it stays put: the hinge's Coulomb term plus the coupling make the
-    # pair self-locking against its own inertia.
+    # Unloaded it stays put: the hinge's Coulomb term holds it against its own
+    # inertia.
     rise, turn = run(0.0)
     assert abs(turn) < 1e-6 and abs(rise) < 1e-6
 
     # A tightening torque is negative about the hinge's world-up z axis, and it
     # has to drive the nut DOWN by pitch per turn.
-    rise, turn = run(-0.02)
+    # Short: with no armature, a second of this reaches the end of the thread.
+    rise, turn = run(-0.02, seconds=0.2)
     assert turn < -math.radians(90.0), "a 0.02 N m torque should turn the nut"
     assert rise < 0.0, "tightening must lower the nut onto the bolt"
-    assert rise / turn == pytest.approx(
-        fo.M24_THREAD_PITCH / (2.0 * math.pi), rel=0.01
-    )
+    # To the coupling's lag at this free spin of ~85 rad/s (0.008 s of 40 mm/s).
+    assert rise == pytest.approx(turn * fo.M24_THREAD_PITCH / (2.0 * math.pi), abs=5e-4)
     # ForgeUltra's sign convention: tightening is positive progress.
     assert te.THREADING_DIRECTION_SIGN * turn > 0.0
 
@@ -244,24 +275,25 @@ def test_policy_scene_thread_hold_clamps_the_nut():
     coupling = model.equality("thread_coupling").id
     hold = model.equality("thread_hold").id
     slope = float(model.eq_data[coupling][1])
+    start_offset = float(model.eq_data[coupling][0])
 
     def run(engage_hold):
         mujoco.mj_resetDataKeyframe(model, data, model.key(scene.KEYFRAME_NAME).id)
         mujoco.mj_forward(model, data)
         if engage_hold:
             model.eq_data[coupling][0] = data.qpos[axial]
-            model.eq_data[coupling][1] = 0.0
             model.eq_data[hold][0] = data.qpos[twist]
             data.eq_active[hold] = 1
         start = (data.qpos[axial], data.qpos[twist])
-        for _ in range(int(1.0 / model.opt.timestep)):
+        for _ in range(int(0.2 / model.opt.timestep)):
+            if not engage_hold:
+                model.eq_data[coupling][0] = start_offset + slope * data.qpos[twist]
             data.qfrc_applied[:] = 0.0
             data.qfrc_applied[twist_dof] = -0.05
             mujoco.mj_step(model, data)
         data.qfrc_applied[:] = 0.0
         moved = (data.qpos[axial] - start[0], data.qpos[twist] - start[1])
-        model.eq_data[coupling][0] = scene.te.NUT_START_AXIAL_OFFSET_M
-        model.eq_data[coupling][1] = slope
+        model.eq_data[coupling][0] = start_offset
         data.eq_active[hold] = 0
         return moved
 

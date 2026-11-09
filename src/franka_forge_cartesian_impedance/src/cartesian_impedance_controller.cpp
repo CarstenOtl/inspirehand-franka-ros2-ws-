@@ -31,6 +31,11 @@ namespace franka_forge_cartesian_impedance {
 
 namespace {
 
+// The yaw seams a task may set: FORGE's 235 degrees, or one moved with a wound reset pose.
+bool valid_yaw_wrap_upper_deg(double degrees) {
+  return std::isfinite(degrees) && degrees >= 180.0 && degrees <= 360.0;
+}
+
 // FR3 joint position limits, franka_description/robots/fr3/joint_limits.yaml.
 constexpr std::array<double, 7> kPositionLower{-2.9007, -1.8361, -2.9007, -3.0770,
                                                -2.8763, 0.4398,  -3.0508};
@@ -765,6 +770,8 @@ void CartesianImpedanceController::publish_status() {
   add("policy_clip_position_m", std::to_string(policy_clip_position_m_));
   add("policy_clip_orientation_rad", std::to_string(policy_clip_orientation_rad_));
   add("policy_clip_frame_yaw", std::to_string(policy_clip_frame_yaw_));
+  add("policy_yaw_wrap_upper_deg",
+      std::to_string(policy_yaw_wrap_upper_rad_.load(std::memory_order_relaxed) * 180.0 / M_PI));
   add("policy_goal_active", policy_goal_active_.load(std::memory_order_relaxed) ? "true" : "false");
   {
     char buffer[200];
@@ -1037,7 +1044,8 @@ controller_interface::return_type CartesianImpedanceController::update(
         // clip as it moves instead of arriving at once and being held for the policy tick.
         const ForgeClippedTarget clipped = forge_clip_target(
             rt_goal_position_, rt_goal_orientation_, position, orientation, policy_clip_frame_,
-            policy_clip_position_m_, policy_clip_orientation_rad_);
+            policy_clip_position_m_, policy_clip_orientation_rad_,
+            policy_yaw_wrap_upper_rad_.load(std::memory_order_relaxed));
         position_target_ = clipped.position;
         orientation_target_ = clipped.orientation;
         rt_position_clipped_ = clipped.position_clipped;
@@ -1293,6 +1301,7 @@ CartesianImpedanceController::CallbackReturn CartesianImpedanceController::on_in
     auto_declare<double>("policy_clip_position_m", 0.0);
     auto_declare<double>("policy_clip_orientation_rad", 0.0);
     auto_declare<double>("policy_clip_frame_yaw", 0.0);
+    auto_declare<double>("policy_yaw_wrap_upper_deg", 235.0);
     auto_declare<double>("torque_rate_limit", 0.0);
     auto_declare<double>("goto_max_velocity", 0.10);
     auto_declare<double>("goto_max_angular_velocity", 0.50);
@@ -1426,6 +1435,14 @@ bool CartesianImpedanceController::assign_parameters() {
   policy_clip_position_m_ = node->get_parameter("policy_clip_position_m").as_double();
   policy_clip_orientation_rad_ = node->get_parameter("policy_clip_orientation_rad").as_double();
   policy_clip_frame_yaw_ = node->get_parameter("policy_clip_frame_yaw").as_double();
+  {
+    const double seam_deg = node->get_parameter("policy_yaw_wrap_upper_deg").as_double();
+    if (!valid_yaw_wrap_upper_deg(seam_deg)) {
+      RCLCPP_FATAL(node->get_logger(), "policy_yaw_wrap_upper_deg must be in [180, 360]");
+      return false;
+    }
+    policy_yaw_wrap_upper_rad_.store(seam_deg * M_PI / 180.0, std::memory_order_relaxed);
+  }
   {
     const auto finite_nonnegative = [](double value) {
       return std::isfinite(value) && value >= 0.0;
@@ -1591,6 +1608,24 @@ CartesianImpedanceController::gain_parameters_callback(
   bool changed = false;
   for (const auto& parameter : parameters) {
     const auto& name = parameter.get_name();
+    if (name == "policy_yaw_wrap_upper_deg") {
+      // The seam belongs to the student about to run; moving it under a running policy would
+      // jump the clip's yaw by 2 pi.
+      if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
+          !valid_yaw_wrap_upper_deg(parameter.as_double())) {
+        result.successful = false;
+        result.reason = "policy_yaw_wrap_upper_deg must be a double in [180, 360]";
+        return result;
+      }
+      if (policy_goal_active_.load(std::memory_order_relaxed)) {
+        result.successful = false;
+        result.reason = "policy_yaw_wrap_upper_deg cannot change while a policy goal is active";
+        return result;
+      }
+      policy_yaw_wrap_upper_rad_.store(parameter.as_double() * M_PI / 180.0,
+                                       std::memory_order_relaxed);
+      continue;
+    }
     if (name != "translational_stiffness" && name != "rotational_stiffness" &&
         name != "nullspace_stiffness" && name != "stiffness_scale" && name != "target_filter") {
       continue;

@@ -4,9 +4,7 @@ import json
 
 from inspire_franka_trajectory_replay.trajectory import (
     ALL_CYCLES, ARM_JOINTS, FINGER_FLEXION_INDICES, HAND_JOINTS, load_trajectory, resample,
-    THUMB_ABDUCTION_DOF, THUMB_ABDUCTION_INDEX,
-    THUMB_ABDUCTION_ZERO_OPEN_RATIO, scale_thumb_abduction,
-    scale_finger_flexion,
+    driver_reported_hand, scale_finger_flexion,
 )
 from inspire_hand_driver import command_overlays
 from inspire_hand_driver import kinematics as hand_kinematics
@@ -54,97 +52,50 @@ def test_finger_flexion_scale_requires_recorded_hand_positions():
         scale_finger_flexion(None, 1.3)
 
 
-def test_thumb_abduction_overlay_rescales_only_thumb_yaw_onto_the_usable_travel():
-    hand = np.arange(24, dtype=float).reshape(4, 6) / 20.0
+YAW_COLUMN = HAND_JOINTS.index("thumb_proximal_yaw_joint")
+FLEXION_COLUMN = HAND_JOINTS.index("thumb_proximal_pitch_joint")
+
+
+def test_driver_reported_hand_moves_only_the_two_thumb_joints():
+    hand = np.arange(24, dtype=float).reshape(4, 6) / 60.0 + 0.3
     original = hand.copy()
-    open_pose_radians = hand_kinematics.DOFS[THUMB_ABDUCTION_DOF].lower
 
-    scaled = scale_thumb_abduction(hand)
+    reported = driver_reported_hand(hand)
 
-    untouched = [index for index in range(6) if index != THUMB_ABDUCTION_INDEX]
-    assert scaled[:, untouched] == pytest.approx(original[:, untouched])
-    assert scaled[:, THUMB_ABDUCTION_INDEX] == pytest.approx(
-        open_pose_radians
-        + (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO)
-        * (original[:, THUMB_ABDUCTION_INDEX] - open_pose_radians)
-    )
-    assert all(
-        hand_kinematics.rad_to_open_ratio(THUMB_ABDUCTION_DOF, radians)
-        >= THUMB_ABDUCTION_ZERO_OPEN_RATIO
-        for radians in scaled[:, THUMB_ABDUCTION_INDEX]
-    )
+    untouched = [i for i in range(6) if i not in (YAW_COLUMN, FLEXION_COLUMN)]
+    assert reported[:, untouched] == pytest.approx(original[:, untouched])
+    assert reported[:, YAW_COLUMN] == pytest.approx(original[:, YAW_COLUMN] - 0.27)
     assert hand == pytest.approx(original)
 
 
-def test_thumb_abduction_overlay_maps_the_command_range_onto_the_driver_range():
-    """The radian contraction must agree with the driver's open-ratio rescale."""
-    for commanded_ratio in (0.0, 0.25, 0.5, 0.75, 1.0):
-        hand = np.zeros(6)
-        hand[THUMB_ABDUCTION_INDEX] = hand_kinematics.open_ratio_to_rad(
-            THUMB_ABDUCTION_DOF, commanded_ratio
-        )
+@pytest.mark.parametrize("column", [YAW_COLUMN, FLEXION_COLUMN])
+@pytest.mark.parametrize("commanded_ratio", [0.0, 0.25, 0.5, 0.75, 1.0])
+def test_driver_reported_hand_agrees_with_what_the_driver_writes(column, commanded_ratio):
+    dof = hand_kinematics.dof_index(HAND_JOINTS[column])
+    hand = np.zeros(6)
+    hand[column] = hand_kinematics.open_ratio_to_rad(dof, commanded_ratio)
 
-        scaled = scale_thumb_abduction(hand)
+    written = command_overlays.apply_open_ratio_overlay(dof, commanded_ratio)
 
-        expected_ratio = command_overlays.apply_open_ratio_overlay(
-            THUMB_ABDUCTION_DOF, commanded_ratio
-        )
-        assert scaled[THUMB_ABDUCTION_INDEX] == pytest.approx(
-            hand_kinematics.open_ratio_to_rad(THUMB_ABDUCTION_DOF, expected_ratio)
-        )
-
-
-def test_thumb_abduction_overlay_is_monotonic_and_loses_no_distinct_commands():
-    """A floor collapsed the bottom of the range; the rescale must not."""
-    commanded = np.linspace(0.0, 1.0, 9)
-    hand = np.zeros((commanded.size, 6))
-    hand[:, THUMB_ABDUCTION_INDEX] = [
-        hand_kinematics.open_ratio_to_rad(THUMB_ABDUCTION_DOF, ratio)
-        for ratio in commanded
-    ]
-
-    yaw = scale_thumb_abduction(hand)[:, THUMB_ABDUCTION_INDEX]
-
-    assert np.all(np.diff(yaw) < 0.0)
-    assert np.unique(yaw).size == commanded.size
-
-
-def test_thumb_abduction_overlay_preserves_invalid_negative_radians_for_validation():
-    hand = np.zeros((1, 6))
-    hand[0, THUMB_ABDUCTION_INDEX] = -0.1
-
-    scaled = scale_thumb_abduction(hand)[0, THUMB_ABDUCTION_INDEX]
-
-    # Contracted, not clipped: _validate_hand must still see it as out of range.
-    assert scaled < hand_kinematics.DOFS[THUMB_ABDUCTION_DOF].lower
-    assert scaled == pytest.approx(-0.1 * (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO))
-
-
-def test_thumb_abduction_overlay_also_rescales_a_one_dimensional_homing_pose():
-    home = np.arange(6, dtype=float) / 10.0
-    home[THUMB_ABDUCTION_INDEX] = 1.2
-
-    scaled = scale_thumb_abduction(home)
-
-    open_pose_radians = hand_kinematics.DOFS[THUMB_ABDUCTION_DOF].lower
-    expected = open_pose_radians + (1.0 - THUMB_ABDUCTION_ZERO_OPEN_RATIO) * (
-        1.2 - open_pose_radians
-    )
-    assert scaled[THUMB_ABDUCTION_INDEX] == pytest.approx(expected)
-    assert np.delete(scaled, THUMB_ABDUCTION_INDEX) == pytest.approx(
-        np.delete(home, THUMB_ABDUCTION_INDEX)
+    assert driver_reported_hand(hand)[column] == pytest.approx(
+        hand_kinematics.open_ratio_to_rad(dof, written)
     )
 
 
-@pytest.mark.parametrize("zero", [-0.1, 1.1, np.nan, np.inf])
-def test_thumb_abduction_overlay_rejects_invalid_zero_open_ratio(zero):
-    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
-        scale_thumb_abduction(np.zeros((2, 6)), zero)
+def test_driver_reported_hand_covers_a_one_dimensional_homing_pose():
+    home = np.zeros(6)
+    home[YAW_COLUMN] = 1.185
+    home[FLEXION_COLUMN] = 0.0506
+
+    reported = driver_reported_hand(home)
+
+    assert reported[YAW_COLUMN] == pytest.approx(0.915)
+    assert reported[FLEXION_COLUMN] == pytest.approx(0.1104, abs=1.0e-3)
 
 
-def test_thumb_abduction_overlay_requires_recorded_hand_positions():
+def test_driver_reported_hand_requires_recorded_hand_positions():
     with pytest.raises(ValueError, match="requires Inspire hand positions"):
-        scale_thumb_abduction(None)
+        driver_reported_hand(None)
 
 
 def test_load_and_resample_arm_only(tmp_path):

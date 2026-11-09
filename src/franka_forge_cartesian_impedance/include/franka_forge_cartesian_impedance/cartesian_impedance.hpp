@@ -323,10 +323,14 @@ inline Eigen::Quaterniond isaac_quat_from_euler_xyz(double roll, double pitch, d
                             cy * cr * sp + sy * sr * cp, sy * cr * cp - cy * sr * sp);
 }
 
-/// forge_tg2_utils.wrap_yaw: map [0, 2 pi) onto (-125, 235] degrees so the FR3's joint-7 limit
-/// does not split the yaw range the policy works in.
-inline double forge_wrap_yaw(double yaw) {
-  return yaw > 235.0 * M_PI / 180.0 ? yaw - 2.0 * M_PI : yaw;
+/// FORGE's yaw seam, 235 degrees.
+constexpr double kForgeYawWrapUpperRad = 235.0 * M_PI / 180.0;
+
+/// forge_tg2_utils.wrap_yaw: map [0, 2 pi) onto (upper - 2 pi, upper] so the FR3's joint-7 limit
+/// does not split the yaw range the policy works in. A task whose reset pose is wound about the
+/// bolt moves the seam with the hand (ForgeUltra `yaw_wrap_upper_deg`).
+inline double forge_wrap_yaw(double yaw, double upper_rad = kForgeYawWrapUpperRad) {
+  return yaw > upper_rad ? yaw - 2.0 * M_PI : yaw;
 }
 
 struct ForgeClippedTarget {
@@ -348,7 +352,8 @@ inline ForgeClippedTarget forge_clip_target(const Eigen::Vector3d& goal_position
                                             const Eigen::Quaterniond& measured_orientation,
                                             const Eigen::Quaterniond& clip_frame,
                                             double position_threshold,
-                                            double rotation_threshold) {
+                                            double rotation_threshold,
+                                            double yaw_wrap_upper_rad = kForgeYawWrapUpperRad) {
   ForgeClippedTarget out;
   const Eigen::Quaterniond clip_frame_inverse = clip_frame.conjugate();
 
@@ -367,8 +372,8 @@ inline ForgeClippedTarget forge_clip_target(const Eigen::Vector3d& goal_position
   double curr_roll = current.x(), curr_pitch = current.y(), curr_yaw = current.z();
   double desired_roll = desired.x(), desired_pitch = desired.y(), desired_yaw = desired.z();
 
-  curr_yaw = forge_wrap_yaw(curr_yaw);
-  desired_yaw = forge_wrap_yaw(desired_yaw);
+  curr_yaw = forge_wrap_yaw(curr_yaw, yaw_wrap_upper_rad);
+  desired_yaw = forge_wrap_yaw(desired_yaw, yaw_wrap_upper_rad);
   const double delta_yaw = desired_yaw - curr_yaw;
   const double yaw = curr_yaw + std::clamp(delta_yaw, -rotation_threshold, rotation_threshold);
 

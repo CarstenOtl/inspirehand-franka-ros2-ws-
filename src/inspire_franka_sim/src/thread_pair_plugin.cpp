@@ -127,6 +127,10 @@ void ThreadPairPlugin::pre_step(mjData * data)
     }
     hold_engaged_ = wanted;
   }
+
+  if (!hold_engaged_) {
+    apply_one_way_coupling(model_, data);
+  }
 }
 
 void ThreadPairPlugin::on_reset(mjData * data)
@@ -170,29 +174,33 @@ void ThreadPairPlugin::engage_hold(const mjModel * model, mjData * data)
   // Freeze the coupling at the axial position the nut has reached, then pin the
   // twist there too. Both are consistent with each other by construction, so
   // the solver starts the next step with no constraint violation to resolve.
-  mjtNum * coupling = equality_data(model, coupling_);
-  coupling[0] = data->qpos[axial_qpos_];
-  coupling[1] = 0.0;
+  equality_data(model, coupling_)[0] = data->qpos[axial_qpos_];
   equality_data(model, hold_)[0] = data->qpos[twist_qpos_];
   data->eq_active[hold_] = 1;
 }
 
+void ThreadPairPlugin::apply_one_way_coupling(const mjModel * model, const mjData * data)
+{
+  // The axial target follows the measured twist, as Isaac's prismatic drive
+  // does (`_update_solver_thread_state`). The equality names only the axial
+  // joint, so an axial force cannot produce a twist torque.
+  equality_data(model, coupling_)[0] = start_offset_ + coupling_slope_ * data->qpos[twist_qpos_];
+}
+
 void ThreadPairPlugin::release_hold(const mjModel * model, mjData * data)
 {
-  mjtNum * coupling = equality_data(model, coupling_);
-  coupling[0] = start_offset_;
-  coupling[1] = coupling_slope_;
+  apply_one_way_coupling(model, data);
   data->eq_active[hold_] = 0;
 }
 
 void ThreadPairPlugin::reset_thread(const mjModel * model, mjData * data)
 {
-  release_hold(model, data);
   hold_engaged_ = false;
   data->qpos[axial_qpos_] = start_offset_;
   data->qpos[twist_qpos_] = 0.0;
   data->qvel[axial_dof_] = 0.0;
   data->qvel[twist_dof_] = 0.0;
+  release_hold(model, data);
 }
 
 void ThreadPairPlugin::cleanup()

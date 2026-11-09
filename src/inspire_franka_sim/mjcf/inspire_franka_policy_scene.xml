@@ -53,20 +53,28 @@
 
     <body name="table" pos="0.865 1.05931948e-16 0.0065">
       <geom name="table_top" type="box" pos="0 0 -0.015" size="0.4 0.6 0.015"
-        material="table_top" contype="0" conaffinity="0"/>
+        material="table_top" friction="0.75 0.005 0.0001"/>
     </body>
-    <!-- Visual only, as in the training asset: the thread coupling, not a
-         contact, is what holds the nut on the bolt. -->
-    <body name="m24_bolt" pos="0.59 7.22541611e-17 0.05" quat="6.123234e-17 0 0 1">
+    <!-- The thread coupling, not a contact, holds the nut on the bolt, so the
+         nut and bolt do not collide (see the contact section). The shank
+         collides with the hand; the head is inside the holder. -->
+    <body name="m24_bolt" pos="0.59 7.22541611e-17 0.05" quat="0.79335334 0 0 -0.608761429">
       <geom name="m24_bolt_geom" type="mesh" mesh="forge_m24_bolt" material="forge_bolt"
         contype="0" conaffinity="0"/>
+      <geom name="m24_bolt_collision" type="cylinder" group="3" pos="0 0 0.03482"
+        size="0.0117 0.0175" friction="0.75 0.005 0.0001"/>
     </body>
     <!-- The hardware's printed M24 bolt holder (Bolt-Holder-M24-v2lprt.STEP),
          its origin on the pocket floor the bolt head sits on, square to the
-         table. Visual only, like the table and the bolt. -->
+         table. The base plate and the collar collide; the collar's pocket is
+         filled by the bolt head. -->
     <body name="bolt_holder" pos="0.59 7.22541611e-17 0.05">
       <geom name="bolt_holder_geom" type="mesh" mesh="m24_bolt_holder" rgba="0.62 0.62 0.64 1"
         contype="0" conaffinity="0"/>
+      <geom name="bolt_holder_plate" type="box" group="3" pos="0 0 -0.041"
+        size="0.04 0.04 0.0025" friction="0.75 0.005 0.0001"/>
+      <geom name="bolt_holder_collar" type="cylinder" group="3" pos="0 0 -0.011"
+        size="0.025 0.0275" friction="0.75 0.005 0.0001"/>
     </body>
     <body name="nut_carrier" pos="0.59 7.22541611e-17 0.10232">
       <inertial pos="0 0 0" mass="0.001" diaginertia="1e-06 1e-06 1e-06"/>
@@ -74,17 +82,21 @@
         armature="5"/>
       <body name="m24_nut" quat="0.965925807 0 0 -0.258819115">
         <joint name="nut_twist" type="hinge" axis="0 0 1"
-          armature="0.001"
+          armature="0"
           damping="0.0002"
           frictionloss="0.002"/>
         <geom name="m24_nut_geom" type="mesh" mesh="forge_m24_nut" material="forge_nut"
-          mass="0.05" friction="0.75 0.005 0.0001"/>
+          mass="0.05" friction="0.875 0.005 0.0001"/>
       </body>
     </body>
   </worldbody>
 
+  <contact>
+    <exclude body1="m24_bolt" body2="m24_nut"/>
+  </contact>
+
   <equality>
-    <joint name="thread_coupling" joint1="nut_axial" joint2="nut_twist"
+    <joint name="thread_coupling" joint1="nut_axial"
       polycoef="0.00766 0.000477464829 0 0 0" solref="0.004 1" solimp="0.99 0.999 0.0005 0.5 2"/>
     <joint name="thread_hold" joint1="nut_twist" active="false"
       polycoef="0 1 0 0 0" solref="0.004 1" solimp="0.99 0.999 0.0005 0.5 2"/>

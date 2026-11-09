@@ -46,10 +46,7 @@ from .trajectory import (
     ARM_JOINTS,
     FINGER_FLEXION_JOINTS,
     HAND_JOINTS,
-    THUMB_ABDUCTION_DOF,
-    THUMB_ABDUCTION_JOINT,
-    THUMB_ABDUCTION_ZERO_OPEN_RATIO,
-    scale_thumb_abduction,
+    driver_reported_hand,
     load_trajectory,
     scale_finger_flexion,
 )
@@ -405,7 +402,7 @@ class HandReplayMixin:
                     [positions[name] for name in HAND_JOINTS], dtype=float
                 )
 
-    def command_hand(self, positions):
+    def command_hand(self, positions, indices=None):
         """Publish one hand target, converting radians to the driver's ratios.
 
         Everything above this line -- the Forge trajectories, the homing YAMLs,
@@ -414,13 +411,17 @@ class HandReplayMixin:
         URDF defines the hand in radians. The driver commands in open ratios,
         running the opposite way (1.0 is open, 0.0 rad is open). This method is
         the single place the two conventions meet.
+
+        ``indices`` picks the columns of ``positions`` to send; the driver
+        holds its current target on every joint left out.
         """
+        chosen = range(len(positions)) if indices is None else indices
         message = JointState()
         message.header.stamp = self.get_clock().now().to_msg()
-        message.name = list(HAND_JOINTS)
+        message.name = [HAND_JOINTS[channel] for channel in chosen]
         message.position = [
-            kin.rad_to_open_ratio(HAND_DOF[channel], float(value))
-            for channel, value in enumerate(positions)
+            kin.rad_to_open_ratio(HAND_DOF[channel], float(positions[channel]))
+            for channel in chosen
         ]
         self._hand_publisher.publish(message)
 
@@ -442,20 +443,21 @@ class HandReplayMixin:
 
         self.wait_until(linked, timeout, "the Inspire hand driver on the ROS graph")
 
-    def wait_for_hand(self, target, timeout, tolerance):
+    def wait_for_hand(self, target, timeout, tolerance, indices=None):
+        """Command ``target`` until feedback reaches it, on ``indices`` only if given."""
         target = np.asarray(target, dtype=float)
-        # Publish the original target. Only the driver rescales thumb
-        # abduction onto its calibrated travel; feedback is compared with that
-        # effective physical target so homing does not wait for an intentionally
-        # unreachable pre-overlay position.
+        chosen = list(range(len(target))) if indices is None else list(indices)
+        # Publish the original target. Only the driver applies the thumb
+        # calibration; feedback reports the registers, so it is compared with
+        # the register angles that calibration writes.
         effective_target = (
-            scale_thumb_abduction(target) if self.thumb_abduction_overlay else target
+            driver_reported_hand(target) if self.thumb_abduction_overlay else target
         )
 
         def arrived():
             with self._hand_lock:
                 return self._hand_position is not None and np.max(
-                    np.abs(self._hand_position - effective_target)
+                    np.abs(self._hand_position - effective_target)[chosen]
                 ) <= tolerance
 
         # The driver holds its last target, so repeating it costs nothing and
@@ -464,7 +466,7 @@ class HandReplayMixin:
             arrived,
             timeout,
             "the Inspire hand to reach its home pose",
-            progress=lambda: self.command_hand(target),
+            progress=lambda: self.command_hand(target, indices),
         )
 
 
@@ -1419,14 +1421,9 @@ def main(argv=None):
             f"for {joints}; homing pose unchanged"
         )
     if not args.no_hand:
-        thumb_abduction_zero_rad = kin.open_ratio_to_rad(
-            THUMB_ABDUCTION_DOF, THUMB_ABDUCTION_ZERO_OPEN_RATIO
-        )
         print(
-            "driver thumb abduction overlay: raw replay commands preserved; "
-            f"{THUMB_ABDUCTION_JOINT} rescaled onto open ratio "
-            f"[{THUMB_ABDUCTION_ZERO_OPEN_RATIO:g}, 1] "
-            f"(physical yaw [0, {thumb_abduction_zero_rad:g}] rad)"
+            "driver thumb calibration: raw replay commands preserved; "
+            "the driver applies the thumb yaw and flexion fit when writing registers"
         )
     print(
         f"coordinated source: {len(trajectory.time)} samples, "

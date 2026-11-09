@@ -32,6 +32,62 @@ checkpoints/
       nn/best.pt                       DP3 vision-head pretraining checkpoint (provenance only)
 ```
 
+## `m24-dp3-exp19r01-windback45tilt30-clock-force-nohv-da-s0-20261109-105240-553825-20261109T123227Z-1-001/m24-dp3-exp19r01-.../nn/checkpoint.pt`
+
+exp_17's wound, tilted reset on the old hand of run09 and run10 (official
+Inspire hand, linear map, mimic followers), still in the export zip's nested
+folder. Not `DEFAULT_CHECKPOINT`. The runner resolves it to the
+`mimic_windback45_tilt30` task profile (`forge_osc.CHECKPOINT_TASK_PROFILES`).
+In ros-sim, launch `sim_policy.launch.py task_profile:=mimic_windback45_tilt30`,
+keeping the default `hand_model:=mimic`; the MuJoCo-only loop refuses it.
+
+- reset pose wound 45 deg about the bolt and tilted 30 deg wrist-up
+  (`config/policy_home_windback45_tilt30.yaml`), nut spawn yaw 75 deg;
+- orientation-action frame `ee_base_orn_euler` yaw +45 deg, yaw seam 280 deg;
+- pinch actions are joint angles about the grasp over the URDF's ranges, as for
+  run09. The entry pinch is the grasp posture, inferred from the fast reset and
+  not measured against a reference episode.
+
+| field | value |
+|---|---|
+| sha256 | `9d8249daa1bb4eae738d46b1edb1ecdce01075f692ae2757f1beb820b4bd06e5` |
+| size | 106 MB |
+| proprio, control, vision | as run09 below |
+| conditioning | trajectory progress (118.77 s / 1782 steps) and cyclic process phase |
+| training | ForgeUltra `forgeUltra_force_obs` 6c9b02a (dirty), task `Isaac-Forge-Franka-Threading-V2-M24-FR3v2-v0`, collection recipe `m24_threading_fr3v2_joint_limit_guard_windback45_tilt30_obsnoise_sequential_collection_dr.yaml` (untracked there) |
+| training data | 36 `sequential-threading-dual-supervision-20261109-093524-438290` episodes |
+| Isaac closed loop | 3 episodes x 16 environments, nominal, return gate 10 mm / 10 deg: 117 cycles, 3/48 completed 10, 1 transition failure |
+
+## `m24-dp3-exp17r01-windback45tilt30-rollback3-noclock-force-nohv-da-s0-20261106-132547-951759-20261106T141800Z-1-001/m24-dp3-exp17r01-.../nn/checkpoint.pt`
+
+The first student on the RH56 linkage hand (exp_17), still in the export
+zip's nested folder. Not `DEFAULT_CHECKPOINT`. The linkage map and joint table
+are vendored in `inspire_hand_driver.rh56_linkage`. ros-sim has the RH56 hand
+(`sim_policy.launch.py hand_model:=rh56`: register interface, rod-speed slew,
+the rod force stop, linkage followers); the MuJoCo-only loop does not. Its `flow_config.json` is run09's (35-D,
+`hand_observation: joint`), but the task around it is not, so the runner
+resolves it to the `rh56_windback45_tilt30` task profile
+(`forge_osc.CHECKPOINT_TASK_PROFILES`):
+
+- reset pose wound 45 deg about the bolt and tilted 30 deg wrist-up
+  (`config/policy_home_rh56_windback45_tilt30.yaml`), nut spawn yaw 75 deg;
+- orientation-action frame `ee_base_orn_euler` yaw +45 deg, yaw seam 280 deg
+  (the controller's `policy_yaw_wrap_upper_deg`, set by the runner);
+- pinch actions are RH56 registers about the grasp register over the full
+  linkage strokes; the hand observation is the leader angles read back
+  through the same map, read from the hand's register readout
+  (`/inspire_hand/state`). The driver's thumb-yaw overlay must be off.
+
+| field | value |
+|---|---|
+| sha256 | `fc7838f749b3de5432f5aeed97fc1176b373ce29431d695ccdb2d510f7cf54a5` |
+| size | 105 MB |
+| epoch | 100 (EMA decay 0.999), final flow MSE 0.0117 |
+| proprio, control, vision | as run09 below |
+| training | ForgeUltra `forgeUltra_force_obs` 6c9b02a (dirty, `origin/fr3-joint-limit-guard`), task `Isaac-Forge-Franka-Threading-V2-M24-FR3v2-RH56-v0`, collection recipe `m24_threading_fr3v2_rh56_joint_limit_guard_windback45_tilt30_sequential_collection_dr.yaml` (untracked there) |
+| training data | 40 `sequential-threading-dual-supervision-20261106-100415-346723` episodes |
+| Isaac closed loop | 3 episodes x 16 environments, nominal: 27 cycles, 0/48 completed 10 (max 7 per env), 17 transition failures |
+
 ## `m24-dp3-run09fr3v2-nominal-cycles-noclock-force-nohv-da-s0-20261102-173148-415770/nn/checkpoint.pt`
 
 The deployed student: the recipe of the one below, trained in Isaac on the

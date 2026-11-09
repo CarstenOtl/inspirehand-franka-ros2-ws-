@@ -89,9 +89,15 @@ def test_physical_hand_feedback_is_mapped_back_to_policy_coordinates():
         thumb_dof, logical_ratio
     )
     physical_positions[-1] = kin.open_ratio_to_rad(thumb_dof, physical_ratio)
-    physical_velocities[-1] = (
-        1.0 - command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO
-    ) * logical_dq[0]
+    physical_velocities[-1] = logical_dq[0]
+    flexion_dof = kin.dof_index(command_overlays.THUMB_FLEXION_JOINT)
+    physical_positions[4] = kin.open_ratio_to_rad(
+        flexion_dof,
+        command_overlays.apply_open_ratio_overlay(
+            flexion_dof, kin.rad_to_open_ratio(flexion_dof, logical_q[1])
+        ),
+    )
+    physical_velocities[4] = logical_dq[1] / command_overlays.model_rate_gain(flexion_dof)
 
     q_policy, dq_policy = physical_hand_state_to_policy(
         physical_positions, physical_velocities
@@ -790,12 +796,11 @@ def test_physical_hand_feedback_passes_through_without_the_overlay():
     q, dq = physical_hand_state_to_policy(positions, velocities, thumb_overlay=False)
     np.testing.assert_allclose(q, [1.185, 0.0, 0.2147])
     np.testing.assert_allclose(dq, [0.3, 0.0, 0.0])
-    # With the overlay on, the same logical 1.185 rad is the physical 0.889 rad
-    # (physical = 0.75 x logical, the open pose being 0 rad).
-    positions[columns["thumb_proximal_yaw_joint"]] = 0.75 * 1.185
+    # With the calibration on, the same logical 1.185 rad is register yaw 0.915.
+    positions[columns["thumb_proximal_yaw_joint"]] = 1.185 - 0.27
     q_on, dq_on = physical_hand_state_to_policy(positions, velocities, thumb_overlay=True)
     assert q_on[0] == pytest.approx(1.185, abs=1e-6)
-    assert dq_on[0] == pytest.approx(0.3 / 0.75)
+    assert dq_on[0] == pytest.approx(0.3)
 
 
 def test_training_hand_tips_do_not_depend_on_the_arm():

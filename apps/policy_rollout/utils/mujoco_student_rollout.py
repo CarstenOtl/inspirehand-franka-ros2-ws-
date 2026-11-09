@@ -116,6 +116,12 @@ def main(argv=None) -> int:
     from policy_rollout.session import PolicyRolloutSession
     from utils.data_collection import RolloutDataCollector
 
+    task_profile = fo.task_profile_for_checkpoint(args.checkpoint)
+    if task_profile is not fo.MIMIC_M24_PROFILE:
+        parser.error(
+            f"{args.checkpoint} is a {task_profile.name} student; this loop only has the "
+            "mimic hand at the M24 reset, so run it in ros-sim"
+        )
     profile = load_camera_calibration()
     if args.episode is None:
         nut_quat0 = fo.quat_from_euler_xyz(0.0, 0.0, math.radians(TRAINING_NUT_YAW_DEG))

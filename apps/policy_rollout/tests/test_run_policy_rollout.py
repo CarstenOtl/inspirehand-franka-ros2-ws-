@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 import run_policy_rollout as cli
 
 
@@ -36,7 +38,47 @@ def test_ros_sim_backend_shares_the_hardware_options():
     assert {k: v for k, v in vars(sim).items() if k != "sim"} == {
         k: v for k, v in vars(hardware).items() if k != "sim"
     }
-    assert hardware.home.endswith("apps/policy_rollout/config/policy_home.yaml")
+    # --home follows the task profile unless given.
+    assert hardware.home is None and hardware.task_profile == "auto"
+    assert str(cli.POLICY_HOME_CONFIGS["mimic_m24"]).endswith(
+        "apps/policy_rollout/config/policy_home.yaml"
+    )
+    assert all(path.is_file() for path in cli.POLICY_HOME_CONFIGS.values())
+
+
+def test_backend_limits_follow_isaac_in_ros_sim_only():
+    for sim, steps, tolerance in ((True, 4500, 10.0), (False, 1500, 5.0)):
+        args = cli._hardware_parser(sim=sim).parse_args([])
+        cli.resolve_backend_defaults(args, sim)
+        assert args.max_steps == steps
+        assert args.return_tolerance_mm == tolerance and args.return_tolerance_deg == tolerance
+    args = cli._hardware_parser(sim=True).parse_args(["--max-steps", "7", "--return-tolerance-mm", "12"])
+    cli.resolve_backend_defaults(args, True)
+    assert args.max_steps == 7 and args.return_tolerance_mm == 12.0 and args.return_tolerance_deg == 10.0
+
+
+def test_hand_start_follows_the_students_reset_in_ros_sim():
+    from policy_rollout import forge_osc as fo
+
+    assert cli.resolve_hand_start("auto", fo.MIMIC_WINDBACK45_TILT30_PROFILE, sim=True) == "grasp"
+    assert cli.resolve_hand_start("auto", fo.MIMIC_M24_PROFILE, sim=True) == "release"
+    assert cli.resolve_hand_start("auto", fo.MIMIC_WINDBACK45_TILT30_PROFILE, sim=False) == "release"
+    assert cli.resolve_hand_start("release", fo.MIMIC_WINDBACK45_TILT30_PROFILE, sim=True) == "release"
+
+
+def test_every_task_profile_homes_to_its_own_reset():
+    import yaml
+
+    from policy_rollout import forge_osc as fo
+
+    assert set(cli.POLICY_HOME_CONFIGS) == set(fo.TASK_PROFILES)
+    for name, profile in fo.TASK_PROFILES.items():
+        home = yaml.safe_load(cli.POLICY_HOME_CONFIGS[name].read_text())
+        assert home["positions"][:7] == pytest.approx(profile.arm_reset_joints, abs=1e-6), name
+        hand = dict(zip(home["joint_names"], home["positions"]))
+        assert hand["thumb_proximal_yaw_joint"] == pytest.approx(profile.entry_pinch[0], abs=1e-6), name
+        assert hand["thumb_proximal_pitch_joint"] == pytest.approx(profile.entry_pinch[1], abs=1e-6), name
+        assert hand["index_proximal_joint"] == pytest.approx(profile.entry_pinch[2], abs=1e-6), name
 
 
 def test_thumb_overlay_follows_the_backend_unless_overridden():
@@ -48,7 +90,7 @@ def test_thumb_overlay_follows_the_backend_unless_overridden():
     assert cli.resolve_thumb_overlay("off", sim=False) is False
     args = cli._hardware_parser(sim=True).parse_args([])
     assert args.thumb_overlay == "auto"
-    assert args.hand_start == "release"
+    assert args.hand_start == "auto"
     assert args.max_home_grasp_error == 0.002
     assert args.min_fingertip_separation == 0.030
     assert args.max_proxy_step_deg == 20.0

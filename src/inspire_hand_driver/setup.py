@@ -8,6 +8,8 @@ setup(
     name=package_name,
     version="0.1.0",
     packages=find_packages(exclude=["test"]),
+    # The RH56 linkage tables (rh56_linkage/__init__.py).
+    package_data={package_name: ["rh56_linkage/*.json", "rh56_linkage/README.md"]},
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),

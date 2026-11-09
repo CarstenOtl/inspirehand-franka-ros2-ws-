@@ -188,27 +188,24 @@ between one cycle and the next -- which is the only workable way to find
 numbers for something whose test is pushing on it with a finger. Values the law
 rejects are refused by the parameter callback instead of being applied.
 
-Thumb-abduction calibration
-----------------------------
-Every angle command path receives the final overlays from
-:mod:`inspire_hand_driver.command_overlays`. At open ratio ``0.0`` the thumb
-swings past the palm plane, so the bottom of its commanded range is unusable.
-The current overlay therefore treats ``0.25`` as the thumb's zero and rescales
-the whole command onto the usable travel::
+Thumb calibration
+-----------------
+Every angle command path receives the final calibration from
+:mod:`inspire_hand_driver.command_overlays`. Commands are in the URDF model's
+coordinates; the thumb's registers are not (fitted from camera depth on
+2026-11-09)::
 
-    physical = 0.25 + 0.75 * commanded
+    real yaw     = register yaw + 0.27 rad
+    real flexion = 0.73 * register flexion - 0.03 rad
 
-A command of ``0.0`` reaches the hand as ``0.25`` and ``1.0`` still reaches it
-as ``1.0``, so the mapping stays monotonic and every commanded value remains
-distinct -- unlike a floor, which would collapse the bottom quarter of the
-range onto one pose. The other five DOF are unchanged. Inputs are still
-validated against the public ``[0, 1]`` command range before the overlay is
-applied.
+The driver writes the register that puts the thumb at the commanded model
+angle. The other four DOF are unchanged. Inputs are still validated against the
+public ``[0, 1]`` command range before the calibration is applied. The
+``thumb_abduction_overlay`` parameter switches both thumb joints.
 
-``~/joint_states`` reports the hand's *physical* pose, not the pre-overlay
-command, because it feeds ``robot_state_publisher`` and TF. Commanding thumb
-abduction ``0.0`` therefore reads back ``0.25``; callers that need to compare
-feedback against a command should map the command forward with
+``~/joint_states`` reports the angle the *registers* imply, not the commanded
+model angle, so it reads ``0.27`` rad under the real yaw. Callers that need to
+compare feedback against a command should map the command forward with
 :func:`~inspire_hand_driver.command_overlays.apply_open_ratio_overlay`.
 
 Commanding in ratios, not radians
@@ -1240,8 +1237,12 @@ class InspireHandNode(Node):
         # wrong thing when it is not, because then this node is the only
         # reason the thumb moves at all.
         self._staged = list(range(6)) if self._calibrate_thumb else list(FINGER_DOF)
+        # Registers, not model angles: the clearance is judged against the
+        # registers' own open end, and the firmware's routine starts from there.
         accepted, error = self._apply(
-            [CHANNEL_IDS[i] for i in self._staged], [RATIO_OPEN] * len(self._staged)
+            [CHANNEL_IDS[i] for i in self._staged],
+            [RATIO_OPEN] * len(self._staged),
+            calibrated=False,
         )
         if not accepted:
             self._pose_before_calibration = None
@@ -1525,7 +1526,7 @@ class InspireHandNode(Node):
         return kin.dof_index(key)
 
     def _merge(
-        self, names: Sequence[str], values: Sequence[float]
+        self, names: Sequence[str], values: Sequence[float], calibrated: bool = True
     ) -> Tuple[Optional[List[int]], str]:
         """Merge a partial set of named open-ratio targets onto the last command.
 
@@ -1555,7 +1556,7 @@ class InspireHandNode(Node):
                 unknown.append(str(name))
                 continue
             ratio = command_overlays.apply_open_ratio_overlay(
-                index, float(value), self._thumb_overlay
+                index, float(value), self._thumb_overlay and calibrated
             )
             angles[index] = open_ratio_to_angle(ratio)
             touched = True
@@ -1605,7 +1606,7 @@ class InspireHandNode(Node):
         return [min(ANGLE_MAX, a + y) for a, y in zip(angles, self._yield)]
 
     def _apply(
-        self, names: Sequence[str], values: Sequence[float]
+        self, names: Sequence[str], values: Sequence[float], calibrated: bool = True
     ) -> Tuple[bool, str]:
         """Write a partial set of named open-ratio targets.
 
@@ -1628,7 +1629,7 @@ class InspireHandNode(Node):
                 f"[{RATIO_CLOSED:g}, {RATIO_OPEN:g}] "
                 f"(1.0 = fully open, 0.0 = fully closed): {', '.join(bad)}"
             )
-        angles, error = self._merge(names, values)
+        angles, error = self._merge(names, values, calibrated)
         if angles is None:
             return False, error
         return self._send(angles)

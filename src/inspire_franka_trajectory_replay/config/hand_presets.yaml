@@ -40,10 +40,10 @@ reserved_keys: ["s", "c", "q", "?"]
 # disagree about what "the same grasp" was.
 #
 # 0.0 is the minimum of the *commanded* range, not a mechanical stop. The
-# driver's abduction overlay maps it onto physical open ratio 0.25, i.e. 0.981
-# rad of yaw -- see inspire_hand_driver.command_overlays, which exists because
-# the bottom quarter of the raw range swings the thumb past the palm plane and
-# is unusable. A preset that names this joint with any other value is refused.
+# driver's thumb calibration maps it onto register yaw 0.976 rad, where the real
+# thumb is at the model's 1.246 rad limit -- see
+# inspire_hand_driver.command_overlays. A preset that names this joint with any
+# other value is refused.
 fixed_open_ratio:
   thumb_proximal_yaw_joint: 0.0
 

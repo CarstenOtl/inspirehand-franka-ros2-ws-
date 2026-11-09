@@ -109,3 +109,13 @@ def test_unified_filter_applies_checkpoint_scale_without_second_ema():
     assert bounded[0] == 1.0
     assert filtered.tolist() == pytest.approx([1.0] + [0.5 * i for i in range(2, 10)])
     assert clipped == 1
+
+
+def test_hand_observation_accepts_joint_and_defaults_old_checkpoints_to_it():
+    from policy_rollout.flow_policy import FlowPolicyConfig
+
+    base = {"joint_dim": 9, "proprio_dim": 26, "hand_velocity_observation": "omitted"}
+    assert FlowPolicyConfig.from_dict(base).hand_observation == "joint"
+    assert FlowPolicyConfig.from_dict({**base, "hand_observation": "joint"}).hand_observation == "joint"
+    with pytest.raises(ValueError, match="hand observation"):
+        FlowPolicyConfig.from_dict({**base, "hand_observation": "tactile"})

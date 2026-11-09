@@ -52,6 +52,13 @@ namespace inspire_franka_sim
 ///   numeric isaac_hand/mimic/<follower>       [multiplier, offset]
 ///   text    isaac_hand/mimic_leader/<follower> <leader joint>
 ///
+/// or, for the RH56 linkage hand, a piecewise-linear follower curve instead of a
+/// mimic ratio (ForgeUltra's measured four-bar / six-bar linkage at nominal
+/// geometry, from inspire_hand_driver.rh56_linkage):
+///
+///   numeric isaac_hand/linkage/<follower>       [leader angles ascending..., follower angles...]
+///   text    isaac_hand/linkage_leader/<follower> <leader joint>
+///
 /// A scene without them leaves the plugin idle.
 class IsaacHandPlugin : public mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase
 {
@@ -82,6 +89,14 @@ private:
     mjtNum offset;
   };
 
+  struct Linkage
+  {
+    int follower_actuator;
+    int leader_actuator;
+    std::vector<mjtNum> leader;
+    std::vector<mjtNum> follower;
+  };
+
   /// The actuator transmitting to joint `joint`, or -1.
   static int actuator_for_joint(const mjModel * model, int joint);
 
@@ -91,6 +106,7 @@ private:
   mjtNum velocity_limit_{0.0};
   std::vector<Joint> joints_;
   std::vector<Mimic> mimics_;
+  std::vector<Linkage> linkages_;
 };
 
 }  // namespace inspire_franka_sim

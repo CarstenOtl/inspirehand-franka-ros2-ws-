@@ -27,10 +27,24 @@ runs on DH kinematics with no coriolis term, and gravity is off as libfranka
 compensates it on the real arm), RealSense depth noise, and the hand's RS485
 timing.
 
+``--task-profile rh56_windback45_tilt30`` writes the RH56 students' scene,
+``inspire_franka_policy_scene_rh56.xml`` (``sim_policy.launch.py
+hand_model:=rh56``): the RH56 linkage hand (``inspire_hand_on_flange_rh56.xml``,
+its followers on IsaacHandPlugin's linkage curves), the task profile's reset
+joints, the nut at the profile's spawn yaw, and the hand keyframe on the linkage
+with the support fingers at register 100.
+
+``--task-profile mimic_windback45_tilt30`` writes the old-hand wound students'
+scene, ``inspire_franka_policy_scene_windback45_tilt30.xml``
+(``sim_policy.launch.py task_profile:=mimic_windback45_tilt30``): the default
+scene's training hand with that profile's reset joints and nut spawn yaw.
+
 Regenerate after changing the camera profile; ``tests/test_ros_sim_scene.py``
-fails while the checked-in file is stale:
+fails while a checked-in file is stale:
 
     python3 apps/policy_rollout/utils/make_ros_sim_scene.py
+    python3 apps/policy_rollout/utils/make_ros_sim_scene.py --task-profile rh56_windback45_tilt30
+    python3 apps/policy_rollout/utils/make_ros_sim_scene.py --task-profile mimic_windback45_tilt30
 """
 
 from __future__ import annotations
@@ -60,6 +74,20 @@ from utils.camera_calibration import load_camera_calibration  # noqa: E402
 
 SIM_MJCF_DIR = WORKSPACE_ROOT / "src" / "inspire_franka_sim" / "mjcf"
 SCENE_NAME = "inspire_franka_policy_scene.xml"
+#: Each task profile's scene and hand (``sim_policy.launch.py hand_model``).
+SCENE_NAMES = {"mimic": SCENE_NAME, "rh56": "inspire_franka_policy_scene_rh56.xml"}
+#: Profiles whose reset is not the default scene of their hand
+#: (``sim_policy.launch.py task_profile``).
+PROFILE_SCENE_NAMES = {
+    fo.MIMIC_WINDBACK45_TILT30_PROFILE.name: "inspire_franka_policy_scene_windback45_tilt30.xml",
+}
+
+
+def scene_file_name(task_profile) -> str:
+    """The checked-in scene file of ``task_profile``."""
+
+    return PROFILE_SCENE_NAMES.get(task_profile.name, SCENE_NAMES[task_profile.hand])
+
 
 # inspire_franka_sim's hand generator holds the Isaac hand tables the scene's
 # <custom> block hands to IsaacHandPlugin. It is a script, not a module.
@@ -71,6 +99,9 @@ import make_hand_mjcf as hand  # noqa: E402
 #: simulates it with during training (make_hand_mjcf.py with the isaac flag;
 #: the remainder is IsaacHandPlugin's, configured by isaac_hand_custom_xml).
 END_EFFECTOR = "inspire_hand_on_flange_isaac.xml"
+#: The RH56 students' hand: the same official hand with the RH56 profile's
+#: drives and stroke-wide ranges (make_hand_mjcf.py with the rh56 flag).
+END_EFFECTORS = {"mimic": END_EFFECTOR, "rh56": "inspire_hand_on_flange_rh56.xml"}
 #: The arm: MuJoCo Menagerie's FR3 v2 under the workspace's fr3_ names (the
 #: model training moves to as well), see inspire_franka_sim's MJCF_PROVENANCE.md.
 ARM_MJCF = "fr3v2.xml"
@@ -114,11 +145,29 @@ POLICY_HOME_HAND = {
 # ratios focal/sensorsize and principal/sensorsize.
 SENSOR_PIXEL_M = 6.0e-6
 
-# Training's nut friction (mujoco_threading_env.CONTACT_FRICTION, with MuJoCo's
-# default spin and roll terms). The finger pads carry the same value, set in
-# inspire_franka_sim's make_hand_mjcf.py -- MuJoCo takes the element-wise
-# maximum of the two geoms, so both sides have to agree or the higher one wins.
+# Friction of the nut (mujoco_threading_env.CONTACT_FRICTION, with MuJoCo's
+# default spin and roll terms): training's value for the hand's non-pad links
+# against the nut. MuJoCo takes the element-wise maximum of two geoms, so this
+# has to stay at or below the hand's values, set in make_hand_mjcf.py.
 NUT_FRICTION = (te.CONTACT_FRICTION, 0.005, 0.0001)
+# Bolt, holder and table against the hand. Training's are 0.75-ish materials
+# averaged with the hand's; MuJoCo's maximum makes these contacts 0.875 or 1.25.
+STATIC_FRICTION = (0.75, 0.005, 0.0001)
+
+# The bolt's yaw in training's world with the holder fitted
+# (bolt_holder_bolt_yaw_deg). The head's corners are on the mesh's x axis, so
+# this seats it in the pocket, whose corners are at 45 deg mod 60 in the STL.
+TRAINING_BOLT_YAW_DEG = 105.0
+# The threaded shank's outer radius in m24_bolt.stl.
+BOLT_SHANK_RADIUS_M = 0.0117
+# Holder collision primitives, in the holder's frame (origin on the pocket
+# floor), measured from the STL. A convex hull of the whole part would slope
+# from the plate to the collar's top; training uses a convex decomposition.
+HOLDER_PLATE_HALF_WIDTH_M = 0.04
+HOLDER_FOOT_Z_M = -0.0435
+HOLDER_PLATE_TOP_Z_M = -0.0385
+HOLDER_TOP_Z_M = 0.0165
+HOLDER_COLLAR_RADIUS_M = 0.025
 
 
 def _fmt(values) -> str:
@@ -158,7 +207,20 @@ def camera_element(profile) -> str:
     )
 
 
-def thread_pair_xml() -> str:
+def nut_quaternion(task_profile=fo.MIMIC_M24_PROFILE):
+    """The nut's start orientation in the training world.
+
+    The mimic M24 students' recorded first nut pose, or any other profile's
+    spawn yaw (a hex nut repeats every 60 deg; the recorded 150 deg is the mimic
+    pose file's 30 deg).
+    """
+
+    if task_profile is fo.MIMIC_M24_PROFILE:
+        return TRAINING_NUT_QUATERNION
+    return tuple(fo.quat_from_euler_xyz(0.0, 0.0, math.radians(task_profile.nut_spawn_yaw_deg)))
+
+
+def thread_pair_xml(task_profile=fo.MIMIC_M24_PROFILE) -> str:
     """ForgeUltra's simplified self-locking thread pair, expressed in fr3_link0.
 
     A transcription of ``ThreadingScene._add_thread_pair`` into static MJCF, so
@@ -179,28 +241,28 @@ def thread_pair_xml() -> str:
       scales with the dof inertia it acts on, and 50 g of nut gives a coupling
       soft enough to let a finger push stretch it. The armature makes it as
       stiff as Isaac's drive without changing the nut's 50 g contact mass.
-    - the twist hinge is deliberately barely resisted: 0.002 N m Coulomb,
-      0.0002 N m s viscous. That holds the nut against its own inertia -- it
-      does not drift unloaded -- but it does NOT hold it against the hand. The
-      coupling is holonomic, so pressing down on the nut turns it: 20 N along
-      the bolt spins it ~200 degrees in a second. Measured 2026-10-05 at -202
-      degrees here against -208 in the MuJoCo-only loop, so this is Isaac's
-      "simplified self-locking thread", not a port defect. It also means the
-      measured turn is not a pure record of deliberate twisting.
+    - the coupling is one-way, as in ``thread_pair.py``: rotation advances the
+      nut, axial force cannot turn it. ``thread_coupling`` names only the axial
+      joint; its polycoef's second term just declares the slope, and
+      ``inspire_franka_sim``'s thread pair plugin writes the target for the
+      current twist into the constant term every physics step. A bare MuJoCo
+      load without the plugin keeps the nut at its start height.
+    - the twist hinge is barely resisted, 0.002 N m Coulomb and 0.0002 N m s
+      viscous, with no armature, as in training.
     - ``thread_hold`` is an inactive joint equality, not a torque. It is what
       the release/return transition clamps the thread with while the fingers let
       go; an explicit holding PD on a 0.001 kg m^2 hinge is unstable at this
       timestep. The simulator-side plugin activates it (see
       ``inspire_franka_sim``'s thread pair plugin); nothing here moves it.
 
-    The bolt stays ``contype=0``, exactly as in the training asset: the
-    equality already constrains the nut to the bolt axis, so meshing the two
-    convex hulls would only fight it. The nut is the one body the fingers can
-    touch.
+    The nut-bolt pair is excluded, as in training
+    (``_filter_simplified_thread_contact_pairs``): the equality already
+    constrains the nut to the bolt axis, so meshing the two would only fight
+    it. The bolt still collides with the hand.
     """
 
     carrier, _ = training_world_to_link0(fo.BOLT_TIP_POSITION, (1.0, 0.0, 0.0, 0.0))
-    _, nut_quat = training_world_to_link0(TRAINING_NUT_POSITION, TRAINING_NUT_QUATERNION)
+    _, nut_quat = training_world_to_link0(TRAINING_NUT_POSITION, nut_quaternion(task_profile))
     # Travel limits: down to the bolt head (with Isaac's head clearance), up to
     # half a pitch past the turn the release fires on.
     lower = -fo.M24_BOLT_HEIGHT + 0.5 * fo.M24_NUT_HEIGHT + te.THREAD_HEAD_CLEARANCE_M
@@ -237,7 +299,7 @@ def thread_equality_xml() -> str:
     if slope <= 0.0:
         raise ValueError("a clockwise turn must drive the nut down the bolt")
     return f"""  <equality>
-    <joint name="thread_coupling" joint1="nut_axial" joint2="nut_twist"
+    <joint name="thread_coupling" joint1="nut_axial"
       polycoef="{_fmt((te.NUT_START_AXIAL_OFFSET_M, slope, 0.0, 0.0, 0.0))}" {solver}/>
     <joint name="thread_hold" joint1="nut_twist" active="false"
       polycoef="0 1 0 0 0" {solver}/>
@@ -245,22 +307,59 @@ def thread_equality_xml() -> str:
 """
 
 
-def isaac_hand_custom_xml() -> str:
+#: MJCF caps a <numeric>'s data below one full 257-point curve (514 values), so
+#: the plugin gets every second table point. Thinned, the curves stay within
+#: 5e-5 rad of the table (RH56_CURVE_TOLERANCE_RAD, checked on export).
+RH56_CURVE_STRIDE = 2
+RH56_CURVE_TOLERANCE_RAD = 1.0e-4
+
+
+def rh56_linkage_curves() -> list:
+    """``(follower, leader, leader angles, follower angles)`` per RH56 follower, workspace names."""
+
+    from inspire_hand_driver.rh56_linkage import WORKSPACE_JOINT, load_joint_table
+
+    table = load_joint_table()
+    curves = []
+    for channel, (leader, _, _) in table.channels.items():
+        for follower, (xs, ys) in table.follower_curves(channel).items():
+            keep = sorted(set(range(0, len(xs), RH56_CURVE_STRIDE)) | {len(xs) - 1})
+            error = np.max(np.abs(np.interp(xs, xs[keep], ys[keep]) - ys))
+            if error > RH56_CURVE_TOLERANCE_RAD:
+                raise ValueError(f"thinned {follower} curve is {error:.2e} rad off the table")
+            curves.append((WORKSPACE_JOINT[follower], WORKSPACE_JOINT[leader], xs[keep], ys[keep]))
+    return curves
+
+
+def isaac_hand_custom_xml(task_profile=fo.MIMIC_M24_PROFILE) -> str:
     """IsaacHandPlugin's configuration, from make_hand_mjcf.py's Isaac tables.
 
     The velocity limit and the PhysX joint friction coefficient per hand joint,
     and the target-level mimic map in coupling order (the thumb's distal joint
-    follows the intermediate, so the intermediate has to come first).
+    follows the intermediate, so the intermediate has to come first). The RH56
+    hand carries the linkage curves instead, every follower on its channel's
+    leader, and the RH56 profile's velocity limit.
     """
 
+    rh56 = task_profile.hand == "rh56"
+    velocity_limit = hand.RH56_VELOCITY_LIMIT if rh56 else hand.ISAAC_VELOCITY_LIMIT
     lines = [
         "  <custom>",
         "    <!-- IsaacHandPlugin (inspire_franka_sim): Isaac Lab's hand dynamics that",
-        "         MJCF cannot express. From make_hand_mjcf.py's ISAAC tables. -->",
-        f'    <numeric name="isaac_hand/velocity_limit" data="{_fmt((hand.ISAAC_VELOCITY_LIMIT,))}"/>',
+        "         MJCF cannot express. From make_hand_mjcf.py's ISAAC tables"
+        + (" and inspire_hand_driver.rh56_linkage. -->" if rh56 else ". -->"),
+        f'    <numeric name="isaac_hand/velocity_limit" data="{_fmt((velocity_limit,))}"/>',
     ]
     for joint, coefficient in hand.ISAAC_JOINT_FRICTION.items():
         lines.append(f'    <numeric name="isaac_hand/joint/{joint}" data="{_fmt((coefficient,))}"/>')
+    if rh56:
+        for follower, leader, xs, ys in rh56_linkage_curves():
+            lines.append(
+                f'    <numeric name="isaac_hand/linkage/{follower}" data="{_fmt((*xs, *ys))}"/>'
+            )
+            lines.append(f'    <text name="isaac_hand/linkage_leader/{follower}" data="{leader}"/>')
+        lines.append("  </custom>\n")
+        return "\n".join(lines)
     for follower, leader, multiplier, offset in hand.COUPLINGS:
         lines.append(
             f'    <numeric name="isaac_hand/mimic/{follower}" data="{_fmt((multiplier, offset))}"/>'
@@ -270,13 +369,24 @@ def isaac_hand_custom_xml() -> str:
     return "\n".join(lines)
 
 
-def scene_xml(profile, keyframe: str = "") -> str:
+def scene_xml(profile, keyframe: str = "", task_profile=fo.MIMIC_M24_PROFILE) -> str:
+    scene_name = scene_file_name(task_profile)
+    end_effector = END_EFFECTORS[task_profile.hand]
     bolt, _ = training_world_to_link0(fo.BOLT_BASE_POSITION, (1.0, 0.0, 0.0, 0.0))
-    bolt_quat = fo.quat_from_euler_xyz(0.0, 0.0, math.pi)
+    _, bolt_quat = training_world_to_link0(
+        fo.BOLT_BASE_POSITION, fo.quat_from_euler_xyz(0.0, 0.0, math.radians(TRAINING_BOLT_YAW_DEG))
+    )
+    shank_half = 0.5 * fo.M24_BOLT_HEIGHT
+    shank_z = fo.M24_BOLT_BASE_HEIGHT + shank_half
+    plate_half = 0.5 * (HOLDER_PLATE_TOP_Z_M - HOLDER_FOOT_Z_M)
+    plate_z = HOLDER_FOOT_Z_M + plate_half
+    collar_half = 0.5 * (HOLDER_TOP_Z_M - HOLDER_PLATE_TOP_Z_M)
+    collar_z = HOLDER_PLATE_TOP_Z_M + collar_half
+    friction = _fmt(STATIC_FRICTION)
     table, _ = training_world_to_link0(TRAINING_TABLE_CENTER, (1.0, 0.0, 0.0, 0.0))
     width = int(profile.source_intrinsics.width)
     height = int(profile.source_intrinsics.height)
-    return f"""<mujoco model="{SCENE_NAME.removesuffix('.xml')}">
+    return f"""<mujoco model="{scene_name.removesuffix('.xml')}">
   <!-- GENERATED by apps/policy_rollout/utils/make_ros_sim_scene.py from
        apps/policy_rollout/utils/camera_calibration/fr3_realsense_dp3.yaml.
        Do not edit by hand; rerun the generator.
@@ -295,7 +405,7 @@ def scene_xml(profile, keyframe: str = "") -> str:
        comment, and ament_xmllint rejects the whole file for one. -->
 
   <asset>
-    <model name="end_effector" file="{END_EFFECTOR}"/>
+    <model name="end_effector" file="{end_effector}"/>
     <texture type="skybox" builtin="flat" rgb1="0.92 0.92 0.92" width="512" height="3072"/>
     <texture type="2d" name="groundplane" builtin="checker" mark="edge"
       rgb1="0.31 0.31 0.31" rgb2="0.31 0.31 0.31" markrgb="0.78 0.78 0.78"
@@ -331,36 +441,59 @@ def scene_xml(profile, keyframe: str = "") -> str:
 
     <body name="table" pos="{_fmt(table)}">
       <geom name="table_top" type="box" pos="0 0 {-TABLE_HALF_SIZE[2]:g}" size="{_fmt(TABLE_HALF_SIZE)}"
-        material="table_top" contype="0" conaffinity="0"/>
+        material="table_top" friction="{friction}"/>
     </body>
-    <!-- Visual only, as in the training asset: the thread coupling, not a
-         contact, is what holds the nut on the bolt. -->
+    <!-- The thread coupling, not a contact, holds the nut on the bolt, so the
+         nut and bolt do not collide (see the contact section). The shank
+         collides with the hand; the head is inside the holder. -->
     <body name="m24_bolt" pos="{_fmt(bolt)}" quat="{_fmt(bolt_quat)}">
       <geom name="m24_bolt_geom" type="mesh" mesh="forge_m24_bolt" material="forge_bolt"
         contype="0" conaffinity="0"/>
+      <geom name="m24_bolt_collision" type="cylinder" group="3" pos="0 0 {_fmt((shank_z,))}"
+        size="{_fmt((BOLT_SHANK_RADIUS_M, shank_half))}" friction="{friction}"/>
     </body>
     <!-- The hardware's printed M24 bolt holder (Bolt-Holder-M24-v2lprt.STEP),
          its origin on the pocket floor the bolt head sits on, square to the
-         table. Visual only, like the table and the bolt. -->
+         table. The base plate and the collar collide; the collar's pocket is
+         filled by the bolt head. -->
     <body name="bolt_holder" pos="{_fmt(bolt)}">
       <geom name="bolt_holder_geom" type="mesh" mesh="m24_bolt_holder" rgba="{_fmt(BOLT_HOLDER_RGBA)}"
         contype="0" conaffinity="0"/>
+      <geom name="bolt_holder_plate" type="box" group="3" pos="0 0 {_fmt((plate_z,))}"
+        size="{_fmt((HOLDER_PLATE_HALF_WIDTH_M, HOLDER_PLATE_HALF_WIDTH_M, plate_half))}" friction="{friction}"/>
+      <geom name="bolt_holder_collar" type="cylinder" group="3" pos="0 0 {_fmt((collar_z,))}"
+        size="{_fmt((HOLDER_COLLAR_RADIUS_M, collar_half))}" friction="{friction}"/>
     </body>
-{thread_pair_xml()}
+{thread_pair_xml(task_profile)}
   </worldbody>
 
+  <contact>
+    <exclude body1="m24_bolt" body2="m24_nut"/>
+  </contact>
+
 {thread_equality_xml()}
-{isaac_hand_custom_xml()}{keyframe}</mujoco>
+{isaac_hand_custom_xml(task_profile)}{keyframe}</mujoco>
 """
 
 
-def _keyframe(model) -> str:
+def rh56_home_hand(task_profile) -> dict:
+    """Every RH56 hand joint (workspace names) at the profile's grasp, support fingers at register 100."""
+
+    from inspire_hand_driver.rh56_linkage import WORKSPACE_JOINT
+    from policy_rollout.rh56_hand import expand_followers
+
+    leaders = {name: task_profile.grasp_posture[name] for name in fo.PINCH_JOINTS}
+    return {WORKSPACE_JOINT[j]: q for j, q in expand_followers(leaders).items()}
+
+
+def _keyframe(model, task_profile=fo.MIMIC_M24_PROFILE) -> str:
     import mujoco
 
+    rh56 = task_profile.hand == "rh56"
     qpos = model.qpos0.copy()
-    for index, value in enumerate(fo.FRANKA_ARM_RESET_JOINTS_M24, start=1):
+    for index, value in enumerate(task_profile.arm_reset_joints, start=1):
         qpos[model.jnt_qposadr[model.joint(f"fr3_joint{index}").id]] = value
-    for name, value in POLICY_HOME_HAND.items():
+    for name, value in (rh56_home_hand(task_profile) if rh56 else POLICY_HOME_HAND).items():
         qpos[model.jnt_qposadr[model.joint(name).id]] = value
     # The nut's start pose on the bolt, as ThreadingScene.reset sets it. The
     # axial slide carries the offset, so the carrier itself sits at the bolt
@@ -372,7 +505,8 @@ def _keyframe(model) -> str:
     # The hand has no equality couplings any more (Isaac's are target-level),
     # so expand them here, in order: the thumb's distal follows the
     # intermediate.
-    for follower, leader, multiplier, offset in hand.COUPLINGS:
+    # The RH56 followers are already on the linkage (rh56_home_hand).
+    for follower, leader, multiplier, offset in () if rh56 else hand.COUPLINGS:
         x = qpos[model.jnt_qposadr[model.joint(leader).id]]
         qpos[model.jnt_qposadr[model.joint(follower).id]] = multiplier * x + offset
     # The remaining joint equalities (the thread coupling). Two passes, in case
@@ -402,7 +536,7 @@ def _keyframe(model) -> str:
     )
 
 
-def generate(profile_path=None, output_dir: Path = SIM_MJCF_DIR) -> str:
+def generate(profile_path=None, output_dir: Path = SIM_MJCF_DIR, task_profile=fo.MIMIC_M24_PROFILE) -> str:
     """Return the scene text; compiles it once to lay out the keyframe."""
 
     import mujoco
@@ -419,22 +553,29 @@ def generate(profile_path=None, output_dir: Path = SIM_MJCF_DIR) -> str:
     if not (texture_dir / "walnut_albedo.png").exists():
         shutil.copyfile(TEXTURE_SOURCE / "walnut_albedo.png", texture_dir / "walnut_albedo.png")
     # Includes resolve relative to the model file, so compile beside the scene.
-    probe = output_dir / f".{SCENE_NAME}.probe.xml"
+    probe = output_dir / f".{scene_file_name(task_profile)}.probe.xml"
     try:
-        probe.write_text(scene_xml(profile))
+        probe.write_text(scene_xml(profile, task_profile=task_profile))
         model = mujoco.MjModel.from_xml_path(str(probe))
     finally:
         probe.unlink(missing_ok=True)
-    return scene_xml(profile, _keyframe(model))
+    return scene_xml(profile, _keyframe(model, task_profile), task_profile)
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--camera-calibration", default=None)
     parser.add_argument("--check", action="store_true", help="fail if the checked-in scene is stale")
+    parser.add_argument(
+        "--task-profile",
+        default=fo.MIMIC_M24_PROFILE.name,
+        choices=sorted(fo.TASK_PROFILES),
+        help="whose scene: the mimic M24 students' (default), or another profile's",
+    )
     args = parser.parse_args(argv)
-    text = generate(args.camera_calibration)
-    target = SIM_MJCF_DIR / SCENE_NAME
+    task_profile = fo.TASK_PROFILES[args.task_profile]
+    text = generate(args.camera_calibration, task_profile=task_profile)
+    target = SIM_MJCF_DIR / scene_file_name(task_profile)
     if args.check:
         if not target.exists() or target.read_text() != text:
             print(f"{target} is stale; rerun {Path(__file__).name}", file=sys.stderr)

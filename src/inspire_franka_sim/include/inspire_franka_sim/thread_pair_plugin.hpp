@@ -27,9 +27,16 @@ namespace inspire_franka_sim
 /// pair: an axial slide coupled to a twist hinge by the `thread_coupling`
 /// joint equality, plus an inactive `thread_hold` equality (see
 /// apps/policy_rollout/utils/make_ros_sim_scene.py). The geometry is static
-/// MJCF and needs nothing from here; the two things that cannot be expressed
+/// MJCF and needs nothing from here; the three things that cannot be expressed
 /// declaratively are:
 ///
+/// - **a one-way thread.** Isaac's prismatic drive follows a target computed
+///   from the measured twist, so rotation advances the nut but axial force
+///   cannot turn it. A joint equality between the two joints would be two-way,
+///   so `thread_coupling` names only the axial joint and its polycoef's second
+///   term just declares the slope. Every physics step this writes the target
+///   for the current twist into the constant term. Without this plugin the nut
+///   turns freely and does not advance.
 /// - **reading the turn.** The nut is not part of the robot, so no ros2_control
 ///   state interface reaches it and `joint_state_broadcaster` cannot see it.
 ///   Without this the rollout has to infer the turn from the grasp frame's own
@@ -41,9 +48,9 @@ namespace inspire_franka_sim
 ///   release/return transition, so the nut cannot unwind while the fingers let
 ///   go of it (`_update_solver_thread_state`). The MuJoCo-only loop does it in
 ///   `ThreadingScene._apply_thread_drive`, which this mirrors: the coupling's
-///   slope goes to zero at the held axial position and `thread_hold` pins the
-///   twist. A holding PD torque on a 0.001 kg m^2 hinge is unstable at this
-///   timestep; an implicitly solved equality is not.
+///   target freezes at the held axial position and `thread_hold` pins the
+///   twist. A holding PD torque on the nut's small hinge inertia is unstable at
+///   this timestep; an implicitly solved equality is not.
 ///
 /// Interface, all on sim time:
 ///
@@ -76,6 +83,8 @@ public:
 private:
   /// Clamp the thread where it stands, as ThreadingScene.hold_thread does.
   void engage_hold(const mjModel * model, mjData * data);
+  /// Axial target from the measured twist, with no path back from axial force.
+  void apply_one_way_coupling(const mjModel * model, const mjData * data);
   /// Hand the nut back to the coupling.
   void release_hold(const mjModel * model, mjData * data);
   /// Start pose on the bolt: the coupling's own offset, twist zero.

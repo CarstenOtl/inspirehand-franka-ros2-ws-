@@ -10,7 +10,7 @@ mirrors, in NumPy/MuJoCo:
   resistance; nut/bolt contact is filtered;
 - the robot without gravity (the training asset sets ``disable_gravity``),
   torque-driven arm joints with zero drive gains, PD hand joints with the
-  threading gains (30/3, effort 20; inactive fingers 4.76/0.21, effort 1.864);
+  threading gains (30/3, effort 0.5; inactive fingers 4.76/0.21, effort 1.864);
 - the native OSC path at 120 Hz: filtered action -> clipped grasp-frame
   target -> operational-space torque -> joint-PD command (the deployment
   adapter) -> joint impedance torque;
@@ -57,8 +57,14 @@ THREAD_COULOMB_TORQUE = 0.002
 THREAD_VISCOUS_DAMPING = 0.0002
 THREADING_DIRECTION_SIGN = fo.THREADING_DIRECTION_SIGN  # clockwise
 THREAD_AXIAL_ARMATURE = 5.0      # kg, see _add_thread_pair
-THREAD_TWIST_ARMATURE = 0.001    # kg m^2, keeps the hold equality stiff
-CONTACT_FRICTION = 0.75
+THREAD_TWIST_ARMATURE = 0.0      # kg m^2, none in thread_pair.py
+# Friction against the nut. Training sets the nut to 1.0
+# (held_asset_friction_override), the two pad links to 1.5 (hand_pad_friction)
+# and the rest of the hand to 0.75, and PhysX averages the two materials: 1.25
+# at the pads and 0.875 elsewhere on the hand. MuJoCo takes the element-wise
+# maximum of two geoms, so the contact value goes on the geoms directly.
+CONTACT_FRICTION = 0.875
+PAD_CONTACT_FRICTION = 1.25
 
 # MuJoCo Menagerie's FR3 v2 joint dry friction and viscous damping
 # (inspire_franka_sim's fr3v2.xml, which training_scene_spec loads into the arm).
@@ -69,8 +75,9 @@ CONTACT_FRICTION = 0.75
 MENAGERIE_ARM_FRICTIONLOSS = (0.2,) * 7
 MENAGERIE_ARM_DAMPING = (0.003,) * 7
 
-# Hand drives (ThreadingRobotControllerCfg).
-PINCH_STIFFNESS, PINCH_DAMPING, PINCH_EFFORT = 30.0, 3.0, 20.0
+# Hand drives (ThreadingRobotControllerCfg; the pinch effort is
+# hand_joint_effort_limits_nm from m24_threading_force_limited.yaml).
+PINCH_STIFFNESS, PINCH_DAMPING, PINCH_EFFORT = 30.0, 3.0, 0.5
 INACTIVE_STIFFNESS, INACTIVE_DAMPING, INACTIVE_EFFORT = 4.76, 0.21, 1.864
 
 # Cyclic release/return (waypoints_release_and_reset_franka.yaml). The release
@@ -167,6 +174,10 @@ class ThreadingScene:
         for geom in spec.geoms:
             if geom.classname is not None and geom.classname.name == "hand_collision":
                 geom.friction = [CONTACT_FRICTION, 0.005, 0.0001]
+        for tip in ("thumb_tip", "index_tip"):
+            for geom in spec.body(tip).parent.geoms:
+                if geom.classname is not None and geom.classname.name == "hand_collision":
+                    geom.friction = [PAD_CONTACT_FRICTION, 0.005, 0.0001]
         # The kinematic replay nut is replaced by the dynamic thread pair.
         old = spec.body("recorded_nut")
         old.mocap = False
@@ -215,13 +226,15 @@ class ThreadingScene:
         geom.friction = [CONTACT_FRICTION, 0.005, 0.0001]
         # Isaac drives the axial joint with an implicit 200 kN/m PD toward
         # start - pitch*theta/2pi. MuJoCo resolves an equality constraint
-        # implicitly, so the same coupling is expressed as a joint equality
-        # (axial = c0 + c1 * twist); the hold freezes it (c1 = 0).
+        # implicitly, so the coupling is a joint equality on the axial joint
+        # alone, whose target _apply_thread_drive sets from the twist each step
+        # (data[1] only declares the slope). As in Isaac, axial force cannot
+        # turn the nut. Naming the twist joint here, even with a zero slope,
+        # would soften the constraint by its small inertia, about 75 times.
         coupling = spec.add_equality()
         coupling.name = "thread_coupling"
         coupling.type = mujoco.mjtEq.mjEQ_JOINT
         coupling.name1 = "nut_axial"
-        coupling.name2 = "nut_twist"
         coupling.data[0] = NUT_START_AXIAL_OFFSET_M
         coupling.data[1] = -THREADING_DIRECTION_SIGN * fo.M24_THREAD_PITCH / (2.0 * math.pi)
         coupling.solref = [0.004, 1.0]
@@ -374,17 +387,15 @@ class ThreadingScene:
         if self.thread_hold is not None:
             axial, twist = self.thread_hold
             m.eq_data[self.coupling_eq, 0] = axial
-            m.eq_data[self.coupling_eq, 1] = 0.0
             m.eq_data[self.hold_eq, 0] = twist
             d.eq_active[self.hold_eq] = 1
             return
-        m.eq_data[self.coupling_eq, 0] = NUT_START_AXIAL_OFFSET_M
-        m.eq_data[self.coupling_eq, 1] = self.coupling_slope
+        m.eq_data[self.coupling_eq, 0] = NUT_START_AXIAL_OFFSET_M + self.coupling_slope * self.twist_angle
         d.eq_active[self.hold_eq] = 0
 
     def _step_physics(self) -> None:
-        self._apply_thread_drive()
         for _ in range(SUBSTEPS):
+            self._apply_thread_drive()
             self.mujoco.mj_step(self.model, self.data)
         self.sim_time += PHYSICS_DT
 
@@ -394,13 +405,18 @@ class ThreadingScene:
     def release_thread_hold(self) -> None:
         self.thread_hold = None
 
-    def control_tick(self, filtered_action, z_transport, *, dead_zone=None):
-        """One 120 Hz tick of the OSC -> joint-PD -> torque path; returns diagnostics."""
+    def control_tick(self, filtered_action, z_transport, *, dead_zone=None, profile=None):
+        """One 120 Hz tick of the OSC -> joint-PD -> torque path; returns diagnostics.
 
+        ``profile``: the student's ``TaskProfile`` (default the mimic M24 one).
+        This scene's hand is the mimic hand, so only mimic profiles run here.
+        """
+
+        profile = profile or fo.MIMIC_M24_PROFILE
         q = self.q(ARM_JOINTS)
         dq = self.dq(ARM_JOINTS)
         grasp = self.grasp_state(z_transport)
-        target = fo.decode_action_target(filtered_action, grasp)
+        target = fo.decode_action_target(filtered_action, grasp, profile=profile)
         tau, wrench, pos_error, aa_error = fo.compute_dof_torque(
             dof_pos_arm=q,
             dof_vel_arm=dq,
@@ -409,8 +425,9 @@ class ThreadingScene:
             target_pos=target.pos,
             target_quat=target.quat,
             dead_zone_thresholds=dead_zone,
+            default_dof_pos=profile.arm_reset_joints,
         )
-        pinch = fo.pinch_targets(filtered_action)
+        pinch = fo.pinch_targets(filtered_action, profile=profile)
         command = fo.joint_pd_command_from_torque(q, dq, tau, pinch)
         arm_torque = fo.joint_pd_torque(q, dq, command)
         self._apply_arm_torque(arm_torque)
@@ -526,17 +543,19 @@ class CyclicCoordinator:
         return event
 
 
-def seed_action_history(grasp: fo.GraspFrameState):
+def seed_action_history(grasp: fo.GraspFrameState, profile=None):
     """``seed_threading_policy_action_history``: encode the live pose as the previous action.
 
     The same seed Isaac writes into ``prev_actions`` at an environment reset
     (``ForgeTg2Env._reset_idx``) and at every cycle boundary, so it is both the
     first observation's previous action and the one after each return.
+    ``profile`` sets the orientation-action frame (``ee_base_orn_euler``).
     """
 
+    profile = profile or fo.MIMIC_M24_PROFILE
     seed = np.zeros(9)
     seed[0:3] = (grasp.pos - fo.BOLT_TIP_POSITION) / fo.POS_ACTION_BOUNDS
-    base = fo.quat_from_euler_xyz(*fo.EE_BASE_ORN_EULER)
+    base = fo.quat_from_euler_xyz(*profile.ee_base_orn_euler)
     rel = fo.quat_mul(fo.quat_conjugate(base), grasp.quat)
     roll, pitch, yaw = fo.get_euler_xyz(rel)
     if yaw > math.pi / 2:

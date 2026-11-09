@@ -13,6 +13,7 @@ using franka_forge_cartesian_impedance::clamp_torque;
 using franka_forge_cartesian_impedance::example_cartesian_error;
 using franka_forge_cartesian_impedance::example_cartesian_gains;
 using franka_forge_cartesian_impedance::forge_clip_target;
+using franka_forge_cartesian_impedance::forge_wrap_yaw;
 using franka_forge_cartesian_impedance::ForgeClippedTarget;
 using franka_forge_cartesian_impedance::isaac_euler_xyz;
 using franka_forge_cartesian_impedance::isaac_quat_from_euler_xyz;
@@ -664,6 +665,28 @@ TEST(ForgeDecode, clip_frame_matters_for_the_euler_clip_only_through_its_yaw_wra
   EXPECT_TRUE(in_world.orientation_clipped);
   EXPECT_NEAR(franka_forge_cartesian_impedance::quaternion_angle(in_world.orientation, measured_q), 0.097,
               1e-9);
+}
+
+TEST(ForgeDecode, yaw_seam_moves_with_a_wound_reset_pose) {
+  // A goal 10 deg past a measured yaw of 230 deg: across FORGE's 235 deg seam the clip turns
+  // the long way round; with the seam at 280 deg (the 45 deg wind-back students) it turns
+  // toward the goal.
+  const double deg = M_PI / 180.0;
+  EXPECT_NEAR(forge_wrap_yaw(240.0 * deg), -120.0 * deg, 1e-12);
+  EXPECT_NEAR(forge_wrap_yaw(240.0 * deg, 280.0 * deg), 240.0 * deg, 1e-12);
+  EXPECT_NEAR(forge_wrap_yaw(290.0 * deg, 280.0 * deg), -70.0 * deg, 1e-12);
+
+  const Eigen::Vector3d p(0.6, 0.0, 0.1);
+  const auto at_yaw = [](double yaw) { return isaac_quat_from_euler_xyz(M_PI, 0.0, yaw); };
+  const ForgeClippedTarget forge = forge_clip_target(
+      p, at_yaw(240.0 * deg), p, at_yaw(230.0 * deg), Eigen::Quaterniond::Identity(), 0.02, 0.097);
+  const ForgeClippedTarget wound =
+      forge_clip_target(p, at_yaw(240.0 * deg), p, at_yaw(230.0 * deg),
+                        Eigen::Quaterniond::Identity(), 0.02, 0.097, 280.0 * deg);
+  EXPECT_TRUE(forge.orientation.isApprox(at_yaw(230.0 * deg - 0.097), 1e-9) ||
+              forge.orientation.coeffs().isApprox(-at_yaw(230.0 * deg - 0.097).coeffs(), 1e-9));
+  EXPECT_TRUE(wound.orientation.isApprox(at_yaw(230.0 * deg + 0.097), 1e-9) ||
+              wound.orientation.coeffs().isApprox(-at_yaw(230.0 * deg + 0.097).coeffs(), 1e-9));
 }
 
 // A PolicyGoal moves the controlled frame, which moves the MEASURED pose. The controller

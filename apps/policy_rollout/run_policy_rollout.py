@@ -51,8 +51,18 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--task-profile",
+        default="auto",
+        help=(
+            "the training contract to reproduce (reset pose, orientation-action frame, "
+            "hand model); 'auto' (default) follows the checkpoint "
+            "(forge_osc.CHECKPOINT_TASK_PROFILES)"
+        ),
+    )
+    parser.add_argument(
         "--home",
-        default=str(APP_ROOT / "config/policy_home.yaml"),
+        default=None,
+        help="homing YAML (default: the task profile's, see POLICY_HOME_CONFIGS)",
     )
     # ros-sim paces this rate on the simulator's /clock, so a slowed simulator
     # (sim_policy.launch.py sim_speed) keeps it exact on a shared CPU.
@@ -77,7 +87,12 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--cycles", type=int, default=10)
-    parser.add_argument("--max-steps", type=int, default=1500)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="step budget (default: 4500 in ros-sim, as Isaac's evaluation of the students; 1500 on hardware)",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--prev-action-seed",
@@ -114,6 +129,11 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     )
     parser.add_argument("--hand-topic", default="/inspire_hand/command")
     parser.add_argument("--hand-state-topic", default="/inspire_hand/joint_states")
+    parser.add_argument(
+        "--hand-register-topic",
+        default="/inspire_hand/state",
+        help="the hand's register readout (open ratios), which RH56 students observe through",
+    )
     parser.add_argument(
         "--fingertip-force-topic",
         default=None,
@@ -167,13 +187,15 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--home-settle-s", type=float, default=1.0)
     parser.add_argument(
         "--hand-start",
-        choices=["release", "grasp"],
-        default="release",
+        choices=["auto", "release", "grasp"],
+        default="auto",
         help=(
-            "'release' (default) opens thumb and index to training's release posture "
-            "and commands the grasp just before the first policy sample, as training's "
-            "first observation shows the hand closing; 'grasp' starts from the hand "
-            "resting at the grasp."
+            "'release' opens thumb and index to training's release posture and commands "
+            "the grasp just before the first policy sample, as a settled reset's first "
+            "observation shows the hand closing; 'grasp' starts from the hand resting at "
+            "the grasp, as a fast reset does. 'auto' (default) follows the task profile "
+            "in ros-sim and is 'release' on hardware, which needs the open hand to tare "
+            "the pad forces."
         ),
     )
     parser.add_argument(
@@ -183,7 +205,21 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         help=(
             "whether the hand driver runs its thumb-yaw overlay, so feedback is "
             "inverted into the policy's logical coordinate: 'auto' is on for hardware "
-            "and off for ros-sim (sim_policy.launch.py starts the mock driver without it)."
+            "and off for ros-sim (sim_policy.launch.py starts the mock driver without it). "
+            "RH56 students command registers and need it off."
+        ),
+    )
+    parser.add_argument(
+        "--rh56-hand-model",
+        choices=["linkage", "linear"],
+        default="linkage",
+        help=(
+            "RH56 students only: how the runner converts between the physical hand's "
+            "registers and the student's joint angles. 'linkage' (default; what ros-sim "
+            "simulates) is ForgeUltra's measured linkage table; 'linear' is the old hand "
+            "model, the driver's linear map with the mimic followers, which matched "
+            "this workcell's hand better on 2026-11-06. The student's own action -> "
+            "register step is training's either way."
         ),
     )
     parser.add_argument(
@@ -199,18 +235,21 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
     parser.add_argument(
         "--return-tolerance-mm",
         type=float,
-        default=5.0,
+        default=None,
         help=(
             "the grasp must come back within this distance of the trained reset grasp "
-            "for a cycle to count (the simulators reach 5; the physical arm settled "
-            "8-10 mm short on 2026-11-03)"
+            "for a cycle to count (default: 10 in ros-sim, as Isaac's evaluation of the "
+            "students; 5 on hardware, where the arm settled 8-10 mm short on 2026-11-03)"
         ),
     )
     parser.add_argument(
         "--return-tolerance-deg",
         type=float,
-        default=5.0,
-        help="the grasp must come back within this rotation of the trained reset grasp",
+        default=None,
+        help=(
+            "the grasp must come back within this rotation of the trained reset grasp "
+            "(default: 10 in ros-sim, 5 on hardware)"
+        ),
     )
     parser.add_argument(
         "--joint-limit-margin",
@@ -384,9 +423,37 @@ def resolve_thumb_overlay(choice: str, sim: bool) -> bool:
     return {"auto": not sim, "on": True, "off": False}[choice]
 
 
+#: Each task profile's homing YAML: its reset arm joints and entry pinch.
+POLICY_HOME_CONFIGS = {
+    "mimic_m24": APP_ROOT / "config/policy_home.yaml",
+    "rh56_windback45_tilt30": APP_ROOT / "config/policy_home_rh56_windback45_tilt30.yaml",
+    "mimic_windback45_tilt30": APP_ROOT / "config/policy_home_windback45_tilt30.yaml",
+}
+
+
+def resolve_backend_defaults(args, sim: bool) -> None:
+    """Fill the limits that differ between ros-sim (Isaac's evaluation) and hardware."""
+
+    if args.max_steps is None:
+        args.max_steps = 4500 if sim else 1500
+    if args.return_tolerance_mm is None:
+        args.return_tolerance_mm = 10.0 if sim else 5.0
+    if args.return_tolerance_deg is None:
+        args.return_tolerance_deg = 10.0 if sim else 5.0
+
+
+def resolve_hand_start(choice: str, profile, sim: bool) -> str:
+    """``--hand-start``: 'auto' starts as the student's reset did, in ros-sim."""
+
+    if choice != "auto":
+        return choice
+    return "grasp" if sim and profile.fast_reset else "release"
+
+
 def _run_hardware(argv, sim: bool = False) -> int:
     args = _hardware_parser(sim).parse_args(argv)
     _resolve_execution(args)
+    resolve_backend_defaults(args, sim)
     for name in (
         "rate",
         "hand_timeout",
@@ -413,6 +480,15 @@ def _run_hardware(argv, sim: bool = False) -> int:
     if args.min_fingertip_separation < 0 or args.max_proxy_step_deg <= 0:
         raise ValueError("--min-fingertip-separation and --max-proxy-step-deg must be valid")
     args.thumb_overlay_enabled = resolve_thumb_overlay(args.thumb_overlay, sim)
+
+    from policy_rollout import forge_osc as fo
+
+    profile = fo.resolve_task_profile(args.task_profile, args.checkpoint)
+    args.task_profile = profile.name
+    args.hand_start = resolve_hand_start(args.hand_start, profile, sim)
+    if args.home is None:
+        args.home = str(POLICY_HOME_CONFIGS[profile.name])
+    print(f"task profile: {profile.name} ({profile.source}); home {args.home}", flush=True)
 
     from policy_rollout.hardware import assess_hardware_readiness, run_hardware_rollout
     from utils.camera_calibration import load_camera_calibration

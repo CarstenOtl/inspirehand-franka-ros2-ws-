@@ -14,6 +14,7 @@ from torch import nn
 from .flow_matching import sample_local_ode
 from .observation import (
     FORCE_OBSERVATION_MODES,
+    HAND_OBSERVATION_MODES,
     HAND_VELOCITY_OBSERVATION_MODES,
     native_osc_proprio_dim,
 )
@@ -33,6 +34,7 @@ class FlowPolicyConfig:
     proprio_dim: int = 0
     hand_velocity_observation: str = "included"
     force_observation: str = "omitted"
+    hand_observation: str = "joint"
     action_horizon: int = 1
     visual_dim: int = 64
     condition_dim: int = 256
@@ -83,6 +85,10 @@ class FlowPolicyConfig:
             raise ValueError("unsupported hand-velocity observation convention")
         if self.force_observation not in FORCE_OBSERVATION_MODES:
             raise ValueError("unsupported force observation convention")
+        if self.hand_observation not in HAND_OBSERVATION_MODES:
+            raise ValueError(
+                f"unsupported hand observation convention: {self.hand_observation!r}"
+            )
         if self.observation_mode not in {"vision", "nut_pose_3d", "nut_pose_6d"}:
             raise ValueError("unsupported student observation mode")
         if self.backbone_type not in {"mlp", "trajectory_transformer"}:
@@ -127,6 +133,9 @@ class FlowPolicyConfig:
         # Likewise every checkpoint before the force-observing student.
         if values.get("force_observation") is None:
             values["force_observation"] = "omitted"
+        # And every checkpoint before 2026-11-04 read the hand as joints.
+        if values.get("hand_observation") is None:
+            values["hand_observation"] = "joint"
         values.setdefault("trajectory_progress_conditioning", False)
         values.setdefault("trajectory_progress_duration_s", 0.0)
         values.setdefault("trajectory_progress_horizon_steps", 0)

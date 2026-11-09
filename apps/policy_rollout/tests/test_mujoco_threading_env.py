@@ -154,3 +154,41 @@ def test_the_table_is_threading_v2s_legless_top_in_front_of_the_robot():
     assert centre[0] + half[0] - d.xpos[m.body("m24_bolt").id][0] == pytest.approx(0.125)
     assert not any(m.geom(g).name.startswith("table_leg") for g in range(m.ngeom))
     assert m.mat_texid[m.geom_matid[top]][mujoco.mjtTextureRole.mjTEXROLE_RGB] >= 0
+
+
+def test_thread_is_one_way_like_isaac():
+    from policy_rollout import forge_osc as fo
+    from policy_rollout.mujoco_threading_env import NUT_START_AXIAL_OFFSET_M, ThreadingScene
+
+    scene = ThreadingScene(nut_quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+    scene.reset(fo.FRANKA_ARM_RESET_JOINTS_M24, fo.THREADING_GRASP_POSTURE, settle_s=0.0)
+    slope = scene.coupling_slope
+    assert slope > 0.0
+
+    # 20 N either way along the bolt deflects the coupling and does not turn the nut.
+    for force in (20.0, -20.0):
+        scene.data.qfrc_applied[:] = 0.0
+        scene.data.qfrc_applied[scene.axial_dof] = force
+        start = scene.twist_angle
+        for _ in range(60):
+            scene._step_physics()
+        assert scene.twist_angle == pytest.approx(start, abs=1e-6)
+        assert scene.axial_position == pytest.approx(NUT_START_AXIAL_OFFSET_M + slope * start, abs=2e-4)
+
+    # A torque about the bolt turns it, and the axial position follows the twist.
+    scene.data.qfrc_applied[:] = 0.0
+    scene.data.qfrc_applied[scene.twist_dof] = -0.02
+    for _ in range(30):
+        scene._step_physics()
+    assert scene.twist_angle < -0.5
+    assert scene.axial_position == pytest.approx(NUT_START_AXIAL_OFFSET_M + slope * scene.twist_angle, abs=5e-4)
+
+    # The hold pins both.
+    scene.data.qfrc_applied[:] = 0.0
+    scene.hold_thread()
+    held = (scene.axial_position, scene.twist_angle)
+    scene.data.qfrc_applied[scene.twist_dof] = -0.02
+    for _ in range(30):
+        scene._step_physics()
+    assert scene.twist_angle == pytest.approx(held[1], abs=2e-3)
+    assert scene.axial_position == pytest.approx(held[0], abs=2e-4)

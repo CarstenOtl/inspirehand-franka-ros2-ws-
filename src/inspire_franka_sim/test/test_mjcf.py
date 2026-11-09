@@ -300,6 +300,26 @@ def test_the_isaac_hand_carries_isaac_labs_training_dynamics():
         # The description's effort="1" must not survive as a joint-level clamp.
         assert tuple(isaac.jnt_actfrcrange[joint.id]) == pytest.approx((-effort, effort)), name
     assert isaac.nu == len(gen.ISAAC_DRIVES)
+    # hand_joint_effort_limits_nm: the grip the old-hand students trained under.
+    for name in ("thumb_proximal_yaw_joint", "thumb_proximal_pitch_joint", "index_proximal_joint"):
+        assert tuple(isaac.actuator(name).forcerange) == pytest.approx((-0.5, 0.5)), name
+
+
+def test_the_isaac_hand_carries_isaac_labs_inertia_offset():
+    """Every hand body, massless tips included, and nothing else gets the offset."""
+    gen = _hand_generator()
+    isaac = mujoco.MjModel.from_xml_path(str(MJCF_DIR / "inspire_hand_right_isaac.xml"))
+    plain = mujoco.MjModel.from_xml_path(str(MJCF_DIR / "inspire_hand_right.xml"))
+
+    offset_bodies = 0
+    for body in range(isaac.nbody):
+        name = isaac.body(body).name
+        offset = 0.0 if name in ("world", "hand_mount") else gen.ISAAC_HAND_INERTIA_OFFSET
+        offset_bodies += offset != 0.0
+        expected = plain.body(name).inertia + offset
+        # The generated MJCF keeps six significant digits.
+        assert isaac.body(name).inertia == pytest.approx(expected, abs=2e-6), name
+    assert offset_bodies == gen.ISAAC_HAND_BODY_COUNT
 
 
 def test_the_isaac_flange_wrapper_is_the_flange_wrapper_on_the_isaac_hand():

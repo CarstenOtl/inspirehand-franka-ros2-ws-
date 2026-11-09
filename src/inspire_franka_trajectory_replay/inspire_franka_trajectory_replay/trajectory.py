@@ -8,11 +8,7 @@ from typing import Optional, Union
 import numpy as np
 
 from franka_trajectory_replay.limits import VELOCITY_MAX
-from inspire_hand_driver.command_overlays import (
-    THUMB_ABDUCTION_DOF,
-    THUMB_ABDUCTION_JOINT,
-    THUMB_ABDUCTION_ZERO_OPEN_RATIO,
-)
+from inspire_hand_driver.command_overlays import THUMB_CALIBRATION
 from inspire_hand_driver import kinematics as hand_kinematics
 
 
@@ -32,7 +28,6 @@ FINGER_FLEXION_JOINTS = (
 FINGER_FLEXION_INDICES = tuple(
     HAND_JOINTS.index(name) for name in FINGER_FLEXION_JOINTS
 )
-THUMB_ABDUCTION_INDEX = HAND_JOINTS.index(THUMB_ABDUCTION_JOINT)
 FORGE_HAND_JOINTS = (
     "little_joint_0",
     "ring_joint_0",
@@ -111,38 +106,24 @@ def scale_finger_flexion(hand, scale):
     return scaled
 
 
-def scale_thumb_abduction(
-    hand, zero_open_ratio=THUMB_ABDUCTION_ZERO_OPEN_RATIO
-):
-    """Apply the thumb-only abduction overlay to radian hand positions.
+def driver_reported_hand(hand):
+    """What ``~/joint_states`` reads once the driver has reached ``hand``.
 
-    The replay artifacts and homing poses remain in their original radian
-    convention.  Only thumb yaw is rescaled here so that its eventual driver
-    command maps onto ``[zero_open_ratio, 1]``; every other hand coordinate is
-    copied unchanged.
-
-    The driver rescales in open-ratio space, ``p = f + (1 - f) * r``.  Carried
-    into the radian convention used here, that is an affine contraction toward
-    the joint's *open* pose, which is its ``lower`` limit::
-
-        radians_out = lower + (1 - f) * (radians_in - lower)
-
-    Doing it this way rather than round-tripping through
-    :func:`~inspire_hand_driver.kinematics.rad_to_open_ratio` is deliberate:
-    that conversion clamps to ``[0, 1]``, which would conceal malformed input
-    that ``_validate_hand`` must still reject.  The contraction preserves the
-    sign of ``radians_in - lower``, so an out-of-range angle stays out of range.
+    Replay artifacts and homing poses stay in the model's radians, and the
+    driver alone applies the thumb calibration when it writes the registers.
+    Feedback reports those registers, so a target has to be moved the same way
+    before it is compared with feedback. Every other joint is copied unchanged.
     """
-    if not np.isfinite(zero_open_ratio) or not 0.0 <= zero_open_ratio <= 1.0:
-        raise ValueError("thumb abduction zero open ratio must be within [0, 1]")
     if hand is None:
-        raise ValueError("thumb abduction scaling requires Inspire hand positions")
-    scaled = np.array(hand, dtype=float, copy=True)
-    open_pose_radians = hand_kinematics.DOFS[THUMB_ABDUCTION_DOF].lower
-    scaled[..., THUMB_ABDUCTION_INDEX] = open_pose_radians + (
-        1.0 - zero_open_ratio
-    ) * (scaled[..., THUMB_ABDUCTION_INDEX] - open_pose_radians)
-    return scaled
+        raise ValueError("the thumb calibration requires Inspire hand positions")
+    reported = np.array(hand, dtype=float, copy=True)
+    for dof_index, fit in THUMB_CALIBRATION.items():
+        dof = hand_kinematics.DOFS[dof_index]
+        column = HAND_JOINTS.index(dof.joint)
+        reported[..., column] = np.clip(
+            (reported[..., column] - fit.offset_rad) / fit.gain, dof.lower, dof.upper
+        )
+    return reported
 
 
 def resolve_trajectory(path: str) -> Path:

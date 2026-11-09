@@ -514,19 +514,19 @@ def test_hand_stream_follows_the_arm_trajectory_clock_across_pause():
 @pytest.mark.parametrize("client_type", [CoordinatedReplayClient, PositionReplayClient])
 def test_wait_for_hand_republishes_home_command_until_feedback_arrives(client_type):
     """Hand homing uses wait_until's progress callback to recover a lost command."""
-    from inspire_franka_trajectory_replay.trajectory import scale_thumb_abduction
+    from inspire_franka_trajectory_replay.trajectory import driver_reported_hand
 
     node = client_type.__new__(client_type)
     node._hand_lock = threading.Lock()
     node._hand_position = np.ones(6)
     commands = []
 
-    def command_hand(target):
+    def command_hand(target, indices=None):
         commands.append(np.asarray(target))
         with node._hand_lock:
             # Emulate the driver's universal actuator-facing overlay while
             # retaining the raw target received on its ROS command topic.
-            node._hand_position = scale_thumb_abduction(target)
+            node._hand_position = driver_reported_hand(target)
 
     node.command_hand = command_hand
     target = np.zeros(6)
@@ -535,6 +535,37 @@ def test_wait_for_hand_republishes_home_command_until_feedback_arrives(client_ty
 
     assert len(commands) == 1
     assert commands[0] == pytest.approx(target)
+
+
+def test_a_partial_hand_wait_ignores_the_joints_left_out():
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    node._hand_lock = threading.Lock()
+    target = np.array([1.333, 1.333, 1.333, 0.2, 0.05, 1.185])
+    # The three support fingers have arrived; index and thumb are still open.
+    node._hand_position = np.array([1.333, 1.333, 1.333, 0.0, 0.0, 0.0])
+    sent = []
+    node.command_hand = lambda positions, indices=None: sent.append(indices)
+
+    node.wait_for_hand(target, timeout=0.5, tolerance=0.01, indices=(0, 1, 2))
+
+    assert all(indices == (0, 1, 2) for indices in sent)
+
+
+def test_a_partial_hand_command_names_only_those_joints():
+    from builtin_interfaces.msg import Time
+    from types import SimpleNamespace
+
+    from inspire_franka_trajectory_replay.trajectory import HAND_JOINTS
+
+    published = []
+    node = CoordinatedReplayClient.__new__(CoordinatedReplayClient)
+    node._hand_publisher = SimpleNamespace(publish=published.append)
+    node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=Time))
+
+    node.command_hand(np.full(6, 1.333), (0, 1, 2))
+
+    assert list(published[0].name) == list(HAND_JOINTS[:3])
+    assert list(published[0].position) == pytest.approx([0.0, 0.0, 0.0])
 
 
 def test_command_hand_converts_radians_to_open_ratios():

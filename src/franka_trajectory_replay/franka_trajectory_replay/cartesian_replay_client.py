@@ -112,6 +112,7 @@ class CartesianReplayClient(ReplayClient):
             'nullspace_damping_lambda', 'rotation_error',
             'mass_weighted_nullspace', 'arm_armature', 'torque_limit',
             'policy_clip_position_m', 'policy_clip_orientation_rad', 'policy_clip_frame_yaw',
+            'policy_yaw_wrap_upper_deg',
             'torque_rate_limit', 'max_trajectory_start_error_m', 'max_trajectory_start_error_rad',
             'goto_max_velocity', 'goto_max_angular_velocity', 'pause_ramp_duration',
             'max_position_error', 'max_orientation_error', 'base_frame',

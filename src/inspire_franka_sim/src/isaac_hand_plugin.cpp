@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <utility>
 
 #include <pluginlib/class_list_macros.hpp>
 
@@ -18,6 +19,8 @@ constexpr char kVelocityLimit[] = "isaac_hand/velocity_limit";
 constexpr char kJoint[] = "isaac_hand/joint/";
 constexpr char kMimic[] = "isaac_hand/mimic/";
 constexpr char kMimicLeader[] = "isaac_hand/mimic_leader/";
+constexpr char kLinkage[] = "isaac_hand/linkage/";
+constexpr char kLinkageLeader[] = "isaac_hand/linkage_leader/";
 
 bool starts_with(const std::string & text, const char * prefix)
 {
@@ -27,6 +30,21 @@ bool starts_with(const std::string & text, const char * prefix)
 mjtNum norm3(const mjtNum * v)
 {
   return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+/// Piecewise-linear `y(x)` over ascending samples, clamped to the end values (np.interp).
+mjtNum interpolate(const std::vector<mjtNum> & xs, const std::vector<mjtNum> & ys, mjtNum x)
+{
+  if (x <= xs.front()) {
+    return ys.front();
+  }
+  if (x >= xs.back()) {
+    return ys.back();
+  }
+  const auto upper = std::upper_bound(xs.begin(), xs.end(), x);
+  const std::size_t k = static_cast<std::size_t>(upper - xs.begin());
+  const mjtNum t = (x - xs[k - 1]) / (xs[k] - xs[k - 1]);
+  return ys[k - 1] + t * (ys[k] - ys[k - 1]);
 }
 
 }  // namespace
@@ -100,15 +118,49 @@ bool IsaacHandPlugin::init(rclcpp::Node::SharedPtr node, const mjModel * model, 
         return false;
       }
       mimics_.push_back({follower_actuator, leader_actuator, values[0], values[1]});
+    } else if (starts_with(name, kLinkage)) {
+      const std::string follower = name.substr(sizeof(kLinkage) - 1);
+      const std::string leader_key = std::string(kLinkageLeader) + follower;
+      const int text = mj_name2id(model, mjOBJ_TEXT, leader_key.c_str());
+      if (text < 0 || size < 4 || size % 2 != 0) {
+        RCLCPP_ERROR(logger_, "%s needs [leader samples..., follower samples...] and a text %s",
+          name.c_str(), leader_key.c_str());
+        return false;
+      }
+      const std::string leader = model->text_data + model->text_adr[text];
+      const int follower_actuator =
+        actuator_for_joint(model, mj_name2id(model, mjOBJ_JOINT, follower.c_str()));
+      const int leader_actuator =
+        actuator_for_joint(model, mj_name2id(model, mjOBJ_JOINT, leader.c_str()));
+      if (follower_actuator < 0 || leader_actuator < 0) {
+        RCLCPP_ERROR(
+          logger_, "%s: '%s' or its leader '%s' has no joint actuator", name.c_str(),
+          follower.c_str(), leader.c_str());
+        return false;
+      }
+      const int n = size / 2;
+      Linkage linkage{follower_actuator, leader_actuator, {values, values + n},
+        {values + n, values + size}};
+      if (!std::is_sorted(linkage.leader.begin(), linkage.leader.end()) ||
+        std::adjacent_find(linkage.leader.begin(), linkage.leader.end()) != linkage.leader.end())
+      {
+        RCLCPP_ERROR(logger_, "%s: leader samples must be strictly ascending", name.c_str());
+        return false;
+      }
+      linkages_.push_back(std::move(linkage));
     }
+  }
+  if (!mimics_.empty() && !linkages_.empty()) {
+    RCLCPP_ERROR(logger_, "a scene's hand is either mimic or linkage, not both");
+    return false;
   }
 
   present_ = true;
   RCLCPP_INFO(
     logger_,
     "Isaac hand: %zu joints limited to %.3f rad/s with PhysX joint friction, %zu target-level "
-    "mimic followers",
-    joints_.size(), static_cast<double>(velocity_limit_), mimics_.size());
+    "mimic followers, %zu linkage followers",
+    joints_.size(), static_cast<double>(velocity_limit_), mimics_.size(), linkages_.size());
   return true;
 }
 
@@ -155,6 +207,12 @@ void IsaacHandPlugin::pre_step(mjData * data)
     data->ctrl[mimic.follower_actuator] =
       mimic.multiplier * data->ctrl[mimic.leader_actuator] + mimic.offset;
   }
+  // The RH56 linkage: each follower's target is where the linkage puts it at its
+  // leader's target (ForgeUltra RH56EnvHand.expand_followers, nominal geometry).
+  for (const Linkage & linkage : linkages_) {
+    data->ctrl[linkage.follower_actuator] =
+      interpolate(linkage.leader, linkage.follower, data->ctrl[linkage.leader_actuator]);
+  }
 }
 
 void IsaacHandPlugin::cleanup()
@@ -162,6 +220,7 @@ void IsaacHandPlugin::cleanup()
   present_ = false;
   joints_.clear();
   mimics_.clear();
+  linkages_.clear();
   model_ = nullptr;
 }
 

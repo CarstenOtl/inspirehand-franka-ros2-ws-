@@ -87,11 +87,12 @@ def test_naming_may_be_mixed_now_that_it_does_not_select_a_unit(node):
 
 @pytest.mark.parametrize("ratio", [0.0, 0.1, 0.25, 0.5, 1.0])
 def test_thumb_abduction_rescale_is_universal_across_command_paths(node, ratio):
-    zero = command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO
-    # The rescale can land between register steps -- ANGLE is an integer
-    # 0..1000, so a commanded 0.25 maps to 0.4375 and is written as 438. Compare
-    # against the value the driver actually writes, not the exact real number.
-    expected = open_ratio_to_angle(zero + (1.0 - zero) * ratio) / ANGLE_MAX
+    # The calibration can land between register steps, since ANGLE is an
+    # integer 0..1000. Compare against the value the driver actually writes,
+    # not the exact real number.
+    expected = open_ratio_to_angle(
+        command_overlays.apply_open_ratio_overlay(THUMB_ABDUCTION, ratio)
+    ) / ANGLE_MAX
     written = []
     for name in ("thumb_proximal_yaw_joint", THUMB_ABDUCTION_CHANNEL):
         node._on_command(JointState(name=[name], position=[ratio]))
@@ -111,7 +112,9 @@ def test_thumb_abduction_overlay_does_not_change_other_dofs(node):
 
 def test_unnamed_six_channel_topic_command_applies_thumb_abduction_overlay(node):
     node._on_command(JointState(position=[0.0] * 6))
-    assert commanded_ratio(node, THUMB_ABDUCTION) == pytest.approx(0.25)
+    assert commanded_ratio(node, THUMB_ABDUCTION) == pytest.approx(
+        command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO, abs=1.0e-3
+    )
     for index in range(5):
         assert commanded_ratio(node, index) == pytest.approx(0.0)
 

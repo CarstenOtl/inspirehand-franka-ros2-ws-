@@ -31,6 +31,9 @@ import numpy as np
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = APP_ROOT.parents[1]
+
+#: The driver's thumb-yaw zero before the 2026-11-09 calibration.
+LEGACY_THUMB_ZERO_OPEN_RATIO = 0.25
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
@@ -99,21 +102,21 @@ class UrdfKinematics:
         return transform
 
 
-def physical_positions(q10, thumb_overlay: bool = True) -> dict:
-    """Recorded policy coordinates -> URDF joint positions (overlay re-applied).
+def physical_positions(q10, thumb_rescale: bool = False) -> dict:
+    """Recorded policy coordinates -> URDF joint positions.
 
-    ``thumb_overlay`` is the recording's ``thumb_abduction_overlay`` metadata:
-    ros-sim runs the driver without it, so there the logical thumb yaw is the
-    physical one.
+    ``thumb_rescale`` says the recording predates the 2026-11-09 thumb
+    calibration, when the driver contracted yaw onto the top 75 percent of its
+    range. Since then the logical thumb is the real one, as it is in ros-sim.
     """
 
     from inspire_hand_driver import command_overlays, kinematics as kin
 
     positions = {f"fr3_joint{i + 1}": float(v) for i, v in enumerate(q10[:7])}
     dof = kin.dof_index(command_overlays.THUMB_ABDUCTION_JOINT)
-    ratio = command_overlays.apply_open_ratio_overlay(
-        dof, kin.rad_to_open_ratio(dof, float(q10[7])), thumb_overlay
-    )
+    ratio = kin.rad_to_open_ratio(dof, float(q10[7]))
+    if thumb_rescale:
+        ratio = LEGACY_THUMB_ZERO_OPEN_RATIO + (1.0 - LEGACY_THUMB_ZERO_OPEN_RATIO) * ratio
     positions["thumb_proximal_yaw_joint"] = kin.open_ratio_to_rad(dof, ratio)
     positions["thumb_proximal_pitch_joint"] = float(q10[8])
     positions["index_proximal_joint"] = float(q10[9])
@@ -123,11 +126,12 @@ def physical_positions(q10, thumb_overlay: bool = True) -> dict:
 def analyze(run_dir: Path):
     data = np.load(run_dir / "data" / "rollout_data.npz")
     metadata_path = run_dir / "data" / "metadata.json"
-    thumb_overlay = True
+    thumb_rescale = True
     if metadata_path.is_file():
         import json
 
-        thumb_overlay = bool(json.loads(metadata_path.read_text()).get("thumb_abduction_overlay", True))
+        metadata = json.loads(metadata_path.read_text())
+        thumb_rescale = bool(metadata.get("thumb_abduction_overlay", True)) and "hand_calibration" not in metadata
     q = data["joint_position"]
     actions = data["filtered_native_action"]
     t = data["sample_time_s"] - data["sample_time_s"][0]
@@ -146,7 +150,7 @@ def analyze(run_dir: Path):
     z_transport = None
     reference_quaternion = None
     for k in range(len(q)):
-        positions = physical_positions(q[k], thumb_overlay)
+        positions = physical_positions(q[k], thumb_rescale)
         flange = kinematics.pose("fr3_link8", positions)
         thumb_flange, index_flange = training_hand.tips_in_flange(q[k][7:10])
         thumb = world(flange[:3, 3] + flange[:3, :3] @ thumb_flange)

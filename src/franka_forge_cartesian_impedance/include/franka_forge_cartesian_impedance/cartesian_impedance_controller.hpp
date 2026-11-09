@@ -248,6 +248,9 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   double policy_clip_position_m_{0.0};
   double policy_clip_orientation_rad_{0.0};
   double policy_clip_frame_yaw_{0.0};
+  // The clip's yaw seam (policy_yaw_wrap_upper_deg). Set live by the runner from the student's
+  // task profile, only while no policy goal is active.
+  std::atomic<double> policy_yaw_wrap_upper_rad_{kForgeYawWrapUpperRad};
   Eigen::Quaterniond policy_clip_frame_{Eigen::Quaterniond::Identity()};
   double torque_rate_limit_{0.0};
   double goto_max_velocity_{0.10};

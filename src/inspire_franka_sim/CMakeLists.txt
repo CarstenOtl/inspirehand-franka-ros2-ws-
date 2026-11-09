@@ -118,6 +118,7 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
   ament_add_pytest_test(mjcf test/test_mjcf.py)
   ament_add_pytest_test(mujoco_vis_node test/test_mujoco_vis_node.py)
+  ament_add_pytest_test(isaac_hand_relay test/test_isaac_hand_relay.py)
 endif()
 
 ament_package()

@@ -216,15 +216,14 @@ def main(argv=None) -> int:
         physical_ratio = hand_kinematics.rad_to_open_ratio(
             thumb_dof, corrected_physical[7]
         )
-        logical_ratio = command_overlays.invert_open_ratio_overlay(
-            thumb_dof, physical_ratio
-        )
+        # The episodes this diagnoses predate the 2026-11-09 thumb calibration,
+        # when the driver contracted yaw onto the top 75 percent of its range.
+        legacy_zero = 0.25
+        logical_ratio = (physical_ratio - legacy_zero) / (1.0 - legacy_zero)
         corrected_physical[7] = hand_kinematics.open_ratio_to_rad(
             thumb_dof, logical_ratio
         )
-        corrected_physical[17] /= (
-            1.0 - command_overlays.THUMB_ABDUCTION_ZERO_OPEN_RATIO
-        )
+        corrected_physical[17] /= 1.0 - legacy_zero
         variants["corrected_physical_proprio"] = corrected_physical
         variants["physical_hand_position_velocity_only"][7:10] = physical_proprio[7:10]
         variants["physical_hand_position_velocity_only"][17:20] = physical_proprio[17:20]

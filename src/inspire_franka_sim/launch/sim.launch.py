@@ -76,6 +76,13 @@ KEYFRAMES = {
     # sim_policy.launch.py arm_friction_scale / arm_armature_scale off their
     # defaults: the same scene with the arm's friction and armature rescaled.
     "inspire_franka_policy_scene_arm_variant.xml": "policy_home",
+    # sim_policy.launch.py hand_model:=rh56: the RH56 students' scene.
+    "inspire_franka_policy_scene_rh56.xml": "policy_home",
+    "inspire_franka_policy_scene_rh56_arm_variant.xml": "policy_home",
+    # sim_policy.launch.py task_profile:=mimic_windback45_tilt30: the old-hand
+    # students trained from the wound, tilted reset.
+    "inspire_franka_policy_scene_windback45_tilt30.xml": "policy_home",
+    "inspire_franka_policy_scene_windback45_tilt30_arm_variant.xml": "policy_home",
     "fr3_scene.xml": "home",
     "inspire_hand_scene.xml": "open",
 }

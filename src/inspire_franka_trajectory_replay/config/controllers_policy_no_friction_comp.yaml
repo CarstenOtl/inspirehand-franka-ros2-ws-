@@ -1,0 +1,147 @@
+# controllers_policy.yaml with the Coulomb friction feedforward OFF (2026-11-06):
+# for students trained with arm friction randomization (the RH56 exp17 student),
+# which should meet the physical arm's friction as it is. Everything else is
+# identical; regenerate from controllers_policy.yaml if that changes.
+# Physical distilled-policy profile. The validated trajectory-replay joint
+# controller performs homing; the Cartesian controller then owns the same seven
+# FR3 effort interfaces and accepts bounded live policy targets.
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+      thread_priority: 97
+      overruns:
+        manage: false
+        print_warnings: false
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+      trajectory_replay_controller:
+        type: franka_trajectory_replay/TrajectoryReplayController
+      cartesian_trajectory_replay_controller:
+        type: franka_forge_cartesian_impedance/CartesianImpedanceController
+
+  franka_robot_state_broadcaster:
+    ros__parameters:
+      convenience_publish_rate: 100
+
+  # Same hardware-validated joint-impedance homing path as traj_replay.
+  trajectory_replay_controller:
+    ros__parameters:
+      robot_type: fr3
+      arm_prefix: ""
+      command_interface: effort
+      k_gains: [150.0, 150.0, 150.0, 150.0, 62.5, 37.5, 12.5]
+      d_gains: [15.0, 15.0, 15.0, 15.0, 5.0, 5.0, 2.5]
+      stiffness_scale: 1.0
+      gain_ramp_duration: 1.0
+      coriolis_compensation: false
+      pause_ramp_duration: 0.5
+      torque_rate_limit: 0.0
+      rate_limit: false
+      set_collision_behavior: false
+      goto_max_velocity: 0.5
+      goto_max_acceleration: 1.0
+      goto_min_duration: 5.0
+      max_joint_step: 3.0
+      max_trajectory_start_error: 0.001
+      trajectory_velocity_scale: 1.0
+      trajectory_acceleration_scale: 1.0
+      abort_stop_duration: 0.5
+      status_rate: 50.0
+
+  cartesian_trajectory_replay_controller:
+    ros__parameters:
+      arm_id: fr3
+      arm_prefix: ""
+      base_frame: fr3_link0
+      model_source: franka
+      # The compliance centre until the first policy goal arrives. Training applied
+      # its operational-space wrench at the live thumb/index fingertip midpoint, and
+      # every ~/policy_goal now carries that live midpoint (tool_in_flange), which
+      # the controller then uses instead of this. This is the same midpoint frozen
+      # at the threading grip, in ForgeUltra's hand geometry: the activation hold
+      # and activate_policy_controller.py run about it. It is deliberately NOT
+      # replay.yaml's tcp (-0.0874, -0.0327, 0.1453), which is a closed replay
+      # pinch 40 mm away; trajectory replay keeps that one. Checked at startup
+      # against POLICY_TOOL_OFFSET_XYZ in policy_rollout/hardware.py.
+      tool_offset_xyz: [-0.059067, -0.028773, 0.173311]
+      tool_offset_rpy: [0.0, 0.0, 0.0]
+      # Forge threading task-space gains. The setpoint is already clipped and
+      # filtered by the checkpoint adapter, so do not add the example's 0.005
+      # reference filter here.
+      translational_stiffness: 565.0
+      rotational_stiffness: 28.0
+      nullspace_stiffness: 10.0
+      stiffness_scale: 1.0
+      target_filter: 1.0
+      # The two places the franka example's law departs from ForgeUltra's
+      # compute_dof_torque. lambda 0.2 turns the nullspace projector into a leaky
+      # one: near the threading posture it sits on top of the three smallest
+      # singular values of J^T, so the joint spring pushes 12.5 N on the tool at a
+      # 1 rad wrist excursion, against the 11.3 N the policy commands for a full
+      # 20 mm step. lambda 0 restores the exact projection (0.4 N). axis_angle
+      # feeds the rotational spring the full angle instead of sin(theta/2), which
+      # is what turns 28 Nm/rad into the 14 Nm/rad the example actually applies.
+      nullspace_damping_lambda: 0.0
+      rotation_error: axis_angle
+      # A1b, as in controllers_sim_policy.yaml. On hardware the mass matrix comes
+      # from franka_robot_model_->getMassMatrix() rather than the description, and it
+      # carries whatever end-effector load is configured -- so the Inspire hand has
+      # to be set as the load or this is the mass matrix of a bare flange.
+      mass_weighted_nullspace: true
+      arm_armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      nullspace_target: trajectory
+      # compute_dof_torque has no Coriolis term: the PhysX arm felt its own Coriolis
+      # forces uncompensated, and so must this one. libfranka still compensates
+      # gravity on its own, which Isaac matched with disable_gravity.
+      coriolis_compensation: false
+      # ForgeUltra's clamp on the summed torque. Never binds on an FR3.
+      # Coulomb friction feedforward per joint, Nm (0 = off). Training's FR3 has no
+      # joint friction; the physical wrist lost ~0.65 Nm of the ~1 Nm the yaw clip
+      # asks for (2026-11-03), so the fingers met the nut 0.3 rad short. Moving losses
+      # measured on both 2026-11-03 runs: 0.32-0.44 Nm (j2, j5-j7); 0.3 stays under all
+      # of them, so the arm keeps some friction rather than being pushed. In ros-sim with
+      # 0.4 Nm per joint this took the student from 0 to 3 cycles in 450 steps.
+      friction_compensation_nm: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      friction_compensation_velocity: 0.05
+      friction_compensation_torque: 0.3
+      torque_limit: 100.0
+      # ForgeUltra's per-substep target clip, run here at 1 kHz on ~/policy_goal:
+      # pos_action_threshold / rot_action_threshold from vanilla_threading.yaml, in
+      # the training world frame, which is fr3_link0 yawed by pi (TrainingFrameAdapter
+      # in policy_rollout/hardware.py). The runner's preflight checks all three.
+      policy_clip_position_m: 0.02
+      policy_clip_orientation_rad: 0.097
+      policy_clip_frame_yaw: 3.141592653589793
+      torque_rate_limit: 1.0
+      goto_max_velocity: 0.10
+      goto_max_angular_velocity: 0.50
+      goto_max_nullspace_velocity: 0.50
+      goto_min_duration: 3.0
+      max_goto_step_m: 0.30
+      max_goto_step_rad: 1.0
+      max_trajectory_start_error_m: 0.002
+      max_trajectory_start_error_rad: 0.01
+      goto_settle_tolerance_m: 0.0005
+      goto_settle_tolerance_rad: 0.002
+      goto_settle_timeout: 2.0
+      workspace_min: [-0.855, -0.855, -0.36]
+      workspace_max: [0.855, 0.855, 1.19]
+      trajectory_velocity_scale: 1.0
+      max_position_error: 0.08
+      max_orientation_error: 0.35
+      pause_ramp_duration: 0.5
+      abort_stop_duration: 0.5
+      # Native action clipping is component-wise at 20 mm / 0.097 rad, so the
+      # corresponding 3-D norm bounds are sqrt(3) times those values. These
+      # guards leave only numerical tolerance above that contract.
+      max_policy_step_m: 0.036
+      max_policy_step_rad: 0.18
+      policy_command_timeout: 0.5
+      # Keep Python policy subscribers out of the 1 kHz real-time stream. The
+      # controller update and watchdog remain at controller_manager's 1 kHz.
+      state_publish_rate: 50.0
+      status_rate: 50.0
+      set_collision_behavior: false

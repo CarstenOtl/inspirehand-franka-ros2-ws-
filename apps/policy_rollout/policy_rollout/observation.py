@@ -27,6 +27,10 @@ NATIVE_OSC_PROPRIO_DIM = 29
 # proprio layer agrees: the previous-action column fingerprint sits right
 # before the forces.
 FORCE_OBSERVATION_MODES = ("omitted", "included")
+# How the hand enters proprioception. "joint" is the layout above: the three
+# hand joints in q10 (and their velocities when shown). Checkpoints from
+# 2026-11-04 on record it; any other value is a layout this runner lacks.
+HAND_OBSERVATION_MODES = ("joint",)
 FINGERTIP_FORCE_DIM = 2
 FINGERTIP_FORCE_SCALE_N = 20.0
 ARM_TORQUE_DIM = 7
