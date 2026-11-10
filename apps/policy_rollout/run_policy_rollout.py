@@ -223,6 +223,16 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--rehome-between-cycles",
+        action="store_true",
+        help=(
+            "after each return, except the last cycle's, stop the policy and put the arm "
+            "on the reset pose with the joint-impedance homing, then start the next cycle "
+            "from there. The return gate then only has to clear the nut, so "
+            "--return-tolerance-mm/-deg default to 30 and 25."
+        ),
+    )
+    parser.add_argument(
         "--joint-limit-margin",
         type=float,
         default=0.15,
@@ -252,6 +262,16 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
             "finger sweep, how the deployed student turns the nut. grasp-yaw: the "
             "grasp-frame yaw proxy, for students that turn with the wrist. Giving a "
             "hardware signal in ros-sim rehearses it against the measured twist."
+        ),
+    )
+    parser.add_argument(
+        "--release-proxy-deg",
+        type=float,
+        default=None,
+        metavar="DEG",
+        help=(
+            "with --release-signal grasp-yaw: the proxy reading that fires the release, "
+            "instead of 55 deg. For a student whose wrist turns less than the nut."
         ),
     )
     parser.add_argument(
@@ -409,10 +429,11 @@ def resolve_backend_defaults(args, sim: bool) -> None:
 
     if args.max_steps is None:
         args.max_steps = 4500 if sim else 1500
+    rehome = getattr(args, "rehome_between_cycles", False)
     if args.return_tolerance_mm is None:
-        args.return_tolerance_mm = 10.0 if sim else 5.0
+        args.return_tolerance_mm = 30.0 if rehome else 10.0 if sim else 5.0
     if args.return_tolerance_deg is None:
-        args.return_tolerance_deg = 10.0 if sim else 5.0
+        args.return_tolerance_deg = 25.0 if rehome else 10.0 if sim else 5.0
 
 
 def resolve_hand_start(choice: str, profile, sim: bool) -> str:
@@ -426,6 +447,21 @@ def resolve_hand_start(choice: str, profile, sim: bool) -> str:
 def _run_hardware(argv, sim: bool = False) -> int:
     args = _hardware_parser(sim).parse_args(argv)
     _resolve_execution(args)
+    from policy_rollout.teacher import EPISODE_STEPS, is_teacher_checkpoint
+
+    teacher = is_teacher_checkpoint(args.checkpoint)
+    if teacher:
+        if not sim:
+            raise ValueError(
+                "this checkpoint is an RL teacher: it observes the nut pose, which the "
+                "workcell does not measure. Run it with ros-sim."
+            )
+        if getattr(args, "debug_viz", False):
+            raise ValueError("--debug-viz draws the student's point cloud; the teacher has no vision")
+        # One training episode: it never learned to release or return.
+        args.cycles = 1
+        if args.max_steps is None:
+            args.max_steps = EPISODE_STEPS
     resolve_backend_defaults(args, sim)
     for name in (
         "rate",
@@ -444,12 +480,16 @@ def _run_hardware(argv, sim: bool = False) -> int:
         raise ValueError("--viewer-depth-max and --viewer-hz must be positive")
     if args.max_home_grasp_error < 0 or args.home_attempts < 1 or args.home_settle_s < 0:
         raise ValueError("--max-home-grasp-error, --home-attempts and --home-settle-s must be valid")
-    if not 0.0 < args.return_tolerance_mm <= 30.0 or not 0.0 < args.return_tolerance_deg <= 15.0:
-        raise ValueError("--return-tolerance-mm must be in (0, 30] and --return-tolerance-deg in (0, 15]")
+    if not 0.0 < args.return_tolerance_mm <= 30.0 or not 0.0 < args.return_tolerance_deg <= 25.0:
+        raise ValueError("--return-tolerance-mm must be in (0, 30] and --return-tolerance-deg in (0, 25]")
     if not 0.0 < args.joint_limit_margin < 1.0:
         raise ValueError("--joint-limit-margin must be in (0, 1) rad")
     if args.release_signal == "nut-twist" and not sim:
         raise ValueError("--release-signal nut-twist needs ros-sim's simulated nut")
+    if args.release_proxy_deg is not None and (
+        args.release_signal != "grasp-yaw" or not 0.0 < args.release_proxy_deg <= 90.0
+    ):
+        raise ValueError("--release-proxy-deg needs --release-signal grasp-yaw and a value in (0, 90]")
     if args.min_fingertip_separation < 0 or args.max_proxy_step_deg <= 0:
         raise ValueError("--min-fingertip-separation and --max-proxy-step-deg must be valid")
 
@@ -475,20 +515,26 @@ def _run_hardware(argv, sim: bool = False) -> int:
             "physical policy execution is disabled by readiness checks:\n" + details
         )
 
-    from policy_rollout.flow_policy import FlowPolicyRunner
+    if teacher:
+        from policy_rollout.teacher import TeacherPolicyRunner
 
-    runner = FlowPolicyRunner(
-        args.checkpoint,
-        device=args.device,
-        integration_steps=args.integration_steps,
-        temporal_ensemble_decay=args.temporal_ensemble_decay,
-    )
-    calibration.assert_checkpoint_compatible(runner.config.to_dict())
-    warm_up_s = _warm_up_runner(runner, calibration, args.seed)
-    print(
-        f"policy model warm-up complete in {warm_up_s:.3f} s "
-        f"({args.integration_steps} flow steps on {runner.device})"
-    )
+        runner = TeacherPolicyRunner(args.checkpoint, device=args.device)
+        print(f"RL teacher loaded on {runner.device}: one turn, then the run ends", flush=True)
+    else:
+        from policy_rollout.flow_policy import FlowPolicyRunner
+
+        runner = FlowPolicyRunner(
+            args.checkpoint,
+            device=args.device,
+            integration_steps=args.integration_steps,
+            temporal_ensemble_decay=args.temporal_ensemble_decay,
+        )
+        calibration.assert_checkpoint_compatible(runner.config.to_dict())
+        warm_up_s = _warm_up_runner(runner, calibration, args.seed)
+        print(
+            f"policy model warm-up complete in {warm_up_s:.3f} s "
+            f"({args.integration_steps} flow steps on {runner.device})"
+        )
     viewer_process = None
     try:
         if args.viewer:

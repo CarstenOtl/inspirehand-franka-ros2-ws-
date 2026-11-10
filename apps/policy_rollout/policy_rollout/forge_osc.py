@@ -207,6 +207,16 @@ CHECKPOINT_TASK_PROFILES = {
     "m24-dp3-exp19r01-proprio-friction-rollback3-clock-force-nohv-da-s0-20261109-143521-315193": (
         MIMIC_WINDBACK45_TILT30_PROFILE.name
     ),
+    # exp_20: the exp_19 teacher recipe, same reset and action frame, on the
+    # hardware-fitted hand (policy_rollout/teacher.py runs it, ros-sim only).
+    "m24-fr3v2-exp20-run01-hwfit-2026-11-09_23-43-16": MIMIC_WINDBACK45_TILT30_PROFILE.name,
+    # Students of that teacher, extended and reduced randomization.
+    "m24-dp3-exp20r01-extended-rollback3-clock-force-nohv-da-s0-20261110-113938-776156": (
+        MIMIC_WINDBACK45_TILT30_PROFILE.name
+    ),
+    "m24-dp3-exp20r01-proprio-friction-rollback3-clock-force-nohv-da-s0-20261110-120354-491945": (
+        MIMIC_WINDBACK45_TILT30_PROFILE.name
+    ),
 }
 
 

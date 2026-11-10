@@ -57,6 +57,18 @@ def test_backend_limits_follow_isaac_in_ros_sim_only():
     assert args.max_steps == 7 and args.return_tolerance_mm == 12.0 and args.return_tolerance_deg == 10.0
 
 
+def test_rehome_loosens_only_the_defaulted_return_gate():
+    for sim in (True, False):
+        args = cli._hardware_parser(sim=sim).parse_args(["--rehome-between-cycles"])
+        cli.resolve_backend_defaults(args, sim)
+        assert (args.return_tolerance_mm, args.return_tolerance_deg) == (30.0, 25.0)
+    args = cli._hardware_parser(sim=False).parse_args(
+        ["--rehome-between-cycles", "--return-tolerance-mm", "20"]
+    )
+    cli.resolve_backend_defaults(args, False)
+    assert (args.return_tolerance_mm, args.return_tolerance_deg) == (20.0, 25.0)
+
+
 def test_hand_start_follows_the_students_reset_in_ros_sim():
     from policy_rollout import forge_osc as fo
 

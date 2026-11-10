@@ -32,6 +32,42 @@ checkpoints/
       nn/best.pt                       DP3 vision-head pretraining checkpoint (provenance only)
 ```
 
+## `m24-dp3-exp20r01-{extended,proprio-friction}-rollback3-clock-force-nohv-da-s0-*/.../nn/checkpoint.pt`
+
+Two DP3 students of the exp_20 teacher below, on the hardware-fitted hand. The
+network layout and observations match the exp19 students; only the progress
+horizon differs. Both resolve to the `mimic_windback45_tilt30` task profile. Not
+`DEFAULT_CHECKPOINT`.
+
+| | extended | proprio-friction |
+|---|---|---|
+| run | `...-20261110-113938-776156` | `...-20261110-120354-491945` |
+| sha256 | `4d0b498411c01eb8933336a02f9f1419adb747134af26a195feaee14e29e2fac` | `223d8e7e847231f828abb8b1d17a15f9efd76427cb0c3b7684907884a2527bdb` |
+| size | 106 MB | 106 MB |
+| conditioning | progress 129.5 s / 1943 steps, cyclic phase | progress 120.3 s / 1804 steps, cyclic phase |
+| collection recipe | `..._windback45_tilt30_obsnoise_hwfit_sequential_collection_dr.yaml` | `..._windback45_tilt30_obsnoise_hwfit_sequential_collection_proprio_friction.yaml` |
+| training data | 23 `sequential-threading-dual-supervision-20261110-103754-033968` episodes | 33 `sequential-threading-dual-supervision-20261110-103805-743944` episodes |
+| Isaac closed loop | 3 episodes x 16 environments, return gate 10 mm / 10 deg (`extended-ret10`): 36 cycles, 0/48 completed 10, 19 transition failures | none shipped with the checkpoint |
+
+## `m24-fr3v2-exp20-run01-hwfit-extended-2026-11-09_23-43-16-20261110T112616Z-1-001/m24-fr3v2-exp20-run01-hwfit-2026-11-09_23-43-16/nn/last_ForgeTg2_ep_200_rew_517.838.pth`
+
+The exp_20 RL teacher on the hardware-fitted hand, not a distilled student: an
+rl_games LSTM actor over 46 state observations, without vision. The runner
+recognises the `.pth` and uses `policy_rollout/teacher.py` with the
+`mimic_windback45_tilt30` profile.
+
+- ros-sim only: the actor observes the nut pose, which the workcell does not
+  measure, so the hardware backend refuses it;
+- one turn per run: it was trained on approach, grip and turn and has no release
+  or return, so `--cycles` is forced to 1 and the run ends on the task's success
+  (12 ticks within 2.5 deg of a 60 deg turn with both pads loaded).
+
+| field | value |
+|---|---|
+| sha256 | `fbaa7b69a70d73f15d8a54934b1d0ec32ce6afbda74cccfb4cf958592d1c799d` |
+| size | 215 MB |
+| training | recipe `m24_threading_fr3v2_joint_limit_guard_windback45_tilt30_adr80_obsnoise_hwfit.yaml` (committed afterwards as ForgeUltra ac8d948), 200 epochs, threading success 0.87 |
+
 ## `m24-dp3-exp19r01-proprio-friction-rollback3-clock-force-nohv-da-s0-20261109-143521-315193-20261109T170730Z-1-001/m24-dp3-exp19r01-.../nn/checkpoint.pt`
 
 The exp19 teacher below, collected with a reduced randomization set. The network

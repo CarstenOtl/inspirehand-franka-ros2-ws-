@@ -26,6 +26,8 @@ from policy_rollout.hardware import (
     physical_hand_state_to_policy,
     policy_goal_base,
     policy_tool_transform,
+    rehome_between_cycles,
+    settle_on_reset_grasp,
 )
 
 
@@ -388,6 +390,200 @@ def test_cycle_coordinator_accepts_a_gradual_turn_with_a_full_pinch():
     assert errors[0] == pytest.approx(0.004)
     assert errors[1] == pytest.approx(0.0, abs=1e-6)
     assert errors[2] == pytest.approx(0.0)
+
+
+def test_release_proxy_deg_lowers_only_the_grasp_yaw_gate():
+    reset_q = _reset_grasp_quaternion()
+
+    def fired_at(**kwargs):
+        coordinator = GripCycleCoordinator(
+            rate_hz=15.0,
+            max_cycles=1,
+            reset_position=np.zeros(3),
+            reset_quaternion=reset_q,
+            reset_hand=np.zeros(3),
+            min_fingertip_separation_m=0.030,
+            max_proxy_step_rad=np.deg2rad(20.0),
+            release_proxy_rad=np.deg2rad(30.0),
+            **kwargs,
+        )
+        for degrees in range(2, 62, 2):
+            event, _ = coordinator.update(
+                position=np.zeros(3),
+                quaternion=_turned_about_world_z(reset_q, -degrees),
+                hand=np.zeros(3),
+                fingertip_separation_m=0.034,
+            )
+            if event == "release_started":
+                return degrees
+        return None
+
+    assert fired_at() in (30, 32)
+    # The finger-sweep signal ignores it.
+    assert fired_at(release_signal="finger_sweep") is None
+
+
+def test_rebase_turn_origin_keeps_a_rehome_out_of_the_next_cycles_turn():
+    reset_q = _reset_grasp_quaternion()
+    coordinator = GripCycleCoordinator(
+        rate_hz=15.0,
+        max_cycles=2,
+        reset_position=np.zeros(3),
+        reset_quaternion=reset_q,
+        reset_hand=np.zeros(3),
+        release_proxy_rad=np.deg2rad(30.0),
+    )
+    # The cycle ended 19 deg off; the re-home brought the wrist back to zero.
+    coordinator.update(
+        position=np.zeros(3), quaternion=_turned_about_world_z(reset_q, -19), hand=np.zeros(3)
+    )
+    coordinator._cycle_yaw_origin = coordinator._unwrapped_yaw
+    coordinator.rebase_turn_origin(reset_q)
+    event, progress = coordinator.update(
+        position=np.zeros(3), quaternion=reset_q, hand=np.zeros(3)
+    )
+    assert event is None
+    assert progress == pytest.approx(0.0, abs=1e-9)
+    assert coordinator.last_proxy_step_rad == pytest.approx(0.0, abs=1e-9)
+    _, progress = coordinator.update(
+        position=np.zeros(3), quaternion=_turned_about_world_z(reset_q, -10), hand=np.zeros(3)
+    )
+    assert np.degrees(progress) == pytest.approx(10.0, abs=1.0)
+
+
+class _HomingRig:
+    """Records the order of a re-home; the arm lands ``landings[i]`` off the target."""
+
+    def __init__(self, landings, fail_goto=None):
+        self.calls = []
+        self.landings = list(landings)
+        self.landing = 0
+        self.fail_goto = fail_goto
+        self.switch_timeouts = 0
+
+    def ensure_active(self, log=print, controller=None):
+        if self.switch_timeouts:
+            self.switch_timeouts -= 1
+            self.calls.append("switch_timeout")
+            raise TimeoutError("no reply")
+        self.calls.append("joint_active" if controller is None else f"active:{controller}")
+
+    def goto(self, command):
+        self.calls.append(("goto", np.asarray(command).copy()))
+        if self.fail_goto is not None:
+            raise self.fail_goto
+        self.landing = min(self.landing + 1, len(self.landings))
+
+    def abort(self):
+        self.calls.append("abort")
+
+    def current_joint_positions(self):
+        return np.full(7, 0.001)
+
+    def wait_for_grasp_pose(self, timeout_s):
+        offset = self.landings[self.landing - 1]
+        return np.array([offset, 0.0, 0.0]), np.array([1.0, 0.0, 0.0, 0.0]), None
+
+    def wait_for_policy_hand(self, target, timeout_s, tolerance, republish):
+        self.calls.append("hand")
+        republish()
+
+    def publish_hand_target(self, pinch):
+        self.calls.append("hand_target")
+
+
+def _rehome(rig, tolerance_m=0.005):
+    return rehome_between_cycles(
+        rig,
+        rig,
+        cartesian_controller="cartesian",
+        home_arm=np.zeros(7),
+        command=np.ones(7) * 0.01,
+        target_position=np.zeros(3),
+        target_quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
+        hand_target=np.zeros(3),
+        hand_timeout_s=1.0,
+        hand_tolerance=0.1,
+        tolerance_m=tolerance_m,
+        attempts=3,
+        settle_s=0.0,
+        timeout_s=1.0,
+    )
+
+
+def test_rehome_switches_settles_the_hand_first_and_hands_the_arm_back():
+    rig = _HomingRig([0.002])
+    result = _rehome(rig)
+    names = [call if isinstance(call, str) else call[0] for call in rig.calls]
+    assert names == [
+        "joint_active", "hand", "hand_target", "goto", "active:cartesian",
+    ]
+    # Starts from the goal that already worked, not the nominal pose.
+    assert rig.calls[names.index("goto")][1] == pytest.approx(np.ones(7) * 0.01)
+    assert result["attempts"] == 1
+
+
+def test_rehome_shifts_the_goal_by_the_residual_when_it_lands_off():
+    rig = _HomingRig([0.008, 0.002])
+    result = _rehome(rig)
+    gotos = [call[1] for call in rig.calls if isinstance(call, tuple)]
+    assert len(gotos) == 2
+    assert gotos[1] == pytest.approx(gotos[0] - 0.001)
+    assert result["attempts"] == 2
+    assert result["command"] == pytest.approx(gotos[1])
+
+
+def test_rehome_that_cannot_land_leaves_the_joint_controller_in_charge():
+    from franka_trajectory_replay.replay_client import Rejected
+
+    rig = _HomingRig([0.008, 0.008, 0.008])
+    with pytest.raises(Rejected, match="holding in joint impedance"):
+        _rehome(rig)
+    assert "active:cartesian" not in rig.calls
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("late"), KeyboardInterrupt()])
+def test_rehome_interrupted_mid_move_stops_the_reference(failure):
+    rig = _HomingRig([0.002], fail_goto=failure)
+    with pytest.raises(type(failure)):
+        _rehome(rig)
+    assert rig.calls[-1] == "abort"
+    assert "active:cartesian" not in rig.calls
+
+
+def test_rehome_retries_a_switch_whose_reply_was_lost():
+    rig = _HomingRig([0.002])
+    rig.switch_timeouts = 2
+    _rehome(rig)
+    assert rig.calls[:3] == ["switch_timeout", "switch_timeout", "joint_active"]
+    assert rig.calls[-1] == "active:cartesian"
+
+
+def test_rehome_gives_up_after_three_lost_replies():
+    rig = _HomingRig([0.002])
+    rig.switch_timeouts = 3
+    with pytest.raises(TimeoutError):
+        _rehome(rig)
+    assert "goto" not in [call[0] if isinstance(call, tuple) else call for call in rig.calls]
+
+
+def test_settle_stops_at_the_first_landing_inside_tolerance():
+    rig = _HomingRig([0.001])
+    rig.landing = 1
+    result = settle_on_reset_grasp(
+        rig,
+        rig,
+        home_arm=np.zeros(7),
+        command=np.zeros(7),
+        target_position=np.zeros(3),
+        target_quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
+        tolerance_m=0.002,
+        attempts=3,
+        settle_s=0.0,
+        timeout_s=1.0,
+    )
+    assert result["attempts"] == 1
+    assert not [call for call in rig.calls if isinstance(call, tuple)]
 
 
 # (fingertip separation m, [thumb, index] pad force N, index rad) per 15 Hz tick,

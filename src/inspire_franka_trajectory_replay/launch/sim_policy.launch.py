@@ -182,6 +182,11 @@ def launch_setup(context, *args, **kwargs):
     prefix = rgbd_topic.rsplit("/", 1)[0]
     pose = camera["world_pose"]
 
+    task_profile = arg("task_profile")
+    if task_profile and task_profile not in TASK_PROFILE_SCENES:
+        raise RuntimeError(
+            f"task_profile must be empty or one of {sorted(TASK_PROFILE_SCENES)}, got {task_profile!r}"
+        )
     base_scene = TASK_PROFILE_SCENES.get(task_profile, SCENE)
     arm_friction_scale = float(arg("arm_friction_scale"))
     arm_armature_scale = float(arg("arm_armature_scale"))
