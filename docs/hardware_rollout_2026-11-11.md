@@ -69,3 +69,36 @@ Written for: the training team.
    - If not, Isaac holds the posture more firmly than the real arm, and a randomized null-space stiffness or joint friction would cover it.
    - Until this is settled, multi-cycle runs use the joint-space re-home.
 3. **Recollection with `cyclic_transition_clip` {transition phases, 0.05 m, 0.25 rad}.** From our side this is good to go. The hardware confirms both the faster return and your 0.42 rad peak error.
+
+## Update, same day: what actually stops the return
+
+Finding 2 above was wrong. The 12.5-13.5 mm was not where the arm stopped.
+
+1. **The return gate fired while the arm was still moving.** In all 13 transition-clip
+   returns that passed the 10° gate, the arm was still closing at 3-5 mm/s and 10-16°/s.
+2. **The true resting point is 15-17 mm / 6-7°.** Run `160526` used a 3 mm / 2° gate, so
+   the return ran its full 16.9 s. The arm settled 3.7 s into the return at 16-17 mm / 7°,
+   all joints under 0.006 rad/s, and then crept to 14.5 mm / 5.9°. It held about 9 N of
+   spring force at rest. Run 1 cycle 2 ended the same way, at 15.2 mm / 6.7°.
+3. **Single-axis friction is small at that pose.** A dead-zone probe at that hand pose
+   measured 0.8-2.1 N and 0.3-1.1 N·m. That holds with the arm at the reset posture and
+   in the drifted posture the return stopped in; the posture adds at most about 0.5 N.
+4. **The stall is a soft coupled mode of the Cartesian spring.** The remaining error is
+   mostly the hand turned about a point near the wrist: 15.8 mm plus 6.4°. The grasp
+   point sits 185 mm from the flange, which is close to √(K_rot / K_trans) = 0.22 m. So
+   the position spring (8.9 N) and the rotation spring (3.1 N·m) produce joint torques
+   of 2-3.6 N·m that cancel on j1, j2, j3 and j6. What's left is 1.6 N·m on j4 and
+   −1.2 N·m on j5; the recorded command is 1.45 and −1.18. Joints j4 and j5 don't move
+   at that, so their static friction is at least 1.5 N·m and 1.2 N·m.
+   - For a rotation about the flange the effective stiffness is only
+     28 − 565 · 0.185² ≈ 8.7 N·m/rad, a third of the rotational gain.
+   - Any friction in j4 and j5 therefore holds a large combined error.
+   - The single-axis probe never excites this direction.
+5. **Posture drift is real but secondary.** Within one cycle j1/j3 drifted −0.36/+0.41 rad,
+   and the null-space spring is too weak against friction to undo it. The drift makes the
+   stall grow from cycle to cycle, but it doesn't cause the first one.
+
+What this means for training: a per-component task-wrench dead zone of 5 N / 1 N·m does
+not represent this. Either randomize joint-level static friction on j4/j5 (at least
+1.2-1.5 N·m), or give the transition phases a law that is stiff in the
+rotate-about-the-wrist direction.
