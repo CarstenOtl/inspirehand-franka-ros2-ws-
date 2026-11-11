@@ -176,22 +176,67 @@ def check_posture(q, tool, scene, args, where: str) -> dict:
             "closest": closest, "self_clearance_m": own}
 
 
-def check_joint_path(q_from, q_to, scene, args, where: str) -> float:
-    """Clearance along the straight joint-space line the joint controller drives."""
+def check_joint_path(q_from, q_to, scene, args, where: str, leaving: bool = False) -> float:
+    """Clearance along the straight joint-space line the joint controller drives.
+
+    ``leaving``: the line may start inside the clearance (the arm parked at the nut
+    after a rollout), as long as it only moves away and stays above
+    ``--min-start-clearance`` until it is out.
+    """
 
     q_from, q_to = np.asarray(q_from, dtype=float), np.asarray(q_to, dtype=float)
     steps = max(2, int(math.ceil(np.max(np.abs(q_to - q_from)) / 0.02)))
-    lowest = math.inf
+    lowest, previous = math.inf, -math.inf
     for s in np.linspace(0.0, 1.0, steps + 1):
         q = q_from + s * (q_to - q_from)
         environment, closest, own = scene.check(q)
         lowest = min(lowest, environment)
-        if environment < args.clearance or own < args.self_clearance:
+        if own < args.self_clearance:
+            raise ValueError(f"{where}: hand {1000 * own:.0f} mm from the arm at s = {s:.2f}")
+        if leaving and environment < args.clearance:
+            if environment < args.min_start_clearance or environment < previous - 1.0e-3:
+                raise ValueError(
+                    f"{where}: starting {1000 * environment:.0f} mm from {closest}, the joint path "
+                    f"does not move away from it (s = {s:.2f})"
+                )
+            previous = environment
+            continue
+        leaving = False
+        if environment < args.clearance:
             raise ValueError(
                 f"{where}: the joint path comes {1000 * environment:.0f} mm from {closest} "
                 f"(hand to arm {1000 * own:.0f} mm) at s = {s:.2f}"
             )
     return lowest
+
+
+def plan_start(current, q_first, scene, args) -> tuple[list[np.ndarray], str]:
+    """Joint waypoints from wherever the arm is to the first pose.
+
+    Straight to it if that line is clean; otherwise first lift the flange straight up
+    with its orientation held, which is how the arm leaves the nut.
+    """
+
+    current = np.asarray(current, dtype=float)
+    try:
+        lowest = check_joint_path(current, q_first, scene, args, "move to the first pose", leaving=True)
+        return [q_first], f"joint-space line, min clearance {1000 * lowest:.0f} mm once clear"
+    except ValueError as direct:
+        flange = kin.flange_transform(current)
+        lifted = solve_lift(current, flange, args.lift)
+        if lifted is None:
+            raise ValueError(f"{direct}; and no IK for a {100 * args.lift:.0f} cm lift") from direct
+        check_joint_path(current, lifted, scene, args, "lift", leaving=True)
+        lowest = check_joint_path(lifted, q_first, scene, args, "lift -> first pose")
+        return [lifted, q_first], (
+            f"lift {100 * args.lift:.0f} cm, then a joint-space line (min clearance "
+            f"{1000 * lowest:.0f} mm); the direct line was refused: {direct}"
+        )
+
+
+def solve_lift(current, flange, lift: float):
+    target = flange[:3, 3] + np.array([0.0, 0.0, lift])
+    return rep.solve_ik(target, flange[:3, :3], current, np.eye(4))
 
 
 def plan_probe_pose(position, rotation, seed_q, tool, scene, args, where: str) -> dict:
@@ -641,16 +686,17 @@ def run_live(args, poses, spin, tool_matrix, output_dir: Path) -> None:
             if args.set_load:
                 check_desk_profile(readback, args)
         current = np.asarray(joint_client.current_joint_positions(), dtype=float)
-        scene = SceneClearance()
-        lowest = check_joint_path(current, poses[0]["q"], scene, args, "move to the first pose")
-        print(f"move to {poses[0]['label']}: joint-space line, min clearance {1000 * lowest:.0f} mm "
-              "in the MuJoCo scene (the scene has no back table, shelf, camera rig or cables)",
-              flush=True)
+        start_path, description = plan_start(current, poses[0]["q"], SceneClearance(), args)
+        print(f"move to {poses[0]['label']}: {description}. The MuJoCo scene has no back table, "
+              "shelf, camera rig or cables.", flush=True)
         if not args.yes:
             input("Start? Keep the E-stop in hand. [Enter/Ctrl-C] ")
         recorder.start()
         node.event("session_start", backend=report["backend"], friction=friction)
         moving = True
+        joint_client.ensure_active(print)
+        for waypoint in start_path[:-1]:
+            joint_move(joint_client, node, waypoint, args, "lift")
         stations = [
             {"label": p["label"], "q": p["q"], "pose": p, "probe": i < args.probe_poses}
             for i, p in enumerate(poses)
@@ -772,6 +818,11 @@ def parser() -> argparse.ArgumentParser:
                    help="rad per joint goto (the controller refuses 3.0)")
     p.add_argument("--goal-rate", type=float, default=100.0, help="Hz")
     p.add_argument("--clearance", type=float, default=0.05, help="m, MuJoCo scene")
+    p.add_argument("--min-start-clearance", type=float, default=0.01,
+                   help="m; the move off a start inside --clearance must stay above this")
+    p.add_argument("--lift", type=float, default=0.12, help="m, straight up if the direct start is refused")
+    p.add_argument("--start-joints", type=float, nargs=7, metavar="Q",
+                   help="with --plan-only: also check the move from these joints to the first pose")
     p.add_argument("--self-clearance", type=float, default=0.03, help="m, hand to arm")
     p.add_argument("--min-joint-margin", type=float, default=0.15)
     p.add_argument("--min-singular-value", type=float, default=0.03)
@@ -823,6 +874,12 @@ def main(argv=None) -> None:
     print(f"estimated {(probe_s + moves_s + loads_s) / 60:.1f} min: probe {probe_s / 60:.1f}, "
           f"moves and holds {moves_s / 60:.1f}, set_load {loads_s / 60:.1f}")
     if args.plan_only:
+        if args.start_joints is not None:
+            try:
+                path, description = plan_start(args.start_joints, poses[0]["q"], scene, args)
+            except ValueError as exc:
+                raise SystemExit(f"the start is refused: {exc}") from exc
+            print(f"from --start-joints: {description}")
         return
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_live(args, poses, spin, tool, Path(args.output_root) / f"{args.backend}-{stamp}")
