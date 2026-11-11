@@ -382,9 +382,11 @@ class BagRecorder:
         self.output, self.topics, self.process = output, topics, None
 
     def start(self):
+        # The recorder's keyboard controls read the terminal; with them on, it swallows the
+        # operator's answers and the script's next prompt gets EOF (2026-11-11).
         command = ["ros2", "bag", "record", "-s", "mcap", "--storage-preset-profile", "zstd_fast",
-                   "-o", str(self.output), *self.topics]
-        self.process = subprocess.Popen(command, start_new_session=True,
+                   "--disable-keyboard-controls", "-o", str(self.output), *self.topics]
+        self.process = subprocess.Popen(command, start_new_session=True, stdin=subprocess.DEVNULL,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         time.sleep(2.0)
         if self.process.poll() is not None:
