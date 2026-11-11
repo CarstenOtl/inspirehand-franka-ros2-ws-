@@ -1,6 +1,79 @@
 # OSC characterization on the real FR3: test design (2026-11-11)
 
-Status: design only. Nothing here has been built or run yet.
+Status:
+- **Part A** (S static holds, D dead-zone probe, wrist spin) is built:
+  `apps/policy_rollout/utils/osc_characterization.py` and `osc_characterization_analysis.py`.
+  - **Duration:** about 3.7 min per friction session with both payload levels; 146 s
+    in ros-sim with one level.
+  - **Sim check:** with the worst-case dead zone [5 N, 1 N m], the probe measures
+    breakaway 5.2-5.4 N and 1.1-1.17 N m, about 4-8 % / 10-15 % high. Without the dead
+    zone it measures 0-0.15 N / 0-0.05 N m. The result is the same at 5 and 6 mm/s.
+  - **Hardware:** not run yet.
+  - **Defaults:** the probe runs at one pose (o0), ±15 mm at 6 mm/s and ±8° at 2°/s.
+    The static holds cover all three poses plus 5 wrist-spin stops, with 2 s holds.
+    The second payload level walks the same stations in reverse.
+- **Part B** (the M repeatability matrix: 3 clip levels × payload × 5/10/50 % ×
+  orientations) is not built.
+
+## Part A on hardware
+
+1. **Desk:** activate a copy of the Inspire-hand end-effector profile with mass, centre of
+   mass and inertia set to 0, and the flange-to-EE transform left at identity. The script
+   refuses to start if the EE mass is not 0 or the transform is not identity.
+2. **Hand:** leave it open, as at the start of a rollout. The fingers are part of the
+   payload, and the script does not command them.
+3. **Launch one friction level** (the friction-on session uses the default profile):
+
+   ```bash
+   # session 1: friction compensation off
+   ros2 launch inspire_franka_trajectory_replay replay.launch.py arm_controller:=policy \
+     robot_ip:=172.16.0.2 hand_port:=/dev/ttyUSB0 \
+     controllers_yaml:=$(ros2 pkg prefix inspire_franka_trajectory_replay)/share/inspire_franka_trajectory_replay/config/controllers_policy_no_friction_comp.yaml
+   # session 2: friction compensation on (0.3 N m)
+   ros2 launch inspire_franka_trajectory_replay replay.launch.py arm_controller:=policy \
+     robot_ip:=172.16.0.2 hand_port:=/dev/ttyUSB0
+   ```
+
+4. **Plan check:**
+
+   ```bash
+   cd /root/develop_ws
+   python3 apps/policy_rollout/utils/osc_characterization.py hardware --plan-only
+   ```
+
+   It prints the three orientations (seed 20261111), their MuJoCo clearance, and the
+   time estimate.
+5. **Run:**
+
+   ```bash
+   python3 apps/policy_rollout/utils/osc_characterization.py hardware --payload modelled none
+   ```
+
+   The script:
+   - asks before the first move and before the first `set_load`;
+   - records its own bag to `debug/osc_characterization/hardware-<stamp>/bag`;
+   - finishes with the modelled payload applied, and reminds you to switch Desk back
+     to the normal profile.
+6. **Analysis:**
+
+   ```bash
+   python3 apps/policy_rollout/utils/osc_characterization_analysis.py debug/osc_characterization/hardware-<stamp>
+   ```
+
+   The output:
+   - **per pose and axis:** breakaway (static dead zone, N / N m), bias, and creep minus
+     damping;
+   - **payload:** a fit per level, the `none − modelled` difference with its sign
+     convention, and the identified hand against Desk and the training URDF.
+
+   Everything is also written to `analysis.json`.
+
+Notes:
+- **First real `set_load`:** this is the first time `set_load` runs with no controller
+  active. Keep a hand on the E-stop for the first switch.
+- **Abort:** the probe stops if the tracking error exceeds 45 mm or 20°.
+- **Spin posture:** the wrist spin holds the flange pointing straight out over the table at
+  0.78 m. Check by eye that the head camera rig is clear before the first run.
 
 ## What the test answers
 
