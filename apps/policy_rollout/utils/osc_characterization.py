@@ -357,9 +357,17 @@ def chunks(q_from, q_to, max_step: float) -> list[np.ndarray]:
 
 
 def probe_profile(args) -> list[tuple[str, float, float]]:
-    """Legs of the triangle as (name, start fraction, end fraction) of the amplitude."""
+    """Legs as (name, start fraction, end fraction) of the amplitude; start == end is a rest.
 
-    legs = [("out_plus", 0.0, 1.0), ("plus_to_minus", 1.0, -1.0), ("minus_to_zero", -1.0, 0.0)]
+    The goal goes out and back on each side and then rests at the start pose. Where the
+    arm comes to rest, approached once from each side, is the dead zone the policy meets
+    (the return stall); the out legs start from rest, so they also show breakaway.
+    """
+
+    legs = [
+        ("out_plus", 0.0, 1.0), ("back_from_plus", 1.0, 0.0), ("rest_after_plus", 0.0, 0.0),
+        ("out_minus", 0.0, -1.0), ("back_from_minus", -1.0, 0.0), ("rest_after_minus", 0.0, 0.0),
+    ]
     return legs * args.probe_cycles
 
 
@@ -558,7 +566,7 @@ def set_payload(level, joint_client, arm_client, args, log=print) -> dict:
         time.sleep(0.5)
         readback = load_readback(arm_client)
     finally:
-        joint_client.ensure_active(log)
+        activate(joint_client, log)
     if abs(readback["load"]["m"] - mass) > 1.0e-3 or np.max(
         np.abs(np.asarray(readback["load"]["com"]) - np.asarray(com))
     ) > 1.0e-4:
@@ -566,6 +574,20 @@ def set_payload(level, joint_client, arm_client, args, log=print) -> dict:
     log(f"payload '{level}': load {readback['load']['m']:.3f} kg, total "
         f"{readback['total']['m']:.3f} kg", flush=True)
     return readback
+
+
+def activate(client, log=print) -> None:
+    """Put the client's controller in charge and wait for status from this activation.
+
+    The controllers restart their command counters on activation, while the client keeps
+    the last status it saw. A goto sent before fresh status arrives compares against the
+    old counters and is never seen as acknowledged (hardware 2026-11-11, after set_load).
+    """
+
+    client.ensure_active(log)
+    with client._lock:
+        client._status = None
+    client.wait_for_status(10.0)
 
 
 def joint_move(joint_client, node, q_target, args, label: str) -> None:
@@ -616,7 +638,8 @@ def run_probe(node, arm_client, pose, tool, args, rejections) -> None:
         node.event("probe_axis_start", label=pose["label"], axis=AXIS_NAMES[axis],
                    amplitude=amplitude[axis], speed=speed[axis])
         for leg, start, end in probe_profile(args):
-            duration = abs(end - start) * amplitude[axis] / speed[axis]
+            duration = (abs(end - start) * amplitude[axis] / speed[axis] if end != start
+                        else args.probe_rest_s)
             node.event("probe_leg_start", label=pose["label"], axis=AXIS_NAMES[axis], leg=leg,
                        direction=int(np.sign(end - start)))
             t0 = node.now_s()
@@ -639,7 +662,6 @@ def run_probe(node, arm_client, pose, tool, args, rejections) -> None:
                     break
                 tick += period
                 node.sleep_until(tick)
-        hold(args.probe_settle_s)
         node.event("probe_axis_end", label=pose["label"], axis=AXIS_NAMES[axis])
 
 
@@ -719,7 +741,7 @@ def run_live(args, poses, spin, tool_matrix, output_dir: Path) -> None:
         recorder.start()
         node.event("session_start", backend=report["backend"], friction=friction)
         moving = True
-        joint_client.ensure_active(print)
+        activate(joint_client)
         for waypoint in start_path[:-1]:
             joint_move(joint_client, node, waypoint, args, "lift")
         stations = [
@@ -728,7 +750,7 @@ def run_live(args, poses, spin, tool_matrix, output_dir: Path) -> None:
         ] + [{"label": f"spin {q[6]:+.2f}", "q": q} for q in spin["stops"]]
         for index, level in enumerate(args.payload):
             node.event("payload_start", payload=level)
-            joint_client.ensure_active(print)
+            activate(joint_client)
             if args.set_load:
                 if not args.yes and level == args.payload[0]:
                     input(f"Set payload '{level}' (controllers off for about a second)? [Enter/Ctrl-C] ")
@@ -740,7 +762,7 @@ def run_live(args, poses, spin, tool_matrix, output_dir: Path) -> None:
                 if station.get("probe") and level in args.probe_payloads:
                     pose = station["pose"]
                     node.forget_state()
-                    arm_client.ensure_active(print)
+                    activate(arm_client)
                     cartesian_in_charge = True
                     arm_client.set_parameter_remote("policy_yaw_wrap_upper_deg", args.yaw_seam_deg)
                     rejections = int((arm_client.status() or {}).get("rejections", 0))
@@ -748,7 +770,7 @@ def run_live(args, poses, spin, tool_matrix, output_dir: Path) -> None:
                     run_probe(node, arm_client, pose, tool, args, rejections)
                     node.event("probe_end", label=pose["label"], payload=level)
                     arm_client.abort()
-                    joint_client.ensure_active(print)
+                    activate(joint_client)
                     cartesian_in_charge = False
             node.event("payload_end", payload=level)
         if args.set_load and args.payload[-1] != "modelled":
@@ -832,6 +854,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--probe-rate-deg-s", type=float, default=2.0)
     p.add_argument("--probe-cycles", type=int, default=1)
     p.add_argument("--probe-settle-s", type=float, default=1.0)
+    p.add_argument("--probe-rest-s", type=float, default=1.5,
+                   help="goal held at the start pose after each side; the rest is read from its end")
     p.add_argument("--probe-clip", type=float, nargs=2, default=(0.05, 0.25), metavar=("M", "RAD"))
     p.add_argument("--probe-max-error", type=float, nargs=2, default=(0.1, 0.5), metavar=("M", "RAD"))
     p.add_argument("--abort-mm", type=float, default=45.0)
@@ -891,9 +915,10 @@ def main(argv=None) -> None:
         print(f"wrist spin: {len(spin['stops'])} stops, min clearance "
               f"{1000 * spin['min_clearance_m']:.0f} mm")
     per_axis = (4 * (args.probe_translation_mm / args.probe_speed_mm_s) * 3
-                + 4 * (args.probe_rotation_deg / args.probe_rate_deg_s) * 3) * args.probe_cycles
+                + 4 * (args.probe_rotation_deg / args.probe_rate_deg_s) * 3
+                + 12 * args.probe_rest_s) * args.probe_cycles
     probes = min(args.probe_poses, len(poses)) * len(args.probe_payloads)
-    probe_s = probes * (per_axis + 7 * args.probe_settle_s + args.hold_s + 4.0)
+    probe_s = probes * (per_axis + args.probe_settle_s + args.hold_s + 4.0)
     stations = len(poses) + len(spin["stops"])
     # The joint controller takes at least 5 s per goto; a hold follows each.
     moves_s = len(args.payload) * stations * (5.0 + args.hold_s + 0.5)

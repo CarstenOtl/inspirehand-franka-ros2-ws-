@@ -153,6 +153,16 @@ def analyze_probe_axis(fast, axis: int, legs: list[dict], t_end: float, stiffnes
         if np.count_nonzero(mask) < 10:
             continue
         direction = int(leg["direction"])
+        if direction == 0:
+            # A rest: the goal sits at the start pose. Read where the arm settled from the
+            # second half; approached from + it stalls on the + side, so the spring is < 0.
+            tail = mask & (times >= leg["t"] + 0.5 * (leg_end - leg["t"]))
+            results.append({"leg": leg["leg"], "direction": 0,
+                            "approach": 1 if "plus" in leg["leg"] else -1,
+                            "rest_spring": float(np.mean(spring[tail])),
+                            "rest_offset": float(np.mean(-fast["error"][inside][tail, axis])),
+                            "rest_speed": float(np.max(np.abs(velocity[tail])))})
+            continue
         moving = direction * velocity[mask] > threshold
         sustain = max(1, int(round(args.sustain_s / dt)))
         run = np.convolve(moving.astype(int), np.ones(sustain, dtype=int), mode="valid")
@@ -183,16 +193,26 @@ def analyze_probe_axis(fast, axis: int, legs: list[dict], t_end: float, stiffnes
         if len(onsets):
             onset = int(onsets[0])
             # Moving before the spring even pulls its way means no static dead zone at all.
-            entry["breakaway"] = max(float(w[onset]), 0.0)
+            # Only a leg that starts from rest has a breakaway; after a turnaround the arm
+            # is still moving and unwinding.
+            if leg["leg"].startswith("out"):
+                entry["breakaway"] = max(float(w[onset]), 0.0)
             entry["breakaway_after_s"] = float(times[mask][onset] - leg["t"])
             tail = np.arange(len(w)) >= onset + sustain
             entry["creep"] = float(np.median(w[tail])) if np.any(tail) else float(w[onset])
             entry["tau_command_at_breakaway"] = fast["tau_command"][inside][mask][onset].tolist()
             entry["off_axis_error_at_breakaway"] = fast["error"][inside][mask][onset][others].tolist()
-        else:
+        elif leg["leg"].startswith("out"):
             entry["breakaway_above"] = float(np.max(w))
         results.append(entry)
     summary = {"legs": results}
+    after_plus = [r["rest_spring"] for r in results if r.get("approach") == 1]
+    after_minus = [r["rest_spring"] for r in results if r.get("approach") == -1]
+    if after_plus and after_minus:
+        p, m = float(np.mean(after_plus)), float(np.mean(after_minus))
+        half = 0.5 * (m - p)
+        summary["rest"] = {"after_plus": p, "after_minus": m, "dead_zone": half,
+                           "bias": 0.5 * (m + p), "stall": half / stiffness[axis]}
     for name in ("breakaway", "creep"):
         plus = [r[name] for r in results if name in r and r["direction"] > 0]
         minus = [r[name] for r in results if name in r and r["direction"] < 0]
@@ -312,22 +332,25 @@ def analyze_payload(holds, report) -> dict:
 
 # --- output ---------------------------------------------------------------------
 def print_probe(probes, sim_dead_zone) -> None:
-    """Breakaway is the static dead zone; creep adds the speed-dependent drag."""
+    """The dead zone is where the arm comes to rest, approached from either side."""
 
     if not probes:
         return
-    print(f"\n{'pose':<14}{'axis':>5}{'breakaway +/-':>17}{'dead zone':>12}{'bias':>8}"
-          f"{'creep - damping':>17}{'expected':>10}")
+    print(f"\n{'pose':<14}{'axis':>5}{'rest after +/-':>17}{'dead zone':>12}{'stall':>10}{'bias':>8}"
+          f"{'breakaway +/-':>16}{'creep-damp':>11}{'expected':>9}")
     for pose, axes in probes.items():
         for axis, s in axes.items():
-            unit = "N " if axis in AXES[:3] else "Nm"
-            b, c = s.get("breakaway"), s.get("creep", {})
-            if b is None:
-                print(f"{pose:<14}{axis:>5}   {s.get('error') or 'no breakaway in %s legs (spring reached %s)' % (s.get('no_breakaway_legs'), [round(l.get('breakaway_above', float('nan')), 2) for l in s.get('legs', [])])}")
+            translation = axis in AXES[:3]
+            unit = "N " if translation else "Nm"
+            r, b, c = s.get("rest"), s.get("breakaway", {}), s.get("creep", {})
+            if r is None:
+                print(f"{pose:<14}{axis:>5}   {s.get('error') or 'no rest legs (older probe profile)'}")
                 continue
+            stall = f"{1000 * r['stall']:.1f} mm" if translation else f"{math.degrees(r['stall']):.1f} deg"
             expected = "" if sim_dead_zone is None else f"{sim_dead_zone[AXES.index(axis)]:.2f}"
-            print(f"{pose:<14}{axis:>5}{b['plus']:>8.2f}/{b['minus']:<8.2f}{b['dead_zone']:>9.2f} {unit}"
-                  f"{b['bias']:>+8.2f}{c.get('dead_zone_minus_damping', float('nan')):>17.2f}{expected:>10}")
+            print(f"{pose:<14}{axis:>5}{r['after_plus']:>+8.2f}/{r['after_minus']:<+8.2f}{r['dead_zone']:>9.2f} {unit}"
+                  f"{stall:>10}{r['bias']:>+8.2f}{b.get('plus', float('nan')):>7.2f}/{b.get('minus', float('nan')):<7.2f}"
+                  f"{c.get('dead_zone_minus_damping', float('nan')):>10.2f}{expected:>9}")
 
 
 def print_payload(payload) -> None:
