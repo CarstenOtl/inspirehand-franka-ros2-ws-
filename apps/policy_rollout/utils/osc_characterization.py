@@ -234,6 +234,31 @@ def plan_start(current, q_first, scene, args) -> tuple[list[np.ndarray], str]:
         )
 
 
+def read_robot_joints(timeout_s: float = 10.0) -> np.ndarray:
+    """The arm's joints from /joint_states, once (for --plan-only --start-from-robot)."""
+
+    import rclpy
+    from sensor_msgs.msg import JointState
+
+    names = [f"fr3_joint{i}" for i in range(1, 8)]
+    rclpy.init()
+    node = rclpy.create_node("osc_characterization_joints_once")
+    latest = {}
+    node.create_subscription(JointState, "/joint_states",
+                             lambda m: latest.update(zip(m.name, m.position)), 10)
+    deadline = time.monotonic() + timeout_s
+    try:
+        while not all(n in latest for n in names):
+            if time.monotonic() > deadline:
+                raise SystemExit("no fr3 joints on /joint_states: is the launch running, and is "
+                                 "ROS_DOMAIN_ID the launch's?")
+            rclpy.spin_once(node, timeout_sec=0.2)
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+    return np.array([latest[n] for n in names])
+
+
 def solve_lift(current, flange, lift: float):
     target = flange[:3, 3] + np.array([0.0, 0.0, lift])
     return rep.solve_ik(target, flange[:3, :3], current, np.eye(4))
@@ -823,6 +848,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--lift", type=float, default=0.12, help="m, straight up if the direct start is refused")
     p.add_argument("--start-joints", type=float, nargs=7, metavar="Q",
                    help="with --plan-only: also check the move from these joints to the first pose")
+    p.add_argument("--start-from-robot", action="store_true",
+                   help="with --plan-only: read the start joints from /joint_states")
     p.add_argument("--self-clearance", type=float, default=0.03, help="m, hand to arm")
     p.add_argument("--min-joint-margin", type=float, default=0.15)
     p.add_argument("--min-singular-value", type=float, default=0.03)
@@ -874,6 +901,9 @@ def main(argv=None) -> None:
     print(f"estimated {(probe_s + moves_s + loads_s) / 60:.1f} min: probe {probe_s / 60:.1f}, "
           f"moves and holds {moves_s / 60:.1f}, set_load {loads_s / 60:.1f}")
     if args.plan_only:
+        if args.start_from_robot:
+            args.start_joints = read_robot_joints()
+            print(f"robot joints: {' '.join(f'{v:.4f}' for v in args.start_joints)}")
         if args.start_joints is not None:
             try:
                 path, description = plan_start(args.start_joints, poses[0]["q"], scene, args)
