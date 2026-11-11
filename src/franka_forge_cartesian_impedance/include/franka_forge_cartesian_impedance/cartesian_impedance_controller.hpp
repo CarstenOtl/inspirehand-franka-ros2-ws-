@@ -163,6 +163,11 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
     bool has_nullspace{false};
     std::array<double, 7> tool_in_flange{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};  ///< xyz, xyzw
     bool has_tool{false};
+    /// A policy goal's own clip and fault limits; 0 = the profile's.
+    double clip_position_m{0.0};
+    double clip_orientation_rad{0.0};
+    double max_position_error{0.0};
+    double max_orientation_error{0.0};
     double duration{0.0};
     std::shared_ptr<const Trajectory> trajectory;
   };
@@ -242,11 +247,19 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Vector7d friction_compensation_nm_{Vector7d::Zero()};
   double friction_compensation_velocity_{0.05};
   double friction_compensation_torque_{0.3};
+  // ForgeUltra's per-component task-wrench dead zone (task_wrench_dead_zone); zero is off.
+  Vector6d task_wrench_dead_zone_{Vector6d::Zero()};
   // ForgeUltra's per-substep target clip, for ~/policy_goal. Both thresholds zero (the
   // default) means the controller does not accept policy goals. The clip runs in the frame
   // `policy_clip_frame_` names: training's world, which is the FR3 base yawed by this angle.
   double policy_clip_position_m_{0.0};
   double policy_clip_orientation_rad_{0.0};
+  // Ceilings on a policy goal's own clip / fault limits (equal to the profile's = no widening).
+  double policy_clip_position_max_m_{0.0};
+  double policy_clip_orientation_max_rad_{0.0};
+  double policy_max_position_error_max_{0.0};
+  double policy_max_orientation_error_max_{0.0};
+  double fast_state_publish_rate_{0.0};
   double policy_clip_frame_yaw_{0.0};
   // The clip's yaw seam (policy_yaw_wrap_upper_deg). Set live by the runner from the student's
   // task profile, only while no policy goal is active.
@@ -303,6 +316,9 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   std::unique_ptr<realtime_tools::RealtimePublisher<
       franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState>>
       cartesian_state_publisher_;
+  std::unique_ptr<realtime_tools::RealtimePublisher<
+      franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState>>
+      cartesian_state_fast_publisher_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
 
   // --- cross-thread state -----------------------------------------------------------------
@@ -349,6 +365,14 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   double rt_settle_elapsed_{0.0};
   double rt_policy_command_age_{0.0};
   double rt_state_publish_elapsed_{0.0};
+  double rt_fast_state_publish_elapsed_{0.0};
+  // The active policy goal's clip and fault limits, and last cycle's limits.
+  double rt_clip_position_m_{0.0};
+  double rt_clip_orientation_rad_{0.0};
+  double rt_goal_max_position_error_{0.0};
+  double rt_goal_max_orientation_error_{0.0};
+  double rt_previous_position_limit_{0.0};
+  double rt_previous_orientation_limit_{0.0};
   double rt_playback_rate_{1.0};
   double rt_playback_target_{1.0};
   double rt_rate_ramp_start_{1.0};

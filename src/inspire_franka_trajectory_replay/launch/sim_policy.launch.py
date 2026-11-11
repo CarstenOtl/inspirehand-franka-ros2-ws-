@@ -113,15 +113,39 @@ def _friction_compensation(value: str):
     return numbers
 
 
-def _controllers_with_compensation(controllers_yaml: str, compensation: list) -> str:
-    """Write the controller profile with friction_compensation_nm replaced, next to the original."""
+#: ForgeUltra's default_dead_zone (vanilla_threading.yaml): the top of training's U(0, d).
+WORST_CASE_WRENCH_DEAD_ZONE = [5.0, 5.0, 5.0, 1.0, 1.0, 1.0]
+
+
+def _wrench_dead_zone(value: str):
+    """``arm_wrench_dead_zone``: empty for off, ``worst`` for training's maximum, or six values."""
+
+    value = value.strip()
+    if not value:
+        return None
+    if value == "worst":
+        return list(WORST_CASE_WRENCH_DEAD_ZONE)
+    numbers = [float(v) for v in value.replace(",", " ").split()]
+    if len(numbers) != 6 or any(not 0.0 <= v <= (50.0 if i < 3 else 10.0) for i, v in enumerate(numbers)):
+        raise RuntimeError(
+            "arm_wrench_dead_zone takes 'worst' or six values (3 x N in [0, 50], 3 x N m in [0, 10])"
+        )
+    return numbers
+
+
+def _controllers_variant(controllers_yaml: str, compensation, dead_zone) -> str:
+    """Write the controller profile with friction_compensation_nm and/or task_wrench_dead_zone
+    replaced, next to the original."""
 
     source = Path(controllers_yaml)
     text = source.read_text()
-    line = "friction_compensation_nm: [" + ", ".join(repr(float(v)) for v in compensation) + "]"
-    text, count = re.subn(r"friction_compensation_nm: \[[^\]]*\]", line, text)
-    if count != 1:
-        raise RuntimeError(f"expected one friction_compensation_nm in {source}")
+    for key, values in (("friction_compensation_nm", compensation), ("task_wrench_dead_zone", dead_zone)):
+        if values is None:
+            continue
+        line = f"{key}: [" + ", ".join(repr(float(v)) for v in values) + "]"
+        text, count = re.subn(rf"{key}: \[[^\]]*\]", line, text)
+        if count != 1:
+            raise RuntimeError(f"expected one {key} in {source}")
     variant = source.with_name("controllers_sim_policy_friction_compensation.yaml")
     variant.write_text(text)
     return str(variant)
@@ -203,8 +227,9 @@ def launch_setup(context, *args, **kwargs):
         / "controllers_sim_policy.yaml"
     )
     compensation = _friction_compensation(arg("arm_friction_compensation"))
-    if compensation is not None:
-        controllers_yaml = _controllers_with_compensation(controllers_yaml, compensation)
+    dead_zone = _wrench_dead_zone(arg("arm_wrench_dead_zone"))
+    if compensation is not None or dead_zone is not None:
+        controllers_yaml = _controllers_variant(controllers_yaml, compensation, dead_zone)
     simulator = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             str(Path(get_package_share_directory("inspire_franka_sim")) / "launch" / "sim.launch.py")
@@ -406,6 +431,14 @@ def generate_launch_description():
                 "value for joint 7 or seven for joints 1-7. Empty (default) keeps "
                 "controllers_sim_policy.yaml's (off); otherwise the launch writes "
                 "controllers_sim_policy_friction_compensation.yaml next to it and uses that.",
+            ),
+            DeclareLaunchArgument(
+                "arm_wrench_dead_zone",
+                default_value="",
+                description="ForgeUltra's task-wrench dead zone in the Cartesian controller: "
+                "'worst' for training's full default [5 5 5 N, 1 1 1 N m] (training draws "
+                "U(0, that) per reset), six values, or empty (default, off). Off the default "
+                "the launch writes controllers_sim_policy_friction_compensation.yaml.",
             ),
             DeclareLaunchArgument(
                 "arm_armature_scale",

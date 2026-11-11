@@ -15,3 +15,14 @@ float64[] tool_in_flange
 
 # Exactly 7 values, or empty to keep the current nullspace target.
 float64[] nullspace_positions
+
+# Per-goal overrides, 0 = the profile's value. The clip (per axis / per Euler angle, as
+# policy_clip_position_m / policy_clip_orientation_rad) and the tracking-fault limits that
+# apply while this goal is the active one. Each must be at most the profile's ceiling
+# (policy_clip_position_max_m, policy_clip_orientation_max_rad, policy_max_position_error_max,
+# policy_max_orientation_error_max), else the goal is refused. Lets a runner widen the clip
+# for the scripted-phase return only (ForgeUltra cyclic_transition_clip).
+float64 clip_position_m
+float64 clip_orientation_rad
+float64 max_position_error
+float64 max_orientation_error

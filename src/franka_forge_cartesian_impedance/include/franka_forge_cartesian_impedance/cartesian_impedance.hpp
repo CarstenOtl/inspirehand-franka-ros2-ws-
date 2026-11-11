@@ -51,6 +51,8 @@ struct CartesianImpedanceTerms {
   Vector7d tau_coriolis{Vector7d::Zero()};
   Vector7d tau_command{Vector7d::Zero()};
   Vector6d error{Vector6d::Zero()};
+  /// Task-space wrench after the dead zone; tau_task = J^T wrench.
+  Vector6d wrench{Vector6d::Zero()};
 };
 
 /// buildGains(): diagonal stiffness from six values, damping 2 sqrt(k) (critically damped).
@@ -133,6 +135,22 @@ inline Vector7d forge_nullspace_torque(const Matrix6x7d& jacobian,
   return (Matrix7d::Identity() - jacobian_transpose * jacobian_eef_inverse) * u_null;
 }
 
+/// ForgeUltra's task-wrench dead zone (`compute_dof_torque`, "unreliability at low forces"):
+/// per component, |w| below the threshold becomes 0, above it shrinks toward 0 by the
+/// threshold. Training draws the thresholds per reset from U(0, default_dead_zone), default
+/// [5, 5, 5 N, 1, 1, 1 N m]; the full default is the worst case. Per-component magnitudes
+/// are unchanged by training's world frame (the base yawed by pi flips x and y only), so the
+/// base-frame wrench gives the same result. Zero thresholds return the wrench unchanged.
+inline Vector6d apply_wrench_dead_zone(const Vector6d& wrench, const Vector6d& thresholds) {
+  Vector6d out;
+  for (int i = 0; i < 6; ++i) {
+    const double magnitude = std::abs(wrench(i));
+    out(i) = magnitude < thresholds(i) ? 0.0
+                                       : std::copysign(magnitude - thresholds(i), wrench(i));
+  }
+  return out;
+}
+
 /// The example's update() torque: task-space PD through J^T, a damped-pseudo-inverse
 /// nullspace projection of a joint PD toward q_null, plus coriolis.
 ///
@@ -147,7 +165,8 @@ inline CartesianImpedanceTerms example_cartesian_impedance(
     const Matrix6d& stiffness, const Matrix6d& damping, double nullspace_stiffness,
     double nullspace_damping_lambda = kNullspaceDampingLambda,
     RotationErrorForm rotation_error_form = RotationErrorForm::kQuaternionVector,
-    const Matrix7d* arm_mass_matrix = nullptr) {
+    const Matrix7d* arm_mass_matrix = nullptr,
+    const Vector6d& wrench_dead_zone = Vector6d::Zero()) {
   CartesianImpedanceTerms terms;
   terms.error =
       example_cartesian_error(position, orientation, position_d, orientation_d, rotation_error_form);
@@ -168,8 +187,11 @@ inline CartesianImpedanceTerms example_cartesian_impedance(
   const Matrix6x7d jacobian_transpose_pinv =
       svd.matrixV() * s_inverse.transpose() * svd.matrixU().transpose();
 
-  terms.tau_task =
-      jacobian_transpose * (-stiffness * terms.error - damping * (jacobian * dq));
+  terms.wrench = -stiffness * terms.error - damping * (jacobian * dq);
+  if ((wrench_dead_zone.array() > 0.0).any()) {
+    terms.wrench = apply_wrench_dead_zone(terms.wrench, wrench_dead_zone);
+  }
+  terms.tau_task = jacobian_transpose * terms.wrench;
   if (arm_mass_matrix != nullptr) {
     terms.tau_nullspace =
         forge_nullspace_torque(jacobian, *arm_mass_matrix, q, dq, q_nullspace,

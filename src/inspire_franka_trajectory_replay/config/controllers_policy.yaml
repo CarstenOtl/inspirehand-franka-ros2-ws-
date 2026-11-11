@@ -111,6 +111,16 @@
       policy_clip_position_m: 0.02
       policy_clip_orientation_rad: 0.097
       policy_clip_frame_yaw: 3.141592653589793
+      # Ceilings a policy goal may widen the clip and the tracking-fault limits to
+      # (PolicyGoal clip_* / max_*_error, 0 = these profile values). The runner uses them
+      # only with --transition-clip, in follow_waypoints / return_to_reset (ForgeUltra
+      # cyclic_transition_clip 0.05 m / 0.25 rad; fault limits ~sqrt(3) x the clip).
+      policy_clip_position_max_m: 0.05
+      policy_clip_orientation_max_rad: 0.25
+      policy_max_position_error_max: 0.1
+      policy_max_orientation_error_max: 0.5
+      # ~/cartesian_state_fast for ros2 bag (the runner reads ~/cartesian_state); 0 = off.
+      fast_state_publish_rate: 1000.0
       torque_rate_limit: 1.0
       goto_max_velocity: 0.10
       goto_max_angular_velocity: 0.50

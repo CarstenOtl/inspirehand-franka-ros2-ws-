@@ -687,6 +687,37 @@ void CartesianImpedanceController::policy_goal_callback(
     }
     command.has_nullspace = true;
   }
+  // Per-goal clip and fault limits: 0 keeps the profile's, anything else must be finite,
+  // positive and within the profile's ceiling.
+  {
+    const struct {
+      double value;
+      double ceiling;
+      const char* name;
+      double* destination;
+    } overrides[] = {
+        {msg->clip_position_m, policy_clip_position_max_m_, "clip_position_m",
+         &command.clip_position_m},
+        {msg->clip_orientation_rad, policy_clip_orientation_max_rad_, "clip_orientation_rad",
+         &command.clip_orientation_rad},
+        {msg->max_position_error, policy_max_position_error_max_, "max_position_error",
+         &command.max_position_error},
+        {msg->max_orientation_error, policy_max_orientation_error_max_, "max_orientation_error",
+         &command.max_orientation_error},
+    };
+    for (const auto& item : overrides) {
+      if (item.value == 0.0) {
+        continue;
+      }
+      if (!std::isfinite(item.value) || item.value < 0.0 || item.value > item.ceiling) {
+        reject(std::string("policy goal ") + item.name + " " + std::to_string(item.value) +
+               " is outside (0, " + std::to_string(item.ceiling) +
+               "], the profile's ceiling for it");
+        return;
+      }
+      *item.destination = item.value;
+    }
+  }
   command.id = ++next_command_id_;
   command_buffer_.writeFromNonRT(command);
 }
@@ -767,9 +798,20 @@ void CartesianImpedanceController::publish_status() {
       rotation_error_form_ == RotationErrorForm::kAxisAngle ? "axis_angle" : "quaternion_vector");
   add("coriolis_compensation", (coriolis_compensation_ && !model_from_dh_) ? "true" : "false");
   add("torque_limit", std::to_string(torque_limit_));
+  {
+    std::string dz;
+    for (int i = 0; i < 6; ++i) {
+      dz += (i ? " " : "") + std::to_string(task_wrench_dead_zone_(i));
+    }
+    add("task_wrench_dead_zone", dz);
+  }
   add("policy_clip_position_m", std::to_string(policy_clip_position_m_));
   add("policy_clip_orientation_rad", std::to_string(policy_clip_orientation_rad_));
   add("policy_clip_frame_yaw", std::to_string(policy_clip_frame_yaw_));
+  add("policy_clip_position_max_m", std::to_string(policy_clip_position_max_m_));
+  add("policy_clip_orientation_max_rad", std::to_string(policy_clip_orientation_max_rad_));
+  add("policy_max_position_error_max", std::to_string(policy_max_position_error_max_));
+  add("policy_max_orientation_error_max", std::to_string(policy_max_orientation_error_max_));
   add("policy_yaw_wrap_upper_deg",
       std::to_string(policy_yaw_wrap_upper_rad_.load(std::memory_order_relaxed) * 180.0 / M_PI));
   add("policy_goal_active", policy_goal_active_.load(std::memory_order_relaxed) ? "true" : "false");
@@ -1003,6 +1045,17 @@ controller_interface::return_type CartesianImpedanceController::update(
         rt_goal_position_ = Eigen::Vector3d(command->position.data());
         rt_goal_orientation_ = to_quaternion(command->orientation);
         rt_goal_active_ = true;
+        rt_clip_position_m_ =
+            command->clip_position_m > 0.0 ? command->clip_position_m : policy_clip_position_m_;
+        rt_clip_orientation_rad_ = command->clip_orientation_rad > 0.0
+                                       ? command->clip_orientation_rad
+                                       : policy_clip_orientation_rad_;
+        rt_goal_max_position_error_ = command->max_position_error > 0.0
+                                          ? command->max_position_error
+                                          : max_position_error_;
+        rt_goal_max_orientation_error_ = command->max_orientation_error > 0.0
+                                             ? command->max_orientation_error
+                                             : max_orientation_error_;
         if (command->has_nullspace) {
           nullspace_target_ = Vector7d(command->nullspace.data());
         }
@@ -1044,7 +1097,7 @@ controller_interface::return_type CartesianImpedanceController::update(
         // clip as it moves instead of arriving at once and being held for the policy tick.
         const ForgeClippedTarget clipped = forge_clip_target(
             rt_goal_position_, rt_goal_orientation_, position, orientation, policy_clip_frame_,
-            policy_clip_position_m_, policy_clip_orientation_rad_,
+            rt_clip_position_m_, rt_clip_orientation_rad_,
             policy_yaw_wrap_upper_rad_.load(std::memory_order_relaxed));
         position_target_ = clipped.position;
         orientation_target_ = clipped.orientation;
@@ -1136,7 +1189,7 @@ controller_interface::return_type CartesianImpedanceController::update(
   const CartesianImpedanceTerms terms = example_cartesian_impedance(
       position, orientation, jacobian, coriolis, q_current, dq_current, position_d_,
       orientation_d_, nullspace_d_, stiffness_, damping_, nullspace_stiffness_,
-      nullspace_damping_lambda_, rotation_error_form_, arm_mass_matrix);
+      nullspace_damping_lambda_, rotation_error_form_, arm_mass_matrix, task_wrench_dead_zone_);
   // The physical arm's joint friction, which training never had, on top of the law; then
   // Forge's clamp, then the libfranka torque-rate bound the robot would enforce anyway.
   const Vector7d tau_friction = friction_compensation_torque(
@@ -1151,11 +1204,23 @@ controller_interface::return_type CartesianImpedanceController::update(
 
   const double position_error = terms.error.head(3).norm();
   const double orientation_error = quaternion_angle(orientation, orientation_d_);
+  // A policy goal may carry its own limits. The error is measured against orientation_d_,
+  // which the clip set one cycle ago, so a limit that has just been lowered (a widened
+  // transition clip handing back to the policy's) takes effect a cycle later: the larger of
+  // this cycle's and the previous cycle's limit applies.
+  const bool goal_limits = rt_phase_ == Phase::kPolicy && rt_goal_active_;
+  const double position_limit_now = goal_limits ? rt_goal_max_position_error_ : max_position_error_;
+  const double orientation_limit_now =
+      goal_limits ? rt_goal_max_orientation_error_ : max_orientation_error_;
+  const double position_limit = std::max(position_limit_now, rt_previous_position_limit_);
+  const double orientation_limit = std::max(orientation_limit_now, rt_previous_orientation_limit_);
+  rt_previous_position_limit_ = position_limit_now;
+  rt_previous_orientation_limit_ = orientation_limit_now;
   if ((rt_phase_ == Phase::kGoto || rt_phase_ == Phase::kTrajectory ||
        rt_phase_ == Phase::kPolicy) &&
-      (position_error > max_position_error_ || orientation_error > max_orientation_error_)) {
-    fault_.store(static_cast<int>(position_error > max_position_error_ ? Fault::kPosition
-                                                                        : Fault::kOrientation));
+      (position_error > position_limit || orientation_error > orientation_limit)) {
+    fault_.store(static_cast<int>(position_error > position_limit ? Fault::kPosition
+                                                                   : Fault::kOrientation));
     begin_stopping();
   }
 
@@ -1233,8 +1298,8 @@ controller_interface::return_type CartesianImpedanceController::update(
     msg.output.time_from_start = rclcpp::Duration::from_seconds(static_cast<double>(rt_phase_));
     state_publisher_->unlockAndPublish();
   }
-  if (publish_state && cartesian_state_publisher_ && cartesian_state_publisher_->trylock()) {
-    auto& msg = cartesian_state_publisher_->msg_;
+  const auto fill_cartesian_state =
+      [&](franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState& msg) {
     msg.header.stamp = time;
     msg.header.frame_id = base_frame_;
     msg.phase = static_cast<int>(rt_phase_);
@@ -1266,7 +1331,31 @@ controller_interface::return_type CartesianImpedanceController::update(
         msg.tau_gravity[i] = gravity[i];
       }
     }
+    for (int i = 0; i < 6; ++i) {
+      msg.wrench[i] = terms.wrench(i);
+    }
+    msg.clip_position_m = rt_goal_active_ ? rt_clip_position_m_ : policy_clip_position_m_;
+    msg.clip_orientation_rad =
+        rt_goal_active_ ? rt_clip_orientation_rad_ : policy_clip_orientation_rad_;
+    msg.max_position_error = position_limit_now;
+    msg.max_orientation_error = orientation_limit_now;
+  };
+  if (publish_state && cartesian_state_publisher_ && cartesian_state_publisher_->trylock()) {
+    fill_cartesian_state(cartesian_state_publisher_->msg_);
     cartesian_state_publisher_->unlockAndPublish();
+  }
+  // A separate stream for logging (ros2 bag) at up to the control rate; the runner keeps
+  // reading the slow one.
+  if (fast_state_publish_rate_ > 0.0) {
+    rt_fast_state_publish_elapsed_ += dt;
+    const double period = 1.0 / fast_state_publish_rate_;
+    if (rt_fast_state_publish_elapsed_ >= period - 1e-9) {
+      rt_fast_state_publish_elapsed_ = std::fmod(rt_fast_state_publish_elapsed_, period);
+      if (cartesian_state_fast_publisher_ && cartesian_state_fast_publisher_->trylock()) {
+        fill_cartesian_state(cartesian_state_fast_publisher_->msg_);
+        cartesian_state_fast_publisher_->unlockAndPublish();
+      }
+    }
   }
 
   return controller_interface::return_type::OK;
@@ -1298,9 +1387,18 @@ CartesianImpedanceController::CallbackReturn CartesianImpedanceController::on_in
                                       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     auto_declare<double>("friction_compensation_velocity", 0.05);
     auto_declare<double>("friction_compensation_torque", 0.3);
+    auto_declare<std::vector<double>>("task_wrench_dead_zone",
+                                      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     auto_declare<double>("policy_clip_position_m", 0.0);
     auto_declare<double>("policy_clip_orientation_rad", 0.0);
     auto_declare<double>("policy_clip_frame_yaw", 0.0);
+    // Ceilings for a policy goal's own clip and fault limits; 0 = the profile's value, so
+    // goals cannot widen anything unless the profile allows it.
+    auto_declare<double>("policy_clip_position_max_m", 0.0);
+    auto_declare<double>("policy_clip_orientation_max_rad", 0.0);
+    auto_declare<double>("policy_max_position_error_max", 0.0);
+    auto_declare<double>("policy_max_orientation_error_max", 0.0);
+    auto_declare<double>("fast_state_publish_rate", 0.0);
     auto_declare<double>("policy_yaw_wrap_upper_deg", 235.0);
     auto_declare<double>("torque_rate_limit", 0.0);
     auto_declare<double>("goto_max_velocity", 0.10);
@@ -1497,6 +1595,29 @@ bool CartesianImpedanceController::assign_parameters() {
                 friction_compensation_nm_(6), friction_compensation_velocity_,
                 friction_compensation_torque_);
   }
+  const auto dead_zone = node->get_parameter("task_wrench_dead_zone").as_double_array();
+  if (dead_zone.size() != 6) {
+    RCLCPP_FATAL(node->get_logger(), "task_wrench_dead_zone must hold 6 values, got %zu",
+                 dead_zone.size());
+    return false;
+  }
+  for (int i = 0; i < 6; ++i) {
+    // Training's default is 5 N / 1 N m; 50 / 10 is a typo, not a plant.
+    const double limit = i < 3 ? 50.0 : 10.0;
+    if (!std::isfinite(dead_zone[i]) || dead_zone[i] < 0.0 || dead_zone[i] > limit) {
+      RCLCPP_FATAL(node->get_logger(), "task_wrench_dead_zone[%d] must be in [0, %g], got %f",
+                   i, limit, dead_zone[i]);
+      return false;
+    }
+    task_wrench_dead_zone_(i) = dead_zone[i];
+  }
+  if ((task_wrench_dead_zone_.array() > 0.0).any()) {
+    RCLCPP_WARN(node->get_logger(),
+                "task wrench dead zone [%.2f %.2f %.2f N, %.2f %.2f %.2f N m] (ForgeUltra's "
+                "low-force unreliability; a simulation setting)",
+                task_wrench_dead_zone_(0), task_wrench_dead_zone_(1), task_wrench_dead_zone_(2),
+                task_wrench_dead_zone_(3), task_wrench_dead_zone_(4), task_wrench_dead_zone_(5));
+  }
   torque_rate_limit_ = node->get_parameter("torque_rate_limit").as_double();
   goto_max_velocity_ = node->get_parameter("goto_max_velocity").as_double();
   goto_max_angular_velocity_ = node->get_parameter("goto_max_angular_velocity").as_double();
@@ -1510,6 +1631,12 @@ bool CartesianImpedanceController::assign_parameters() {
   max_policy_step_rad_ = node->get_parameter("max_policy_step_rad").as_double();
   policy_command_timeout_ = node->get_parameter("policy_command_timeout").as_double();
   state_publish_rate_ = node->get_parameter("state_publish_rate").as_double();
+  fast_state_publish_rate_ = node->get_parameter("fast_state_publish_rate").as_double();
+  if (!std::isfinite(fast_state_publish_rate_) || fast_state_publish_rate_ < 0.0 ||
+      fast_state_publish_rate_ > 1000.0) {
+    RCLCPP_FATAL(node->get_logger(), "fast_state_publish_rate must be in [0, 1000] Hz");
+    return false;
+  }
   measured_torque_lowpass_s_ = node->get_parameter("measured_torque_lowpass_s").as_double();
   if (!std::isfinite(measured_torque_lowpass_s_) || measured_torque_lowpass_s_ < 0.0) {
     RCLCPP_FATAL(node->get_logger(), "measured_torque_lowpass_s must be finite and >= 0");
@@ -1522,6 +1649,43 @@ bool CartesianImpedanceController::assign_parameters() {
   max_position_error_ = node->get_parameter("max_position_error").as_double();
   max_orientation_error_ = node->get_parameter("max_orientation_error").as_double();
   pause_ramp_duration_ = node->get_parameter("pause_ramp_duration").as_double();
+  {
+    // Ceilings on per-goal overrides: 0 means "the profile's value" (no widening). Hard
+    // bounds keep a typo from becoming a plant: 0.1 m / 0.5 rad clip, 0.2 m / 1.0 rad fault.
+    const struct {
+      const char* name;
+      double profile_value;
+      double hard_bound;
+      double* destination;
+    } ceilings[] = {
+        {"policy_clip_position_max_m", policy_clip_position_m_, 0.1, &policy_clip_position_max_m_},
+        {"policy_clip_orientation_max_rad", policy_clip_orientation_rad_, 0.5,
+         &policy_clip_orientation_max_rad_},
+        {"policy_max_position_error_max", max_position_error_, 0.2,
+         &policy_max_position_error_max_},
+        {"policy_max_orientation_error_max", max_orientation_error_, 1.0,
+         &policy_max_orientation_error_max_},
+    };
+    for (const auto& item : ceilings) {
+      const double value = node->get_parameter(item.name).as_double();
+      if (!std::isfinite(value) || value < 0.0 || value > item.hard_bound) {
+        RCLCPP_FATAL(node->get_logger(), "%s must be in [0, %g], got %f", item.name,
+                     item.hard_bound, value);
+        return false;
+      }
+      *item.destination = value > 0.0 ? std::max(value, item.profile_value) : item.profile_value;
+    }
+    if (policy_clip_position_max_m_ > policy_clip_position_m_ ||
+        policy_clip_orientation_max_rad_ > policy_clip_orientation_rad_ ||
+        policy_max_position_error_max_ > max_position_error_ ||
+        policy_max_orientation_error_max_ > max_orientation_error_) {
+      RCLCPP_WARN(node->get_logger(),
+                  "policy goals may widen the clip to %.3f m / %.3f rad and the tracking-fault "
+                  "limits to %.3f m / %.3f rad",
+                  policy_clip_position_max_m_, policy_clip_orientation_max_rad_,
+                  policy_max_position_error_max_, policy_max_orientation_error_max_);
+    }
+  }
   abort_stop_duration_ = node->get_parameter("abort_stop_duration").as_double();
 
   const auto positive = [](double value) { return std::isfinite(value) && value > 0.0; };
@@ -1797,6 +1961,15 @@ CartesianImpedanceController::on_configure(const rclcpp_lifecycle::State& /*prev
   cartesian_state_publisher_ = std::make_unique<
       realtime_tools::RealtimePublisher<franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState>>(
       cartesian_publisher);
+  if (fast_state_publish_rate_ > 0.0) {
+    auto fast_publisher = get_node()->create_publisher<
+        franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState>(
+        "~/cartesian_state_fast", rclcpp::SystemDefaultsQoS());
+    cartesian_state_fast_publisher_ = std::make_unique<realtime_tools::RealtimePublisher<
+        franka_forge_cartesian_impedance_msgs::msg::CartesianReplayState>>(fast_publisher);
+    RCLCPP_INFO(get_node()->get_logger(), "publishing ~/cartesian_state_fast at %.0f Hz",
+                fast_state_publish_rate_);
+  }
 
   RCLCPP_INFO(get_node()->get_logger(),
               "Configured: Cartesian impedance (%s rotation error, nullspace lambda %.3f, %s "
@@ -1835,6 +2008,13 @@ CartesianImpedanceController::on_activate(const rclcpp_lifecycle::State& /*previ
   tau_measured_filter_initialized_ = false;
   command_initialized_.store(false, std::memory_order_release);
   phase_.store(static_cast<int>(Phase::kIdle));
+  rt_clip_position_m_ = policy_clip_position_m_;
+  rt_clip_orientation_rad_ = policy_clip_orientation_rad_;
+  rt_goal_max_position_error_ = max_position_error_;
+  rt_goal_max_orientation_error_ = max_orientation_error_;
+  rt_previous_position_limit_ = max_position_error_;
+  rt_previous_orientation_limit_ = max_orientation_error_;
+  rt_fast_state_publish_elapsed_ = 0.0;
   rt_phase_ = Phase::kIdle;
   rt_stopping_from_ = Phase::kIdle;
   rt_command_id_ = 0;

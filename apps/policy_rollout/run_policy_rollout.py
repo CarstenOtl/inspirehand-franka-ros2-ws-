@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import os
 from pathlib import Path
@@ -230,6 +231,33 @@ def _hardware_parser(sim: bool = False) -> argparse.ArgumentParser:
             "on the reset pose with the joint-impedance homing, then start the next cycle "
             "from there. The return gate then only has to clear the nut, so "
             "--return-tolerance-mm/-deg default to 30 and 25."
+        ),
+    )
+    parser.add_argument(
+        "--transition-clip",
+        type=float,
+        nargs=2,
+        default=None,
+        metavar=("M", "RAD"),
+        help=(
+            "in follow_waypoints and return_to_reset only, clip the policy goal per axis "
+            "to M metres and per Euler angle to RAD instead of the training clip (0.02 m / "
+            "0.097 rad), which stays in the policy phase. ForgeUltra's proposed "
+            "cyclic_transition_clip is 0.05 0.25. Needs the controller profile's "
+            "policy_clip_*_max ceilings to allow it."
+        ),
+    )
+    parser.add_argument(
+        "--transition-max-error",
+        type=float,
+        nargs=2,
+        default=None,
+        metavar=("M", "RAD"),
+        help=(
+            "with --transition-clip: the controller's tracking-fault limits (measured vs "
+            "clipped target) in those phases, instead of the profile's 0.08 m / 0.35 rad. "
+            "The error can reach about sqrt(3) x the clip; default sqrt(3) x the clip, "
+            "rounded up to 0.05 m / 0.1 rad steps: 0.1 m / 0.5 rad for 0.05 / 0.25."
         ),
     )
     parser.add_argument(
@@ -482,6 +510,20 @@ def _run_hardware(argv, sim: bool = False) -> int:
         raise ValueError("--max-home-grasp-error, --home-attempts and --home-settle-s must be valid")
     if not 0.0 < args.return_tolerance_mm <= 30.0 or not 0.0 < args.return_tolerance_deg <= 25.0:
         raise ValueError("--return-tolerance-mm must be in (0, 30] and --return-tolerance-deg in (0, 25]")
+    if args.transition_max_error is not None and args.transition_clip is None:
+        raise ValueError("--transition-max-error needs --transition-clip")
+    if args.transition_clip is not None:
+        clip_m, clip_rad = args.transition_clip
+        if not (0.0 < clip_m <= 0.1 and 0.0 < clip_rad <= 0.5):
+            raise ValueError("--transition-clip must be in (0, 0.1] m and (0, 0.5] rad")
+        if args.transition_max_error is None:
+            args.transition_max_error = [
+                max(0.08, round(math.ceil(math.sqrt(3.0) * clip_m / 0.05) * 0.05, 3)),
+                max(0.35, math.ceil(math.sqrt(3.0) * clip_rad * 10.0) / 10.0),
+            ]
+        error_m, error_rad = args.transition_max_error
+        if not (0.0 < error_m <= 0.2 and 0.0 < error_rad <= 1.0):
+            raise ValueError("--transition-max-error must be in (0, 0.2] m and (0, 1.0] rad")
     if not 0.0 < args.joint_limit_margin < 1.0:
         raise ValueError("--joint-limit-margin must be in (0, 1) rad")
     if args.release_signal == "nut-twist" and not sim:

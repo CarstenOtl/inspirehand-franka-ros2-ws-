@@ -9,6 +9,7 @@
 
 #include <franka_forge_cartesian_impedance/cartesian_impedance.hpp>
 
+using franka_forge_cartesian_impedance::apply_wrench_dead_zone;
 using franka_forge_cartesian_impedance::clamp_torque;
 using franka_forge_cartesian_impedance::example_cartesian_error;
 using franka_forge_cartesian_impedance::example_cartesian_gains;
@@ -797,4 +798,61 @@ TEST(FrictionCompensation, BlendsContinuouslyBetweenStictionAndMotion) {
     previous = value;
   }
   EXPECT_DOUBLE_EQ(previous, -0.5);
+}
+
+TEST(WrenchDeadZone, matches_forge_compute_dof_torque_per_component) {
+  Vector6d wrench;
+  wrench << 4.9, -7.0, 5.0, 0.5, -1.5, 0.0;
+  Vector6d thresholds;
+  thresholds << 5.0, 5.0, 5.0, 1.0, 1.0, 1.0;
+  Vector6d expected;
+  // torch.where(|w| < dz, 0, sign(w) * (|w| - dz)); |w| == dz gives 0 either way.
+  expected << 0.0, -2.0, 0.0, 0.0, -0.5, 0.0;
+  EXPECT_TRUE(apply_wrench_dead_zone(wrench, thresholds).isApprox(expected, 1e-15));
+  EXPECT_TRUE(apply_wrench_dead_zone(wrench, Vector6d::Zero()).isApprox(wrench, 1e-15));
+}
+
+TEST(WrenchDeadZone, removes_the_task_torque_of_a_small_error_and_is_off_by_default) {
+  const Eigen::Vector3d p(0.4, 0.1, 0.5);
+  const Eigen::Quaterniond q(Eigen::AngleAxisd(0.7, Eigen::Vector3d(1, 2, 3).normalized()));
+  Matrix6d stiffness, damping;
+  example_cartesian_gains({565.0, 565.0, 565.0, 28.0, 28.0, 28.0}, stiffness, damping);
+  const Vector7d q_joint = Vector7d::Constant(0.3);
+  // 8 mm along x: 4.5 N, inside a 5 N dead zone.
+  const Eigen::Vector3d p_d = p + Eigen::Vector3d(0.008, 0.0, 0.0);
+  Vector6d dead_zone;
+  dead_zone << 5.0, 5.0, 5.0, 1.0, 1.0, 1.0;
+  const auto off = example_cartesian_impedance(
+      p, q, synthetic_jacobian(0.0), Vector7d::Zero(), q_joint, Vector7d::Zero(), p_d, q,
+      q_joint, stiffness, damping, 10.0, 0.0, RotationErrorForm::kAxisAngle);
+  const auto on = example_cartesian_impedance(
+      p, q, synthetic_jacobian(0.0), Vector7d::Zero(), q_joint, Vector7d::Zero(), p_d, q,
+      q_joint, stiffness, damping, 10.0, 0.0, RotationErrorForm::kAxisAngle, nullptr, dead_zone);
+  EXPECT_NEAR(off.wrench(0), 565.0 * 0.008, 1e-9);
+  EXPECT_TRUE(off.tau_task.isApprox(synthetic_jacobian(0.0).transpose() * off.wrench, 1e-12));
+  EXPECT_TRUE(on.wrench.isZero(1e-15));
+  EXPECT_TRUE(on.tau_task.isZero(1e-15));
+}
+
+// Reference quaternions from the training side (2026-11-11), wxyz, with isaacsim's
+// get_euler_xyz (roll, pitch, yaw) in degrees, each mod 360. The other Euler branch of the
+// same rotation, (roll + 180, 180 - pitch, yaw + 180), must not come out.
+TEST(IsaacEulerXyz, matches_training_reference_vectors) {
+  struct Case {
+    double w, x, y, z, roll, pitch, yaw;
+  };
+  const Case cases[] = {
+      {-0.100046, 0.239653, 0.965271, -0.028457, 186.0, 349.7, 151.6},
+      {-0.144654, -0.152483, 0.966342, -0.148351, 194.9, 341.0, 195.4},
+      {0.000862, -0.023142, -0.802492, 0.596213, 253.2, 1.5, 177.8},
+      {-0.041996, -0.426292, 0.896213, -0.115383, 190.0, 350.0, 230.0},
+      {0.134694, -0.117470, 0.810284, -0.558120, 250.0, 5.0, 200.0},
+  };
+  for (const auto& c : cases) {
+    const Eigen::Vector3d e =
+        isaac_euler_xyz(Eigen::Quaterniond(c.w, c.x, c.y, c.z).normalized()) * 180.0 / M_PI;
+    EXPECT_NEAR(e.x(), c.roll, 0.15) << c.w;
+    EXPECT_NEAR(e.y(), c.pitch, 0.15) << c.w;
+    EXPECT_NEAR(e.z(), c.yaw, 0.15) << c.w;
+  }
 }

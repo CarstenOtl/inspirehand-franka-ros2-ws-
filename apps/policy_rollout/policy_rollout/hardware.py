@@ -490,6 +490,70 @@ def settle_on_reset_grasp(
     }
 
 
+TRANSITION_PHASES = ("follow_waypoints", "return_to_reset")
+
+
+def transition_goal_limits(args, phase):
+    """The policy goal's (clip m, clip rad, fault m, fault rad) for this phase, or None.
+
+    ``--transition-clip`` widens the clip, and ``--transition-max-error`` the
+    controller's tracking-fault limits, in the release waypoints and the return
+    only (ForgeUltra ``cyclic_transition_clip``). The policy phase keeps the
+    training clip: the teacher saturates it on ~99% of threading substeps.
+    """
+
+    clip = getattr(args, "transition_clip", None)
+    if clip is None or phase not in TRANSITION_PHASES:
+        return None
+    error = getattr(args, "transition_max_error", None) or (0.0, 0.0)
+    return (float(clip[0]), float(clip[1]), float(error[0]), float(error[1]))
+
+
+def check_transition_clip_ceilings(args, parameters) -> None:
+    """Refuse before anything moves if the controller would reject the transition goals."""
+
+    clip = getattr(args, "transition_clip", None)
+    if clip is None:
+        return
+    from franka_trajectory_replay.replay_client import Rejected
+
+    error = getattr(args, "transition_max_error", None) or (0.0, 0.0)
+    requested = {
+        "policy_clip_position_max_m": clip[0],
+        "policy_clip_orientation_max_rad": clip[1],
+        "policy_max_position_error_max": error[0],
+        "policy_max_orientation_error_max": error[1],
+    }
+    # The controller's ceiling is the larger of the parameter and the profile's own value.
+    profile_value = {
+        "policy_clip_position_max_m": "policy_clip_position_m",
+        "policy_clip_orientation_max_rad": "policy_clip_orientation_rad",
+        "policy_max_position_error_max": "max_position_error",
+        "policy_max_orientation_error_max": "max_orientation_error",
+    }
+    ceiling = {
+        name: max(float(parameters.get(name) or 0.0), float(parameters.get(base) or 0.0))
+        for name, base in profile_value.items()
+    }
+    short = [
+        f"{name} {ceiling[name]} < {value}"
+        for name, value in requested.items()
+        if ceiling[name] + 1e-9 < float(value)
+    ]
+    if short:
+        raise Rejected(
+            "--transition-clip/--transition-max-error exceed the controller profile's "
+            "ceilings (" + "; ".join(short) + "); raise them in the controller YAML"
+        )
+    print(
+        f"transition clip: {clip[0]:.3f} m / {clip[1]:.3f} rad in "
+        f"{' and '.join(TRANSITION_PHASES)}, tracking-fault limits "
+        f"{error[0] or ceiling['policy_max_position_error_max']:.3f} m / "
+        f"{error[1] or ceiling['policy_max_orientation_error_max']:.3f} rad there",
+        flush=True,
+    )
+
+
 def _retry_on_timeout(action, attempts=3, log=print):
     """Repeat a controller switch whose reply did not arrive.
 
@@ -2018,7 +2082,7 @@ def _hardware_node_class():
             return self._wait_for_tf(self.grasp_pose, timeout_s)
 
         def publish_policy_goal(
-            self, goal_position, goal_quaternion_wxyz, tool_in_flange, nullspace
+            self, goal_position, goal_quaternion_wxyz, tool_in_flange, nullspace, limits=None
         ):
             from franka_forge_cartesian_impedance_msgs.msg import PolicyGoal
 
@@ -2033,6 +2097,14 @@ def _hardware_node_class():
             message.goal.orientation.z = float(q[3])
             message.tool_in_flange = [float(value) for value in tool_in_flange]
             message.nullspace_positions = [float(value) for value in nullspace]
+            if limits is not None:
+                # (clip m, clip rad, fault m, fault rad); 0 keeps the profile's.
+                (
+                    message.clip_position_m,
+                    message.clip_orientation_rad,
+                    message.max_position_error,
+                    message.max_orientation_error,
+                ) = (float(value) for value in limits)
             self.policy_publisher.publish(message)
 
         def publish_hand_target(self, pinch):
@@ -2396,6 +2468,7 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             raise Rejected(
                 "controller is not using the policy profile: " + "; ".join(mismatches)
             )
+        check_transition_clip_ceilings(args, parameters)
 
         # Homing and setup are complete. Keeping these helper nodes spinning
         # would continue deserializing joint/robot state that
@@ -2776,7 +2849,13 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
             # against the live grasp pose, and the law at that pose, in the controller
             # at 1 kHz with the grasp frame this tick measured.
             goal_position, goal_quaternion = policy_goal_base(frame, filtered, profile)
-            node.publish_policy_goal(goal_position, goal_quaternion, tool_in_flange, home_arm)
+            node.publish_policy_goal(
+                goal_position,
+                goal_quaternion,
+                tool_in_flange,
+                home_arm,
+                limits=transition_goal_limits(args, phase),
+            )
             pinch_target = fo.pinch_targets(filtered, profile=profile)
             if thumb_hold is not None:
                 was_holding = thumb_hold.active

@@ -1292,3 +1292,44 @@ def test_return_gate_tolerance_is_configurable():
         return_tolerance_deg=7.0,
     )
     assert loose._returned(settled, tilted, np.zeros(3))
+
+
+def test_transition_clip_applies_only_in_the_scripted_phases():
+    from types import SimpleNamespace
+
+    from policy_rollout.hardware import transition_goal_limits
+
+    args = SimpleNamespace(transition_clip=[0.05, 0.25], transition_max_error=[0.1, 0.5])
+    assert transition_goal_limits(args, "policy") is None
+    assert transition_goal_limits(args, "follow_waypoints") == (0.05, 0.25, 0.1, 0.5)
+    assert transition_goal_limits(args, "return_to_reset") == (0.05, 0.25, 0.1, 0.5)
+    assert transition_goal_limits(SimpleNamespace(transition_clip=None), "return_to_reset") is None
+
+
+def test_transition_clip_preflight_reads_the_controller_ceilings():
+    from types import SimpleNamespace
+
+    pytest.importorskip("franka_trajectory_replay")
+    from franka_trajectory_replay.replay_client import Rejected
+
+    from policy_rollout.hardware import check_transition_clip_ceilings
+
+    args = SimpleNamespace(transition_clip=[0.05, 0.25], transition_max_error=[0.1, 0.5])
+    profile = {
+        "policy_clip_position_m": 0.02,
+        "policy_clip_orientation_rad": 0.097,
+        "max_position_error": 0.08,
+        "max_orientation_error": 0.35,
+    }
+    allowed = dict(
+        profile,
+        policy_clip_position_max_m=0.05,
+        policy_clip_orientation_max_rad=0.25,
+        policy_max_position_error_max=0.1,
+        policy_max_orientation_error_max=0.5,
+    )
+    check_transition_clip_ceilings(args, allowed)
+    # A profile without ceilings (0) lets goals use only its own values.
+    with pytest.raises(Rejected, match="policy_clip_orientation_max_rad"):
+        check_transition_clip_ceilings(args, dict(allowed, policy_clip_orientation_max_rad=0.0))
+    check_transition_clip_ceilings(SimpleNamespace(transition_clip=None), profile)

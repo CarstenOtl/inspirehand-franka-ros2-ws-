@@ -39,3 +39,11 @@ float64[7] tau_command
 # joints transmit without gravity, which is what training's PhysX joint torque reads.
 float64[7] tau_measured_filtered
 float64[7] tau_gravity
+
+# The task-space wrench after the dead zone (tau_task = J^T wrench), base frame, [N, N m].
+float64[6] wrench
+# The clip and tracking-fault limits in effect this cycle (a policy goal can override them).
+float64 clip_position_m
+float64 clip_orientation_rad
+float64 max_position_error
+float64 max_orientation_error
