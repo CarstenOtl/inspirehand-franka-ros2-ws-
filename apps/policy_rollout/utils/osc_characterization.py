@@ -264,10 +264,14 @@ def solve_lift(current, flange, lift: float):
     return rep.solve_ik(target, flange[:3, :3], current, np.eye(4))
 
 
-def plan_probe_pose(position, rotation, seed_q, tool, scene, args, where: str) -> dict:
-    q = rep.solve_ik(position, rotation, seed_q, tool)
+def plan_probe_pose(position, rotation, seed_q, tool, scene, args, where: str, q=None) -> dict:
+    """Checks for one probe pose; ``q`` given keeps that exact posture instead of solving IK."""
+
+    if q is None:
+        q = rep.solve_ik(position, rotation, seed_q, tool)
     if q is None:
         raise ValueError(f"{where}: no IK")
+    q = np.asarray(q, dtype=float)
     report = check_posture(q, tool, scene, args, where)
     yaw_deg = math.degrees(rep.clip_euler(rotation, args.yaw_seam_deg)[2])
     seam_margin = (args.yaw_seam_deg - yaw_deg) % 360.0
@@ -288,6 +292,28 @@ def plan_probe_pose(position, rotation, seed_q, tool, scene, args, where: str) -
         "probe_min_joint_margin_rad": min(e["joint_margin_rad"] for e in extremes),
         "seam_margin_deg": seam_margin,
     }
+
+
+def poses_from_joints(args, tool, scene) -> list[dict]:
+    """--probe-joints: probe where the arm really was, posture included.
+
+    The null-space reference is these joints too, so two postures that put the hand in
+    the same place differ only in how the arm is folded.
+    """
+
+    labels = args.probe_label or []
+    poses = []
+    for index, q in enumerate(args.probe_joints):
+        q = np.asarray(q, dtype=float)
+        label = labels[index] if index < len(labels) else f"j{index}"
+        pose = kin.flange_transform(q) @ tool
+        planned = plan_probe_pose(pose[:3, 3], pose[:3, :3], q, tool, scene, args, label, q=q)
+        if poses:
+            check_joint_path(poses[-1]["q"], q, scene, args, f"{poses[-1]['label']} -> {label}")
+        poses.append({"label": label, "draw": {"joints": q.tolist()}, "position": pose[:3, 3].copy(),
+                      "rotation": pose[:3, :3].copy(),
+                      "gravity_in_flange": pose[:3, :3].T @ np.array([0.0, 0.0, -1.0]), **planned})
+    return poses
 
 
 def sample_poses(args, tool, scene) -> list[dict]:
@@ -832,6 +858,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--pose", type=float, nargs=3, default=(0.30, 0.20, 0.30), metavar=("X", "Y", "Z"),
                    help="grasp-point position of the probe poses, base frame, m")
     p.add_argument("--orientations", type=int, default=3)
+    p.add_argument("--probe-joints", type=float, nargs=7, action="append", metavar="Q",
+                   help="probe at these joints instead of random orientations; repeat for several")
+    p.add_argument("--probe-label", action="append", help="names for --probe-joints, in order")
     p.add_argument("--min-tilt-deg", type=float, default=10.0)
     p.add_argument("--max-tilt-deg", type=float, default=35.0)
     p.add_argument("--max-yaw-deg", type=float, default=60.0)
@@ -899,14 +928,20 @@ def main(argv=None) -> None:
     tool = policy_tool_transform(policy_tool_offset_config())
     scene = SceneClearance()
     try:
-        poses = sample_poses(args, tool, scene)
+        if args.probe_joints:
+            poses = poses_from_joints(args, tool, scene)
+            args.probe_poses = len(poses)
+        else:
+            poses = sample_poses(args, tool, scene)
         spin = plan_spin(poses[-1]["q"], scene, args) if args.spin_stops > 0 else {"stops": []}
     except ValueError as exc:
         raise SystemExit(f"the plan is refused: {exc}") from exc
     for pose in poses:
         d = pose["draw"]
-        print(f"{pose['label']}: tilt {d['tilt_deg']:.0f} deg about {d['tilt_axis_deg']:.0f} deg, "
-              f"yaw {d['yaw_deg']:+.0f} deg; q {np.array2string(pose['q'], precision=2)}; "
+        where = ("given joints" if "joints" in d else
+                 f"tilt {d['tilt_deg']:.0f} deg about {d['tilt_axis_deg']:.0f} deg, yaw {d['yaw_deg']:+.0f} deg")
+        print(f"{pose['label']}: {where}; grasp point {np.array2string(pose['position'], precision=3)} m; "
+              f"q {np.array2string(pose['q'], precision=2)}; "
               f"clearance {1000 * pose['posture']['clearance_m']:.0f} mm "
               f"({pose['posture']['closest']}), probe extremes "
               f"{1000 * pose['probe_min_clearance_m']:.0f} mm, joint margin "
