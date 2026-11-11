@@ -37,3 +37,8 @@ __pycache__/
 
 # Raw camera-calibration runs (sample images); accepted results are copied to assets/camera/calibration/
 /apps/camera_calibration/logs/
+/apps/policy_rollout/logs/
+
+# Local files kept out of the repository.
+/Bolt-Holder-M24-v2lprt.STEP
+/assets/camera/calibration/20261029T173220_626741Z.zip
