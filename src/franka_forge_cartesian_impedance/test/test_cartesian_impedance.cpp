@@ -502,6 +502,20 @@ TEST(ForgeDecode, torque_clamp_is_forge_s_plus_minus_100) {
   EXPECT_TRUE(clamp_torque(tau, 0.0).isApprox(tau, 0.0));  // 0 disables it
 }
 
+TEST(ForgeDecode, per_joint_torque_clamp_is_the_fr3_effort_limits) {
+  Vector7d limits;
+  limits << 87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0;
+  Vector7d tau;
+  tau << 100.0, -100.0, 86.0, -88.0, 13.0, -13.0, 11.0;
+  const Vector7d clamped = clamp_torque(tau, limits);
+  Vector7d expected;
+  expected << 87.0, -87.0, 86.0, -87.0, 12.0, -12.0, 11.0;
+  EXPECT_TRUE(clamped.isApprox(expected, 0.0));
+  // A zero entry leaves that joint unclamped.
+  limits(4) = 0.0;
+  EXPECT_DOUBLE_EQ(clamp_torque(tau, limits)(4), 13.0);
+}
+
 TEST(ForgeDecode, euler_helpers_round_trip_and_wrap_like_isaac) {
   // isaacsim's get_euler_xyz returns each angle in [0, 2 pi); quat_from_euler_xyz is its
   // inverse on the principal branch. Both are exercised across the quadrants.

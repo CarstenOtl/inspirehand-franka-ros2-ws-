@@ -108,6 +108,10 @@
       friction_compensation_velocity: 0.05
       friction_compensation_torque: 0.3
       torque_limit: 100.0
+      # FR3 effort limits, which the training arm was bound by: 87 Nm on joints 0-3,
+      # 12 Nm on 4-6. Per joint, overriding torque_limit; keep equal to
+      # forge_osc.ARM_TORQUE_LIMITS (the runner's tests check it).
+      torque_limits: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
       # ForgeUltra's per-substep target clip, run here at 1 kHz on ~/policy_goal:
       # pos_action_threshold / rot_action_threshold from vanilla_threading.yaml, in
       # the training world frame, which is fr3_link0 yawed by pi (TrainingFrameAdapter

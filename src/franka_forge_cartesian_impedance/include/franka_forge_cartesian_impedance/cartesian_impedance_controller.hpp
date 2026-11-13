@@ -242,6 +242,10 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   bool coriolis_compensation_{true};
   // ForgeUltra's +-100 Nm clamp on the summed torque (0 = none). Never binds on an FR3.
   double torque_limit_{0.0};
+  // Per-joint clamp (torque_limits parameter); an entry > 0 overrides torque_limit_ for that
+  // joint. The policy configs set the FR3 effort limits the training arm had: 87 Nm on joints
+  // 0-3, 12 Nm on 4-6.
+  Vector7d torque_limits_{Vector7d::Zero()};
   // Coulomb friction feedforward per joint (friction_compensation_torque); all zero, the
   // default, is off. Training's FR3 has no joint friction, the physical one does.
   Vector7d friction_compensation_nm_{Vector7d::Zero()};

@@ -1133,6 +1133,7 @@ def test_policy_profiles_run_forge_s_law_and_decode():
         # compute_dof_torque has no Coriolis term and clamps at +-100 Nm.
         assert parameters["coriolis_compensation"] is False, name
         assert parameters["torque_limit"] == pytest.approx(fo.ARM_TORQUE_LIMIT), name
+        assert parameters["torque_limits"] == pytest.approx(list(fo.ARM_TORQUE_LIMITS)), name
         # _apply_action's per-substep clip, now the controller's per-cycle clip, in
         # the training world frame.
         assert parameters["policy_clip_position_m"] == pytest.approx(fo.POS_ACTION_THRESHOLD[0]), name

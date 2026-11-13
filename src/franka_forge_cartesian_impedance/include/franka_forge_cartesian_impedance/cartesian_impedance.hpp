@@ -294,13 +294,26 @@ inline double quaternion_angle(const Eigen::Quaterniond& a, const Eigen::Quatern
 }
 
 /// ForgeUltra's `arm_torque = clamp(arm_torque, -100, 100)` at the end of compute_dof_torque.
-/// A non-positive limit disables the clamp. It never binds on an FR3 (87 / 12 Nm joints); it is
-/// here so the law is the training one line for line.
+/// A non-positive limit disables the clamp. The scalar +-100 never binds on an FR3 (87 / 12 Nm
+/// joints), which is why the per-joint overload below is what the policy configs use.
 inline Vector7d clamp_torque(const Vector7d& tau, double limit) {
   if (!(limit > 0.0)) {
     return tau;
   }
   return tau.cwiseMax(-limit).cwiseMin(limit);
+}
+
+/// The same clamp per joint: joint i is limited to +-limits(i), and a non-positive entry leaves
+/// that joint unclamped. The FR3's own joint effort limits (87 Nm on joints 0-3, 12 Nm on 4-6)
+/// are what the training arm was bound by.
+inline Vector7d clamp_torque(const Vector7d& tau, const Vector7d& limits) {
+  Vector7d out = tau;
+  for (int i = 0; i < 7; ++i) {
+    if (limits(i) > 0.0) {
+      out(i) = std::clamp(tau(i), -limits(i), limits(i));
+    }
+  }
+  return out;
 }
 
 // --- ForgeUltra's target decode ------------------------------------------------------------

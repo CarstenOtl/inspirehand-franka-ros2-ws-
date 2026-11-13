@@ -799,6 +799,13 @@ void CartesianImpedanceController::publish_status() {
   add("coriolis_compensation", (coriolis_compensation_ && !model_from_dh_) ? "true" : "false");
   add("torque_limit", std::to_string(torque_limit_));
   {
+    std::string limits;
+    for (int i = 0; i < kNumJoints; ++i) {
+      limits += (i ? " " : "") + std::to_string(torque_limits_(i));
+    }
+    add("torque_limits", limits);
+  }
+  {
     std::string dz;
     for (int i = 0; i < 6; ++i) {
       dz += (i ? " " : "") + std::to_string(task_wrench_dead_zone_(i));
@@ -1195,8 +1202,14 @@ controller_interface::return_type CartesianImpedanceController::update(
   const Vector7d tau_friction = friction_compensation_torque(
       friction_compensation_nm_, dq_current, terms.tau_task + terms.tau_nullspace,
       friction_compensation_velocity_, friction_compensation_torque_);
+  Vector7d limits = Vector7d::Constant(torque_limit_);
+  for (int i = 0; i < kNumJoints; ++i) {
+    if (torque_limits_(i) > 0.0) {
+      limits(i) = torque_limits_(i);
+    }
+  }
   const Vector7d output = saturate_torque_rate(
-      clamp_torque(terms.tau_command + tau_friction, torque_limit_), tau_command_previous_);
+      clamp_torque(terms.tau_command + tau_friction, limits), tau_command_previous_);
   tau_command_previous_ = output;
   for (int i = 0; i < kNumJoints; ++i) {
     command_interfaces_[i].set_value(output(i));
@@ -1383,6 +1396,7 @@ CartesianImpedanceController::CallbackReturn CartesianImpedanceController::on_in
     auto_declare<std::string>("rotation_error", "quaternion_vector");
     auto_declare<bool>("coriolis_compensation", true);
     auto_declare<double>("torque_limit", 0.0);
+    auto_declare<std::vector<double>>("torque_limits", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     auto_declare<std::vector<double>>("friction_compensation_nm",
                                       {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     auto_declare<double>("friction_compensation_velocity", 0.05);
@@ -1530,6 +1544,17 @@ bool CartesianImpedanceController::assign_parameters() {
   }
   coriolis_compensation_ = node->get_parameter("coriolis_compensation").as_bool();
   torque_limit_ = node->get_parameter("torque_limit").as_double();
+  {
+    const std::vector<double> limits = node->get_parameter("torque_limits").as_double_array();
+    if (limits.size() != static_cast<size_t>(kNumJoints) ||
+        !std::all_of(limits.begin(), limits.end(),
+                     [](double v) { return std::isfinite(v) && v >= 0.0; })) {
+      RCLCPP_FATAL(node->get_logger(),
+                   "torque_limits must be 7 finite values >= 0 (0 = use torque_limit)");
+      return false;
+    }
+    torque_limits_ = Eigen::Map<const Vector7d>(limits.data());
+  }
   policy_clip_position_m_ = node->get_parameter("policy_clip_position_m").as_double();
   policy_clip_orientation_rad_ = node->get_parameter("policy_clip_orientation_rad").as_double();
   policy_clip_frame_yaw_ = node->get_parameter("policy_clip_frame_yaw").as_double();
@@ -1989,9 +2014,11 @@ CartesianImpedanceController::on_configure(const rclcpp_lifecycle::State& /*prev
     RCLCPP_INFO(get_node()->get_logger(),
                 "Policy goals (ForgeUltra's per-cycle decode) accepted: clip %.3f m per axis, "
                 "%.3f rad per Euler angle, in a frame yawed %.4f rad from %s; torque clamp "
-                "%.0f Nm.",
+                "%.0f Nm (per joint %.0f %.0f %.0f %.0f %.0f %.0f %.0f where set).",
                 policy_clip_position_m_, policy_clip_orientation_rad_, policy_clip_frame_yaw_,
-                base_frame_.c_str(), torque_limit_);
+                base_frame_.c_str(), torque_limit_, torque_limits_(0), torque_limits_(1),
+                torque_limits_(2), torque_limits_(3), torque_limits_(4), torque_limits_(5),
+                torque_limits_(6));
   }
   return CallbackReturn::SUCCESS;
 }

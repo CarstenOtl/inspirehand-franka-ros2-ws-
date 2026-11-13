@@ -34,6 +34,8 @@ DEFAULT_DEAD_ZONE = np.array([5.0, 5.0, 5.0, 1.0, 1.0, 1.0])
 EMA_FACTOR = 0.2
 HAND_EMA_FACTOR_SCALE = 3.0
 ARM_TORQUE_LIMIT = 100.0
+# The FR3 effort limits the training arm was bound by: 87 N m on joints 0-3, 12 N m on 4-6.
+ARM_TORQUE_LIMITS = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
 EE_BASE_ORN_EULER = (math.pi, 0.0, 0.0)
 HAND_GRASP_FRAME_RESET_Z_DIRECTION = np.array([0.0, 0.0, -1.0])
 HAND_GRASP_FRAME_OUTWARD_TILT_DEG = 15.0
@@ -569,7 +571,7 @@ def compute_dof_torque(
     u_null = M @ u_null
     torque_null = (np.eye(7) - J.T @ j_eef_inv) @ u_null
     arm_torque = arm_torque + torque_null
-    arm_torque = np.clip(arm_torque, -ARM_TORQUE_LIMIT, ARM_TORQUE_LIMIT)
+    arm_torque = np.clip(arm_torque, -ARM_TORQUE_LIMITS, ARM_TORQUE_LIMITS)
     return arm_torque, wrench, pos_error, aa_error
 
 

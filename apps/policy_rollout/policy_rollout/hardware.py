@@ -2445,6 +2445,17 @@ def run_hardware_rollout(runner, calibration, args) -> dict:
                 float(parameters.get(name, float("nan"))), value, rel_tol=1e-6
             )
         ]
+        # The FR3 effort limits the training arm was bound by, per joint (87 Nm on
+        # joints 0-3, 12 Nm on 4-6); a list, so not in the scalar table above.
+        torque_limits = parameters.get("torque_limits")
+        if torque_limits is None or len(torque_limits) != len(fo.ARM_TORQUE_LIMITS) or not all(
+            math.isclose(float(a), float(b), rel_tol=1e-6)
+            for a, b in zip(torque_limits, fo.ARM_TORQUE_LIMITS)
+        ):
+            mismatches.append(
+                f"torque_limits={torque_limits!r} (expected {list(fo.ARM_TORQUE_LIMITS)}): "
+                "rebuild inspire_franka_trajectory_replay and restart the launch"
+            )
         if str(parameters.get("rotation_error")) != "axis_angle":
             mismatches.append(
                 f"rotation_error={parameters.get('rotation_error')!r} (expected 'axis_angle')"

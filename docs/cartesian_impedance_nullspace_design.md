@@ -272,6 +272,10 @@ Done since the first version of this document:
    which is the stronger property; the workspace box bounds the goal.
 5. **The +-100 Nm clamp** (2026-10-06). `torque_limit: 100.0`, `clamp_torque`, before the rate
    limiter. It never binds on an FR3; it is there so the law reads line for line.
+   **2026-11-12:** replaced for the policy by a per-joint `torque_limits` of 87 Nm on joints 0-3
+   and 12 Nm on 4-6 (the FR3 effort limits the training arm had), overriding `torque_limit` for
+   every joint where it is > 0. The Python reference law (`forge_osc.ARM_TORQUE_LIMITS`) clamps
+   the same way.
 
 Still different, and why each is left:
 

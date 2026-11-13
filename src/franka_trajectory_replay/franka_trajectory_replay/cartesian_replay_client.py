@@ -110,7 +110,7 @@ class CartesianReplayClient(ReplayClient):
             'translational_stiffness', 'rotational_stiffness', 'nullspace_stiffness',
             'stiffness_scale', 'target_filter', 'nullspace_target', 'coriolis_compensation',
             'nullspace_damping_lambda', 'rotation_error',
-            'mass_weighted_nullspace', 'arm_armature', 'torque_limit',
+            'mass_weighted_nullspace', 'arm_armature', 'torque_limit', 'torque_limits',
             'policy_clip_position_m', 'policy_clip_orientation_rad', 'policy_clip_frame_yaw',
             'policy_yaw_wrap_upper_deg',
             'policy_clip_position_max_m', 'policy_clip_orientation_max_rad',

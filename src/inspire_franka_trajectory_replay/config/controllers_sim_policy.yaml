@@ -130,6 +130,10 @@ cartesian_trajectory_replay_controller:
     # sets it. Not used on hardware, where the real arm has its own.
     task_wrench_dead_zone: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     torque_limit: 100.0
+    # FR3 effort limits, which the training arm was bound by: 87 Nm on joints 0-3,
+    # 12 Nm on 4-6. Per joint, overriding torque_limit; keep equal to
+    # forge_osc.ARM_TORQUE_LIMITS (the runner's tests check it).
+    torque_limits: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
     policy_clip_position_m: 0.02
     policy_clip_orientation_rad: 0.097
     policy_clip_frame_yaw: 3.141592653589793
