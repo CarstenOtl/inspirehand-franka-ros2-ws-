@@ -140,10 +140,40 @@ def tilted_orientation(tilt_axis_angle, tilt, yaw) -> np.ndarray:
     )
 
 
-def probe_offsets(args) -> list[tuple[np.ndarray, np.ndarray]]:
-    """The extremes of the probe: (translation, rotation vector) per axis and sign."""
+def probe_levels(args) -> list[dict]:
+    """The probe's speed levels, slowest first as given.
 
-    amplitude = [args.probe_translation_mm / 1000.0] * 3 + [math.radians(args.probe_rotation_deg)] * 3
+    Each level's stroke is at least --probe-translation-mm / --probe-rotation-deg and long
+    enough that every leg lasts --probe-min-leg-s, so the arm settles to its steady lag
+    (the spring's time constant is about 2/sqrt(K) = 0.08 s, the transient about 0.5 s)
+    before the analysis reads it from the second half of the leg.
+    """
+
+    speeds = list(getattr(args, "probe_speeds_mm_s", None) or [args.probe_speed_mm_s])
+    rates = list(getattr(args, "probe_rates_deg_s", None) or [args.probe_rate_deg_s])
+    if len(rates) == 1 and len(speeds) > 1:
+        rates = rates * len(speeds)
+    if len(rates) != len(speeds):
+        raise ValueError("--probe-rates-deg-s needs one value per --probe-speeds-mm-s value")
+    min_leg = float(getattr(args, "probe_min_leg_s", 0.0))
+    return [
+        {
+            "level": i,
+            "speed_m_s": v / 1000.0,
+            "rate_rad_s": math.radians(w),
+            "amplitude_m": max(args.probe_translation_mm, v * min_leg) / 1000.0,
+            "amplitude_rad": math.radians(max(args.probe_rotation_deg, w * min_leg)),
+        }
+        for i, (v, w) in enumerate(zip(speeds, rates))
+    ]
+
+
+def probe_offsets(args) -> list[tuple[np.ndarray, np.ndarray]]:
+    """The extremes of the probe, largest stroke of all levels: (translation, rotation vector)."""
+
+    levels = probe_levels(args)
+    amplitude = ([max(lv["amplitude_m"] for lv in levels)] * 3
+                 + [max(lv["amplitude_rad"] for lv in levels)] * 3)
     out = []
     for axis in range(6):
         for sign in (-1.0, 1.0):
@@ -276,7 +306,8 @@ def plan_probe_pose(position, rotation, seed_q, tool, scene, args, where: str, q
     yaw_deg = math.degrees(rep.clip_euler(rotation, args.yaw_seam_deg)[2])
     seam_margin = (args.yaw_seam_deg - yaw_deg) % 360.0
     seam_margin = min(seam_margin, 360.0 - seam_margin)
-    if seam_margin < args.probe_rotation_deg + 10.0:
+    largest_rotation_deg = math.degrees(max(lv["amplitude_rad"] for lv in probe_levels(args)))
+    if seam_margin < largest_rotation_deg + 10.0:
         raise ValueError(f"{where}: yaw is {seam_margin:.0f} deg from the clip's seam")
     extremes = []
     for translation, rotation_vector in probe_offsets(args):
@@ -638,8 +669,6 @@ def run_probe(node, arm_client, pose, tool, args, rejections) -> None:
     position0 = np.asarray(state["position"], dtype=float)
     rotation0 = kin.quaternion_to_matrix(state["quaternion_xyzw"])
     period = 1.0 / args.goal_rate
-    amplitude = [args.probe_translation_mm / 1000.0] * 3 + [math.radians(args.probe_rotation_deg)] * 3
-    speed = [args.probe_speed_mm_s / 1000.0] * 3 + [math.radians(args.probe_rate_deg_s)] * 3
 
     first_goal = node.now_s()
 
@@ -660,35 +689,41 @@ def run_probe(node, arm_client, pose, tool, args, rejections) -> None:
     node.event("probe_hold_start", label=pose["label"])
     hold(args.hold_s)
     node.event("probe_hold_end", label=pose["label"])
-    for axis in range(6):
-        node.event("probe_axis_start", label=pose["label"], axis=AXIS_NAMES[axis],
-                   amplitude=amplitude[axis], speed=speed[axis])
-        for leg, start, end in probe_profile(args):
-            duration = (abs(end - start) * amplitude[axis] / speed[axis] if end != start
-                        else args.probe_rest_s)
-            node.event("probe_leg_start", label=pose["label"], axis=AXIS_NAMES[axis], leg=leg,
-                       direction=int(np.sign(end - start)))
-            t0 = node.now_s()
-            tick = t0
-            while True:
-                s = min((node.now_s() - t0) / duration, 1.0)
-                offset = np.zeros(6)
-                offset[axis] = (start + s * (end - start)) * amplitude[axis]
-                position, rotation = offset_pose(position0, rotation0, offset[:3], offset[3:])
-                node.publish_goal(position, rotation, tool, pose["q"], args)
-                rep._check_controller_running(arm_client, rejections, True)
-                measured = node.latest_state()
-                error_mm = 1000.0 * float(np.linalg.norm(measured["position"] - position))
-                error_deg = math.degrees(float(np.linalg.norm(rep.rotation_vector(
-                    kin.quaternion_to_matrix(measured["quaternion_xyzw"]) @ rotation.T))))
-                if error_mm > args.abort_mm or error_deg > args.abort_deg:
-                    raise RuntimeError(f"probe tracking error {error_mm:.1f} mm / {error_deg:.1f} deg "
-                                       "above the abort limit")
-                if s >= 1.0:
-                    break
-                tick += period
-                node.sleep_until(tick)
-        node.event("probe_axis_end", label=pose["label"], axis=AXIS_NAMES[axis])
+    levels = probe_levels(args)
+    for level in levels:
+        amplitude = [level["amplitude_m"]] * 3 + [level["amplitude_rad"]] * 3
+        speed = [level["speed_m_s"]] * 3 + [level["rate_rad_s"]] * 3
+        for axis in range(6):
+            node.event("probe_axis_start", label=pose["label"], axis=AXIS_NAMES[axis],
+                       amplitude=amplitude[axis], speed=speed[axis], level=level["level"],
+                       levels=len(levels))
+            for leg, start, end in probe_profile(args):
+                duration = (abs(end - start) * amplitude[axis] / speed[axis] if end != start
+                            else args.probe_rest_s)
+                node.event("probe_leg_start", label=pose["label"], axis=AXIS_NAMES[axis], leg=leg,
+                           direction=int(np.sign(end - start)), level=level["level"])
+                t0 = node.now_s()
+                tick = t0
+                while True:
+                    s = min((node.now_s() - t0) / duration, 1.0)
+                    offset = np.zeros(6)
+                    offset[axis] = (start + s * (end - start)) * amplitude[axis]
+                    position, rotation = offset_pose(position0, rotation0, offset[:3], offset[3:])
+                    node.publish_goal(position, rotation, tool, pose["q"], args)
+                    rep._check_controller_running(arm_client, rejections, True)
+                    measured = node.latest_state()
+                    error_mm = 1000.0 * float(np.linalg.norm(measured["position"] - position))
+                    error_deg = math.degrees(float(np.linalg.norm(rep.rotation_vector(
+                        kin.quaternion_to_matrix(measured["quaternion_xyzw"]) @ rotation.T))))
+                    if error_mm > args.abort_mm or error_deg > args.abort_deg:
+                        raise RuntimeError(f"probe tracking error {error_mm:.1f} mm / {error_deg:.1f} deg "
+                                           "above the abort limit")
+                    if s >= 1.0:
+                        break
+                    tick += period
+                    node.sleep_until(tick)
+            node.event("probe_axis_end", label=pose["label"], axis=AXIS_NAMES[axis],
+                       level=level["level"])
 
 
 def run_live(args, poses, spin, tool_matrix, output_dir: Path) -> None:
@@ -881,6 +916,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--probe-rotation-deg", type=float, default=8.0)
     p.add_argument("--probe-speed-mm-s", type=float, default=6.0)
     p.add_argument("--probe-rate-deg-s", type=float, default=2.0)
+    p.add_argument("--probe-speeds-mm-s", type=float, nargs="+", metavar="V",
+                   help="speed sweep: probe every axis once per speed (replaces --probe-speed-mm-s)")
+    p.add_argument("--probe-rates-deg-s", type=float, nargs="+", metavar="W",
+                   help="rotation rate per --probe-speeds-mm-s level (one value applies to all)")
+    p.add_argument("--probe-min-leg-s", type=float, default=1.5,
+                   help="each leg lasts at least this long; faster levels get a longer stroke")
     p.add_argument("--probe-cycles", type=int, default=1)
     p.add_argument("--probe-settle-s", type=float, default=1.0)
     p.add_argument("--probe-rest-s", type=float, default=1.5,
@@ -949,9 +990,15 @@ def main(argv=None) -> None:
     if spin["stops"]:
         print(f"wrist spin: {len(spin['stops'])} stops, min clearance "
               f"{1000 * spin['min_clearance_m']:.0f} mm")
-    per_axis = (4 * (args.probe_translation_mm / args.probe_speed_mm_s) * 3
-                + 4 * (args.probe_rotation_deg / args.probe_rate_deg_s) * 3
-                + 12 * args.probe_rest_s) * args.probe_cycles
+    levels = probe_levels(args)
+    per_axis = sum(4 * (lv["amplitude_m"] / lv["speed_m_s"]) * 3
+                   + 4 * (lv["amplitude_rad"] / lv["rate_rad_s"]) * 3
+                   + 12 * args.probe_rest_s for lv in levels) * args.probe_cycles
+    if len(levels) > 1 or args.probe_speeds_mm_s:
+        print("probe levels: " + "; ".join(
+            f"{1000 * lv['speed_m_s']:g} mm/s over +/-{1000 * lv['amplitude_m']:.0f} mm, "
+            f"{math.degrees(lv['rate_rad_s']):g} deg/s over +/-{math.degrees(lv['amplitude_rad']):.0f} deg"
+            for lv in levels))
     probes = min(args.probe_poses, len(poses)) * len(args.probe_payloads)
     probe_s = probes * (per_axis + args.probe_settle_s + args.hold_s + 4.0)
     stations = len(poses) + len(spin["stops"])

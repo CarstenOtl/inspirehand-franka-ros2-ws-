@@ -121,8 +121,14 @@ def segments(events, start: str, end: str, key: str = "label") -> list[dict]:
 
 # --- probe ----------------------------------------------------------------------
 def smooth(values, window: int):
+    """Moving average, padded with the end values (zero padding made the first and last
+    samples of every window look like metres per second)."""
+
+    values = np.asarray(values, dtype=float)
     kernel = np.ones(window) / window
-    return np.convolve(values, kernel, mode="same")
+    before, after = window // 2, window - 1 - window // 2
+    padded = np.concatenate((np.full(before, values[0]), values, np.full(after, values[-1])))
+    return np.convolve(padded, kernel, mode="valid")
 
 
 def analyze_probe_axis(fast, axis: int, legs: list[dict], t_end: float, stiffness, args,
@@ -147,6 +153,7 @@ def analyze_probe_axis(fast, axis: int, legs: list[dict], t_end: float, stiffnes
     threshold = args.moving_mm_s / 1000.0 if axis < 3 else math.radians(args.moving_deg_s)
     others = np.delete(np.arange(6), axis)
     results = []
+    curve_points = []
     for index, leg in enumerate(legs):
         leg_end = legs[index + 1]["t"] if index + 1 < len(legs) else t_end
         mask = (times >= leg["t"]) & (times < leg_end)
@@ -169,6 +176,22 @@ def analyze_probe_axis(fast, axis: int, legs: list[dict], t_end: float, stiffnes
         onsets = np.flatnonzero(run == sustain)
         w = direction * spring[mask]
         entry = {"leg": leg["leg"], "direction": direction}
+        # Steady state: the goal moves at constant speed; past the transient the arm trails
+        # it at the same speed, and the spring carries damping plus whatever the arm loses
+        # (dead zone, friction). Read from the leg's second half, at least --steady-after-s in.
+        steady_from = leg["t"] + max(args.steady_after_s, 0.5 * (leg_end - leg["t"]))
+        steady = (times[mask] >= steady_from)
+        if np.count_nonzero(steady) >= 10:
+            entry["steady_speed"] = float(np.median(direction * velocity[mask][steady]))
+            entry["steady_spring"] = float(np.median(w[steady]))
+        # Every sample of the leg as (speed along the leg, lost wrench): spring minus the
+        # controller's damping. On the real arm the slow legs never reach steady state (the
+        # loss rises steeply over the first mm/s), so the loss curve is read sample by sample;
+        # the arm's inertia is ignored (accelerations are small except at the turnarounds).
+        step = max(1, int(round(args.curve_decimate_s / dt)))
+        v_leg = direction * velocity[mask]
+        lost_leg = w - 2.0 * math.sqrt(stiffness[axis]) * v_leg
+        curve_points.extend(zip(v_leg[::step].tolist(), lost_leg[::step].tolist()))
         leg_velocity = direction * velocity[mask]
         leg_coordinate = direction * coordinate[mask]
         travel = args.min_travel_mm / 1000.0 if axis < 3 else math.radians(args.min_travel_deg)
@@ -227,7 +250,117 @@ def analyze_probe_axis(fast, axis: int, legs: list[dict], t_end: float, stiffnes
         summary["creep"]["dead_zone_minus_damping"] = summary["creep"]["dead_zone"] - damping
     if any("breakaway_above" in r for r in results):
         summary["no_breakaway_legs"] = sum("breakaway_above" in r for r in results)
+    steady = [r for r in results if "steady_spring" in r]
+    if steady:
+        damping = 2.0 * math.sqrt(stiffness[axis])
+        speed = float(np.mean([r["steady_speed"] for r in steady]))
+        spring_mean = float(np.mean([r["steady_spring"] for r in steady]))
+        # Averaged over both directions, so a constant bias cancels.
+        summary["steady"] = {"goal_speed": goal_speed, "speed": speed, "spring": spring_mean,
+                             "damping": damping * speed, "lost": spring_mean - damping * speed,
+                             "points": [[r["steady_speed"], r["steady_spring"], r["direction"]] for r in steady]}
+    summary["curve_points"] = curve_points
     return summary
+
+
+def fit_loss_curve(points, translation: bool, speed_edges) -> dict:
+    """Lost wrench against speed: binned medians, and lost = Fc tanh(v / v0) + b v.
+
+    The tanh is a smoothed Coulomb step: a sim dead zone is a sharp step (v0 -> 0) with
+    b = 0; the FR3 creeps, so its step is spread over v0. Only samples moving the leg's
+    way are used (v > 0).
+    """
+
+    points = np.asarray(points, dtype=float)
+    if len(points) < 50:
+        return {}
+    unit = 1000.0 if translation else math.degrees(1.0)
+    v, lost = points[:, 0], points[:, 1]
+    keep = v > 0.1 / unit
+    v, lost = v[keep], lost[keep]
+    bins = []
+    edges = np.asarray(speed_edges, dtype=float) / unit
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        inside = (v >= lo) & (v < hi)
+        if np.count_nonzero(inside) >= 10:
+            bins.append({"speed_lo": float(lo), "speed_hi": float(hi), "n": int(np.count_nonzero(inside)),
+                         "speed": float(np.median(v[inside])), "lost": float(np.median(lost[inside])),
+                         "lost_p25": float(np.percentile(lost[inside], 25)),
+                         "lost_p75": float(np.percentile(lost[inside], 75))})
+    if len(bins) < 3:
+        return {"samples": int(len(v)), "bins": bins}
+    # Fitted to the bin medians (weight sqrt(n)): robust to the few samples a turnaround
+    # or a velocity glitch puts far off the curve. Both directions are folded onto the
+    # leg's direction, so a constant bias cancels and needs no term of its own.
+    speed = np.array([b["speed"] for b in bins])
+    median = np.array([b["lost"] for b in bins])
+    weight = np.sqrt([b["n"] for b in bins])
+    best = None
+    for v0 in np.geomspace(0.05 / unit, 10.0 / unit, 80):
+        design = np.column_stack((np.tanh(speed / v0), speed))
+        solution, *_ = np.linalg.lstsq(design * weight[:, None], median * weight, rcond=None)
+        rms = float(np.sqrt(np.sum(weight ** 2 * (median - design @ solution) ** 2) / np.sum(weight ** 2)))
+        if best is None or rms < best[0]:
+            best = (rms, v0, solution)
+    rms, v0, (coulomb, viscous) = best
+    return {"coulomb": float(coulomb), "v0": float(v0), "viscous": float(viscous),
+            "rms_residual": rms, "samples": int(len(v)), "bins": bins}
+
+
+def loss_curves(probes: dict, args) -> dict:
+    """Pool every level's samples per pose and axis, then fit the loss curve."""
+
+    pooled = {}
+    for key, axes in probes.items():
+        pose = key.rsplit("/L", 1)[0] if "/L" in key else key
+        for axis, s in axes.items():
+            pooled.setdefault(pose, {}).setdefault(axis, []).extend(s.get("curve_points", []))
+    out = {}
+    for pose, axes in pooled.items():
+        for axis, points in axes.items():
+            translation = axis in AXES[:3]
+            fit = fit_loss_curve(points, translation,
+                                 args.curve_edges_mm_s if translation else args.curve_edges_deg_s)
+            if fit:
+                out.setdefault(pose, {})[axis] = fit
+    return out
+
+
+def fit_speed_sweep(probes: dict, stiffness) -> dict:
+    """Per pose and axis, across speed levels: spring = intercept + slope * speed.
+
+    Every moving leg of every level is one point (both directions, folded onto the leg's
+    direction, so a constant bias cancels in the fit). The intercept is the wrench the arm
+    loses at vanishing speed: the dead zone in sim, Coulomb friction on the FR3. The slope is
+    the damper 2 sqrt(K) plus any viscous loss; slope - 2 sqrt(K) is the viscous part.
+    """
+
+    grouped = {}
+    for key, axes in probes.items():
+        if "/L" not in key:
+            continue
+        pose = key.rsplit("/L", 1)[0]
+        for axis, s in axes.items():
+            if "steady" in s:
+                grouped.setdefault(pose, {}).setdefault(axis, []).append(s["steady"])
+    out = {}
+    for pose, axes in grouped.items():
+        for axis, levels in axes.items():
+            if len(levels) < 2:
+                continue
+            points = np.array([p[:2] for lv in levels for p in lv["points"]])
+            design = np.column_stack((np.ones(len(points)), points[:, 0]))
+            (intercept, slope), *_ = np.linalg.lstsq(design, points[:, 1], rcond=None)
+            residual = points[:, 1] - design @ (intercept, slope)
+            damping = 2.0 * math.sqrt(stiffness[AXES.index(axis)])
+            out.setdefault(pose, {})[axis] = {
+                "intercept": float(intercept), "slope": float(slope), "damping": damping,
+                "viscous": float(slope - damping),
+                "rms_residual": float(np.sqrt(np.mean(residual ** 2))), "points": len(points),
+                "levels": [{"goal_speed": lv["goal_speed"], "speed": lv["speed"], "spring": lv["spring"],
+                            "lost": lv["lost"]} for lv in levels],
+            }
+    return out
 
 
 def analyze_probes(data, events, parameters, args) -> dict:
@@ -247,7 +380,10 @@ def analyze_probes(data, events, parameters, args) -> dict:
         axis = AXES.index(axis_segment["axis"])
         payload = next((e.get("payload") for e in reversed(events) if e["event"] == "probe_start"
                         and e.get("label") == axis_segment["label"] and e["t"] <= axis_segment["t"]), None)
-        out.setdefault(f"{payload}/{axis_segment['label']}", {})[axis_segment["axis"]] = (
+        key = f"{payload}/{axis_segment['label']}"
+        if int(axis_segment.get("levels") or 1) > 1:
+            key += f"/L{axis_segment['level']}"
+        out.setdefault(key, {})[axis_segment["axis"]] = (
             analyze_probe_axis(fast, axis, legs, axis_segment["t_end"], stiffness, args,
                                axis_segment.get("speed")))
     return out
@@ -353,6 +489,45 @@ def print_probe(probes, sim_dead_zone) -> None:
                   f"{c.get('dead_zone_minus_damping', float('nan')):>10.2f}{expected:>9}")
 
 
+def print_sweep(sweep, sim_dead_zone) -> None:
+    """Steady lost wrench per speed level, and the line through all levels."""
+
+    if not sweep:
+        return
+    print(f"\nspeed sweep: steady spring = intercept + slope x speed (intercept = dead zone / Coulomb)")
+    print(f"{'pose':<14}{'axis':>5}  {'per level: speed -> lost (spring - 2 sqrt(K) v)':<58}"
+          f"{'intercept':>10}{'viscous':>9}{'rms':>7}{'expected':>9}")
+    for pose, axes in sweep.items():
+        for axis, f in axes.items():
+            translation = axis in AXES[:3]
+            scale, unit = (1000.0, "mm/s") if translation else (math.degrees(1.0), "deg/s")
+            levels = " ".join(f"{scale * lv['speed']:.1f}->{lv['lost']:+.2f}" for lv in f["levels"])
+            expected = "" if sim_dead_zone is None else f"{sim_dead_zone[AXES.index(axis)]:.2f}"
+            print(f"{pose:<14}{axis:>5}  {levels + ' (' + unit + ')':<58}{f['intercept']:>10.2f}"
+                  f"{f['viscous']:>9.1f}{f['rms_residual']:>7.2f}{expected:>9}")
+
+
+def print_curves(curves, sim_dead_zone) -> None:
+    """Lost wrench vs speed from every moving sample: lost = Fc tanh(v/v0) + b v + c."""
+
+    if not curves:
+        return
+    print("\nloss curve (all moving samples): lost = Fc tanh(v/v0) + b v, fitted to the binned medians")
+    for pose, axes in curves.items():
+        for axis, f in axes.items():
+            translation = axis in AXES[:3]
+            unit, name = (1000.0, "mm/s") if translation else (math.degrees(1.0), "deg/s")
+            expected = "" if sim_dead_zone is None else f" expected {sim_dead_zone[AXES.index(axis)]:.2f}"
+            if "coulomb" in f:
+                viscous = (f"b {f['viscous']:6.1f} N s/m" if translation
+                           else f"b {f['viscous']:6.2f} N m s/rad")
+                print(f"{pose:<14}{axis:>4}  Fc {f['coulomb']:5.2f}  v0 {unit * f['v0']:5.2f} {name}  "
+                      f"{viscous}  rms {f['rms_residual']:.2f}{expected}")
+            else:
+                print(f"{pose:<14}{axis:>4}  too few speed bins for a fit")
+            print("      " + "  ".join(f"{unit * b['speed']:.2g}:{b['lost']:+.2f}" for b in f["bins"]))
+
+
 def print_payload(payload) -> None:
     if not payload:
         return
@@ -383,6 +558,13 @@ def main(argv=None) -> None:
     p.add_argument("--onset-fraction", type=float, default=0.3,
                    help="breakaway is where the velocity first rose above this share of the threshold")
     p.add_argument("--hold-skip-fraction", type=float, default=0.4)
+    p.add_argument("--steady-after-s", type=float, default=0.6,
+                   help="steady state is read from the leg's second half, but not before this")
+    p.add_argument("--curve-decimate-s", type=float, default=0.02, help="loss-curve sample spacing")
+    p.add_argument("--curve-edges-mm-s", type=float, nargs="+",
+                   default=[0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60, 120])
+    p.add_argument("--curve-edges-deg-s", type=float, nargs="+",
+                   default=[0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30])
     args = p.parse_args(argv)
     report = json.loads((args.run / "report.json").read_text())
     events = report["events"]
@@ -399,9 +581,25 @@ def main(argv=None) -> None:
     if dead_zone is not None and not any(float(v) > 0 for v in dead_zone):
         dead_zone = None
     payload = analyze_payload(hold_means(data, events, args), report)
+    stiffness = ([float(parameters.get("translational_stiffness", 565.0))] * 3
+                 + [float(parameters.get("rotational_stiffness", 28.0))] * 3)
+    sweep = fit_speed_sweep(probes, stiffness)
+    curves = loss_curves(probes, args)
+    # The raw (speed, lost) samples go to an npz for plotting, not into the JSON.
+    raw = {}
+    for key, axes in probes.items():
+        for axis, s in axes.items():
+            points = s.pop("curve_points", [])
+            if points:
+                raw[f"{key}/{axis}".replace("/", "__")] = np.asarray(points)
+    if raw:
+        np.savez_compressed(args.run / "loss_curve_points.npz", **raw)
     print_probe(probes, dead_zone)
+    print_sweep(sweep, dead_zone)
+    print_curves(curves, dead_zone)
     print_payload(payload)
-    out = {"probes": probes, "payload": payload, "configured_dead_zone": dead_zone}
+    out = {"probes": probes, "speed_sweep": sweep, "loss_curve": curves, "payload": payload,
+           "configured_dead_zone": dead_zone}
     (args.run / "analysis.json").write_text(json.dumps(out, indent=2, default=rep._plain) + "\n")
     print(f"\nwrote {args.run / 'analysis.json'}")
 

@@ -78,3 +78,57 @@ def test_probe_triangle_returns_to_the_start():
     assert legs[0][1] == 0.0 and legs[-1][2] == 0.0
     for (_, _, end), (_, start, _) in zip(legs[:-1], legs[1:]):
         assert end == start
+
+
+def test_probe_levels_stretch_the_stroke_for_fast_levels():
+    args = SimpleNamespace(probe_speed_mm_s=6.0, probe_rate_deg_s=2.0, probe_translation_mm=15.0,
+                           probe_rotation_deg=8.0, probe_min_leg_s=1.5,
+                           probe_speeds_mm_s=[2.0, 50.0], probe_rates_deg_s=[1.0, 15.0])
+    slow, fast = oc.probe_levels(args)
+    assert slow["amplitude_m"] == pytest.approx(0.015)
+    assert fast["amplitude_m"] == pytest.approx(0.075)
+    assert np.degrees(fast["amplitude_rad"]) == pytest.approx(22.5)
+    # The planner checks the largest stroke.
+    translation, _ = oc.probe_offsets(args)[1]
+    assert translation[0] == pytest.approx(0.075)
+    # Without a sweep the single level is the old probe.
+    args.probe_speeds_mm_s = args.probe_rates_deg_s = None
+    (only,) = oc.probe_levels(args)
+    assert only["amplitude_m"] == pytest.approx(0.015) and only["speed_m_s"] == pytest.approx(0.006)
+
+
+def test_speed_sweep_fit_recovers_dead_zone_and_viscous_loss():
+    k = 565.0
+    damping = 2.0 * np.sqrt(k)
+    dead_zone, viscous, bias = 5.0, 20.0, 0.7
+    probes = {}
+    for level, v in enumerate((0.002, 0.006, 0.02, 0.05)):
+        points = []
+        for direction in (1, -1, -1, 1):
+            # A constant bias pushes the spring up on + legs and down on - legs.
+            points.append([v, dead_zone + (damping + viscous) * v + direction * bias, direction])
+        probes[f"modelled/o0/L{level}"] = {"x": {"steady": {
+            "goal_speed": v, "speed": v, "spring": float(np.mean([p[1] for p in points])),
+            "lost": 0.0, "points": points}}}
+    fit = oca.fit_speed_sweep(probes, [k] * 3 + [28.0] * 3)["modelled/o0"]["x"]
+    assert fit["intercept"] == pytest.approx(dead_zone, abs=1e-9)
+    assert fit["viscous"] == pytest.approx(viscous, abs=1e-6)
+
+
+def test_loss_curve_fit_recovers_a_smoothed_coulomb_step():
+    rng = np.random.default_rng(0)
+    v = rng.uniform(0.0002, 0.05, 4000)
+    lost = 4.0 * np.tanh(v / 0.002) + 50.0 * v + rng.normal(0.0, 0.05, v.size)
+    fit = oca.fit_loss_curve(np.column_stack((v, lost)), True,
+                             [0.1, 0.25, 0.5, 1, 1.5, 2, 3, 4, 6, 8, 12, 15, 20, 30, 40, 60])
+    assert fit["coulomb"] == pytest.approx(4.0, abs=0.1)
+    assert fit["viscous"] == pytest.approx(50.0, abs=3.0)
+    assert 1000.0 * fit["v0"] == pytest.approx(2.0, rel=0.25)
+    assert fit["bins"][-1]["lost"] > fit["bins"][0]["lost"]
+
+
+def test_smoothing_keeps_the_window_edges():
+    values = np.linspace(0.30, 0.31, 200)
+    smoothed = oca.smooth(values, 25)
+    assert smoothed.shape == values.shape
+    assert abs(smoothed[0] - values[0]) < 1e-3 and abs(smoothed[-1] - values[-1]) < 1e-3
