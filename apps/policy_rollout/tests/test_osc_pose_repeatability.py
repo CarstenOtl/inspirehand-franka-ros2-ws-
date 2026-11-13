@@ -181,3 +181,27 @@ def test_posture_move_refuses_a_long_joint_move_or_a_wandering_tcp():
         test_tool.check_posture_move(start + np.array([1.5, 0, 0, 0, 0, 0, 0]), start, tool, args)
     with pytest.raises(ValueError, match="posture move takes the TCP"):
         test_tool.check_posture_move(start + np.array([0.9, 0, 0, 0, 0, 0, 0]), start, tool, args)
+
+
+def test_standstill_needs_a_full_quiet_window():
+    from types import SimpleNamespace
+
+    args = SimpleNamespace(still_window_s=0.5, still_mm=0.2, still_deg=0.1)
+    eye = np.eye(3)
+    creeping = [(0.01 * i, np.array([0.3 + 1.0e-3 * 0.01 * i, 0.2, 0.3]), eye) for i in range(80)]
+    assert not test_tool._standstill(creeping, args)  # 1 mm/s: 0.5 mm per window
+    still = [(0.01 * i, np.array([0.3, 0.2, 0.3]), eye) for i in range(80)]
+    assert test_tool._standstill(still, args)
+    assert not test_tool._standstill(still[:30], args)  # shorter than the window
+
+
+def test_summary_leaves_out_arrivals_still_moving():
+    def arrival(side, error, settled):
+        return {"position_label": "A", "orientation_label": "o0", "approach": side, "cycle": 0,
+                "position_error_m": [error, 0.0, 0.0], "rotation_error_rad": [0.0, 0.0, 0.0],
+                "in_return_gate_at_end": True, "peak_speed_m_s": 0.1, "settled": settled}
+
+    results = [arrival(1, 0.002, True), arrival(-1, -0.002, True), arrival(-1, -0.09, False)]
+    summary = test_tool.summarize(results, 565.0)
+    assert summary["overall"]["arrivals"] == 3 and summary["overall"]["unsettled"] == 1
+    assert summary["targets"]["A/o0"]["hysteresis_norm_mm"] == pytest.approx(4.0)

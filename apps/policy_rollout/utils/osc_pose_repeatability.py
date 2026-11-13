@@ -59,10 +59,12 @@ QUINTIC_PEAK_SPEED = 1.875
 QUINTIC_PEAK_ACCELERATION = 5.7735
 ERROR_CHECKPOINTS_S = (0.25, 0.5, 1.0)
 MAX_START_POSTURE_RESIDUAL_RAD = 0.12
+PEAK_SPEED_STEP_S = 0.02
+# Flange down and 30 deg of yaw: 2 x 5 repeats x 4 = 40 arrivals, about 6 min on the FR3.
+# The 2026-11-12 hardware runs also had (20, 0, 0) and (0, 20, 0) as o1/o2 (80 arrivals);
+# pass --orientation-deg for those.
 DEFAULT_ORIENTATIONS_DEG = (
     (0.0, 0.0, 0.0),
-    (20.0, 0.0, 0.0),
-    (0.0, 20.0, 0.0),
     (0.0, 0.0, 30.0),
 )
 
@@ -387,12 +389,17 @@ def analyze_arrival(samples: dict, arrival: dict, args) -> dict:
     moving = time_s[motion]
     speed = 0.0
     if len(moving) > 1:
-        speed = float(
-            np.max(np.linalg.norm(np.diff(samples["position"][motion], axis=0), axis=1)
-                   / np.maximum(np.diff(moving), 1.0e-4))
-        )
+        # Over 20 ms steps: sample-to-sample differences of jittered stamps read up to m/s.
+        grid = np.arange(moving[0], moving[-1], PEAK_SPEED_STEP_S)
+        index = np.clip(np.searchsorted(moving, grid), 0, len(moving) - 1)
+        positions = samples["position"][motion][index]
+        dt = np.diff(moving[index])
+        valid = dt > 0.5 * PEAK_SPEED_STEP_S
+        if np.any(valid):
+            speed = float(np.max(np.linalg.norm(np.diff(positions, axis=0), axis=1)[valid] / dt[valid]))
     return {
         **{name: arrival[name] for name in ("position_label", "orientation_label", "approach", "cycle")},
+        **{name: arrival[name] for name in ("t_start", "t_goal_end", "t_end", "settled") if name in arrival},
         "position_error_m": position_error[window].mean(axis=0).tolist(),
         "rotation_error_rad": rotation_all[window].mean(axis=0).tolist(),
         "distance_mm_after_goal_end": checkpoints,
@@ -414,6 +421,17 @@ def iso_repeatability(values) -> float:
 
 
 def summarize(results: list[dict], stiffness: float) -> dict:
+    """Accuracy, repeatability, hysteresis and bias per target, from settled arrivals only.
+
+    An arrival still moving at the end of its hold (settled False) is counted but left out:
+    its rest error is a tracking lag, not a rest pose.
+    """
+
+    total = len(results)
+    unsettled = sum(1 for r in results if r.get("settled") is False)
+    results = [r for r in results if r.get("settled") is not False]
+    if not results:
+        return {"overall": {"arrivals": total, "unsettled": unsettled}, "targets": {}}
     groups = {}
     for result in results:
         groups.setdefault((result["position_label"], result["orientation_label"]), []).append(result)
@@ -456,7 +474,8 @@ def summarize(results: list[dict], stiffness: float) -> dict:
         targets[f"{position_label}/{orientation_label}"] = entry
     both = [t for t in targets.values() if "bias_mm" in t]
     overall = {
-        "arrivals": len(results),
+        "arrivals": total,
+        "unsettled": unsettled,
         "return_gate_pass_fraction": float(np.mean([r["in_return_gate_at_end"] for r in results])),
         "peak_speed_m_s": max(r["peak_speed_m_s"] for r in results),
         "accuracy_mm_mean": float(np.mean([t["accuracy_mm"] for t in targets.values()])),
@@ -490,8 +509,14 @@ def print_summary(summary: dict, args) -> None:
             f"{t.get('implied_extra_load_kg', float('nan')):>8.2f}"
         )
     o = summary["overall"]
+    if o.get("unsettled"):
+        print(f"\n{o['unsettled']} of {o['arrivals']} arrivals were still moving at the end of their hold "
+              "and are left out (raise --settle-timeout).")
+    if "return_gate_pass_fraction" not in o:
+        return
     print(
-        f"\n{o['arrivals']} arrivals; {100.0 * o['return_gate_pass_fraction']:.0f}% inside the "
+        f"\n{o['arrivals'] - o.get('unsettled', 0)} settled arrivals; "
+        f"{100.0 * o['return_gate_pass_fraction']:.0f}% inside the "
         f"{args.return_tolerance_mm:g} mm / {args.return_tolerance_deg:g} deg return gate; "
         f"peak measured speed {o['peak_speed_m_s']:.3f} m/s (goal limit {args.speed:g})."
     )
@@ -680,21 +705,53 @@ def _arrived(state, move, args) -> bool:
     )
 
 
-def _stream_move(node, arm_client, move, tool, args, rejections) -> tuple[float, float, float]:
+def _standstill(history, args) -> bool:
+    """The TCP moved less than --still-mm / --still-deg over the last --still-window-s."""
+
+    if not history or history[-1][0] - history[0][0] < args.still_window_s:
+        return False
+    recent = [h for h in history if h[0] >= history[-1][0] - args.still_window_s]
+    positions = np.array([h[1] for h in recent])
+    spread_mm = 1.0e3 * float(np.max(np.linalg.norm(positions - positions[-1], axis=1)))
+    last = recent[-1][2]
+    spread_deg = max(math.degrees(float(np.linalg.norm(rotation_vector(h[2] @ last.T)))) for h in recent)
+    return spread_mm <= args.still_mm and spread_deg <= args.still_deg
+
+
+def _stream_move(node, arm_client, move, tool, args, rejections) -> tuple[float, float, float, bool]:
+    """Stream one move; returns (start, goal end, end, settled).
+
+    An arrival holds the goal for at least --settle s and then until the arm stands still
+    (on the FR3 the clipped arm can still be crawling seconds after the goal stopped), at
+    most --settle-timeout s more. ``settled`` says whether it came to rest.
+    """
+
     period = 1.0 / args.goal_rate
     dwell = _dwell(move, args)
     started = node.now_s()
     goal_end = started + move.duration
     end = goal_end + dwell
     next_tick = started
+    history = []
     while True:
         now = node.now_s()
+        if move.is_arrival and not move.wait_arrival and now >= goal_end:
+            state = node.latest_state()
+            history.append((now, np.asarray(state["position"], dtype=float),
+                            kin.quaternion_to_matrix(state["quaternion_xyzw"])))
+            history = [h for h in history if h[0] >= now - args.still_window_s - 0.1]
         if now >= end:
-            if not move.wait_arrival or _arrived(node.latest_state(), move, args):
-                return started, goal_end, now
-            if now >= end + args.arrival_timeout:
+            if move.is_arrival and not move.wait_arrival:
+                if _standstill(history, args):
+                    return started, goal_end, now, True
+                if now >= end + args.settle_timeout:
+                    print(f"  still moving {args.settle_timeout:g} s after the settle time", flush=True)
+                    return started, goal_end, now, False
+            elif not move.wait_arrival or _arrived(node.latest_state(), move, args):
+                return started, goal_end, now, True
+            elif now >= end + args.arrival_timeout:
                 print(f"  not within the arrival tolerance after {args.arrival_timeout:g} s", flush=True)
-                return started, goal_end, now
+                return started, goal_end, now, False
         s = quintic((now - started) / move.duration)
         node.publish_goal(
             move.start_position + s * (move.position - move.start_position),
@@ -873,7 +930,7 @@ def run_live(args, start_q, a, b, rotations, tool_matrix, output_dir: Path) -> N
         moves[0].start_rotation = kin.quaternion_to_matrix(state["quaternion_xyzw"])
         total = sum(1 for m in moves if m.is_arrival)
         for move in moves:
-            started, goal_end, end = _stream_move(node, arm_client, move, tool, args, rejections)
+            started, goal_end, end, settled = _stream_move(node, arm_client, move, tool, args, rejections)
             if move.is_arrival:
                 arrivals.append(
                     {
@@ -886,6 +943,7 @@ def run_live(args, start_q, a, b, rotations, tool_matrix, output_dir: Path) -> N
                         "t_start": started,
                         "t_goal_end": goal_end,
                         "t_end": end,
+                        "settled": settled,
                     }
                 )
                 state = node.latest_state()
@@ -977,7 +1035,12 @@ def parser() -> argparse.ArgumentParser:
         help="with --plan-only: also check the move to the start pose from these joints",
     )
     parser.add_argument("--overshoot", type=float, default=0.05, help="waypoint beyond a pose, m")
-    parser.add_argument("--settle", type=float, default=2.0, help="hold after the goal stops, s")
+    parser.add_argument("--settle", type=float, default=2.0, help="minimum hold after the goal stops, s")
+    parser.add_argument("--settle-timeout", type=float, default=10.0,
+                        help="after --settle, keep holding up to this long until the arm stands still, s")
+    parser.add_argument("--still-window-s", type=float, default=0.5)
+    parser.add_argument("--still-mm", type=float, default=0.2, help="standstill: TCP travel over the window")
+    parser.add_argument("--still-deg", type=float, default=0.1)
     parser.add_argument("--settle-window", type=float, default=0.5, help="averaged for the rest pose, s")
     parser.add_argument("--waypoint-dwell", type=float, default=0.15)
     parser.add_argument("--goal-rate", type=float, default=50.0, help="Hz")
