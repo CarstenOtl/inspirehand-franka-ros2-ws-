@@ -32,6 +32,23 @@ checkpoints/
       nn/best.pt                       DP3 vision-head pretraining checkpoint (provenance only)
 ```
 
+## `m24-dp3-exp20r01-proprio-friction-returndz7.5-tclip-smooth-clock-force-nohv-da-s0-20261111-173541-799500-*/.../nn/checkpoint.pt`
+
+The exp_20 proprio-friction student, recollected for the return: task-wrench
+dead zones, return poses randomized up to 15 mm / 10 deg, a 2.5 s settle, the
+transition clip and a smoother return trajectory. Network and observations as
+the proprio-friction student below; only the progress horizon differs. Resolves
+to `mimic_windback45_tilt30`. Not `DEFAULT_CHECKPOINT`.
+
+| field | value |
+|---|---|
+| sha256 | `55d8723f26b3f1b129fdd162f578673de4e4d16f2748953a26e5253afde53f01` |
+| size | 101 MB |
+| conditioning | progress 98.2 s / 1473 steps, cyclic phase |
+| code | ForgeUltra `ab34bc7` (clean) |
+| training data | 36 `sequential-threading-dual-supervision-20261111-163042-486505-rebuilt-20261111-171623-536975` episodes |
+| Isaac closed loop | 3 episodes x 16 environments, return gate 15 mm / 10 deg (`returndz7.5-ret15x10`), no DR: 477 cycles, 47/48 completed 10, 0 transition failures |
+
 ## `m24-dp3-exp20r01-{extended,proprio-friction}-rollback3-clock-force-nohv-da-s0-*/.../nn/checkpoint.pt`
 
 Two DP3 students of the exp_20 teacher below, on the hardware-fitted hand. The

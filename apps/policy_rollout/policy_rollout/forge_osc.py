@@ -219,6 +219,11 @@ CHECKPOINT_TASK_PROFILES = {
     "m24-dp3-exp20r01-proprio-friction-rollback3-clock-force-nohv-da-s0-20261110-120354-491945": (
         MIMIC_WINDBACK45_TILT30_PROFILE.name
     ),
+    # proprio-friction recollected with return dead zones, randomized return
+    # poses (15 mm / 10 deg), 2.5 s settle, transition clip and a smoother return.
+    "m24-dp3-exp20r01-proprio-friction-returndz7.5-tclip-smooth-clock-force-nohv-da-s0-20261111-173541-799500": (
+        MIMIC_WINDBACK45_TILT30_PROFILE.name
+    ),
 }
 
 
